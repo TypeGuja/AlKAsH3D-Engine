@@ -3,7 +3,7 @@
 AlKAsH3D Game Engine
 A modern 3D game engine with OpenGL rendering support.
 """
-
+from alkash3d.utils import logger
 from alkash3d.engine import Engine
 from alkash3d.window import Window
 from alkash3d.scene import Scene
