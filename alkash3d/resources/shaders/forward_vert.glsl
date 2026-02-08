@@ -13,9 +13,8 @@ out vec2 vTexCoord;
 
 void main()
 {
-    mat4 modelView = uView * uModel;
     vWorldPos = vec3(uModel * vec4(aPos, 1.0));
-    vNormal   = mat3(transpose(inverse(uModel))) * aNormal;
+    vNormal = mat3(transpose(inverse(uModel))) * aNormal;
     vTexCoord = aTexCoord;
-    gl_Position = uProj * modelView * vec4(aPos, 1.0);
+    gl_Position = uProj * uView * uModel * vec4(aPos, 1.0);
 }
