@@ -92,68 +92,26 @@ class ForwardRenderer(BaseRenderer):
     # -----------------------------------------------------------------
     def render(self, scene, camera) -> None:
         """
-        Прорисовка кадра:
-        1) Обновляем uniform‑ы камеры.
-        2) Передаём массив lights.
-        3) Очищаем буфер и рисуем все Mesh‑ы.
+        Упрощённая версия рендера без сложной системы освещения.
         """
         self.shader.reload_if_needed()
         self.shader.use()
 
-        # ---------- 1️⃣ Uniform‑ы камеры ----------
-        view = camera.get_view_matrix()                                 # numpy‑array
-        proj = camera.get_projection_matrix(self.window.width /
-                                            self.window.height)      # numpy‑array
+        # Установка uniform-ов камеры
+        view = camera.get_view_matrix()
+        proj = camera.get_projection_matrix(self.window.width / self.window.height)
         self.shader.set_uniform_mat4("uView", view)
         self.shader.set_uniform_mat4("uProj", proj)
         self.shader.set_uniform_vec3("uCamPos", camera.position.as_np())
+        self.shader.set_uniform_int("uUseTexture", 0)
 
-        # ---------- 2️⃣ Свет ----------
-        lights = [
-            node for node in scene.traverse()
-            if isinstance(node, (DirectionalLight, PointLight, SpotLight))
-        ]
-
-        for i in range(MAX_LIGHTS):
-            if i < len(lights):
-                uni = lights[i].get_uniforms()
-
-                # Общие параметры, необходимые всем типам
-                self.shader.set_uniform_int(f"lights[{i}].type", uni["type"])
-                self.shader.set_uniform_vec3(f"lights[{i}].color", uni["color"])
-                self.shader.set_uniform_float(f"lights[{i}].intensity", uni["intensity"])
-
-                # Параметры, зависящие от типа
-                if uni["type"] == 0:               # Directional
-                    self.shader.set_uniform_vec3(f"lights[{i}].direction",
-                                                uni["direction"])
-                elif uni["type"] == 1:             # Point
-                    self.shader.set_uniform_vec3(f"lights[{i}].position",
-                                                uni["position"])
-                    self.shader.set_uniform_float(f"lights[{i}].radius",
-                                                uni["radius"])
-                elif uni["type"] == 2:             # Spot
-                    self.shader.set_uniform_vec3(f"lights[{i}].position",
-                                                uni["position"])
-                    # В шейдере ожидается поле `spotDir`
-                    self.shader.set_uniform_vec3(f"lights[{i}].spotDir",
-                                                uni["direction"])
-                    self.shader.set_uniform_float(f"lights[{i}].innerCutoff",
-                                                uni["innerCutoff"])
-                    self.shader.set_uniform_float(f"lights[{i}].outerCutoff",
-                                                uni["outerCutoff"])
-            else:
-                # «Пустой» свет (показываем, что слот не используется)
-                self.shader.set_uniform_int(f"lights[{i}].type", -1)
-
-        # ---------- 3️⃣ Очистка и отрисовка ----------
+        # Очистка буфера
         GL.glClearColor(0.07, 0.07, 0.08, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
+        # Рендеринг объектов сцены
         for node in scene.traverse():
             if hasattr(node, "draw"):
-                # Узел может быть любой, у кого есть метод draw()
-                # Мы передаём world‑matrix в виде numpy‑массива
                 model = node.get_world_matrix().to_gl()
                 self.shader.set_uniform_mat4("uModel", model)
                 node.draw()
