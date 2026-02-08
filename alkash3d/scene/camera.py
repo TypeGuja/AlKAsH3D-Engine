@@ -15,24 +15,18 @@ class Camera(Node):
         # Установка начальной позиции камеры
         self.position = Vec3(0, 0, 5)
 
+    # alkash3d/scene/camera.py
     def get_view_matrix(self):
-        """
-        Исправленная версия - используем look_at вместо инвертирования
-        """
-        # Позиция камеры
         eye = self.position.as_np()
-
-        # Направление взгляда (куда смотрим)
-        target_pos = self.position + self.forward
-        target = target_pos.as_np()
-
-        # Вектор "вверх"
+        target = (self.position + self.forward).as_np()
         up_vec = Vec3(0, 1, 0).as_np()
-
-        return Mat4.look_at(eye, target, up_vec).to_np()
+        # <-- правильно: транспонировать перед отправкой в GL
+        return Mat4.look_at(eye, target, up_vec).to_gl()
 
     def get_projection_matrix(self, aspect_ratio):
-        return Mat4.perspective(self.fov, aspect_ratio, self.near, self.far).to_np()
+        # <-- тоже делаем to_gl()
+        return Mat4.perspective(self.fov, aspect_ratio,
+                                self.near, self.far).to_gl()
 
     def update_fly(self, dt, input_manager):
         speed = 5.0 * dt

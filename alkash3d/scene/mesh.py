@@ -65,14 +65,15 @@ class Mesh(Node):
             GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, False, 0, None)
 
         # Текстурные координаты
+        # alkash3d/scene/mesh.py  (в блоке texcoords)
         if self.texcoords is not None:
             self.tbo = GL.glGenBuffers(1)
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.tbo)
-            GL.glBufferData(GL.GL_ARRAY_BUFFER,
-                            self.texcoords.nbytes,
-                            self.texcoords,
-                            GL.GL_STATIC_DRAW)
-            GL.glEnableVertexAttribArray(2)           # layout(location = 2)
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, self.texcoords.nbytes,
+                            self.texcoords, GL.GL_STATIC_DRAW)
+
+            # Текстурные координаты → location 2
+            GL.glEnableVertexAttribArray(2)
             GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, False, 0, None)
 
         # Индексы (если есть)
