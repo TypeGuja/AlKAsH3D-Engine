@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # alkash3d/window.py
 # ---------------------------------------------------------------
 # Оконная подсистема – обёртка над glfw.
@@ -14,17 +15,30 @@ class Window:
                  title: str = "AlKAsH3D Engine"):
         if not glfw.init():
             raise RuntimeError("Failed to initialize GLFW")
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 5)
+        # -----------------------------------------------------------
+        # Отключаем запрос 4.5 core, если драйвер её не поддерживает.
+        # Можно оставить 4.5, но для совместимости ставим 3.3.
+        # -----------------------------------------------------------
+        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)   # ← 3 вместо 4
+        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)   # ← 3 вместо 5
         glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
 
+        # alkash3d/window.py  (принудительный viewport)
         self.handle = glfw.create_window(width, height, title, None, None)
         if not self.handle:
             glfw.terminate()
             raise RuntimeError("Failed to create GLFW window")
+        glfw.make_context_current(self.handle)
+
+        # сразу после создания контекста задаём начальный viewport
+        w, h = glfw.get_framebuffer_size(self.handle)
+        GL.glViewport(0, 0, w, h)
 
         glfw.make_context_current(self.handle)
 
+        # -----------------------------------------------------------
+        # Остальная часть файла оставляем без изменений
+        # -----------------------------------------------------------
         self.width = width
         self.height = height
         self.title = title
