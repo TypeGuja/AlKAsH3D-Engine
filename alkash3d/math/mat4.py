@@ -73,7 +73,8 @@ class Mat4:
         return Ry @ Rx @ Rz
 
     @staticmethod
-    def perspective(fov_deg: float, aspect: float, z_near: float, z_far: float):
+    def perspective(fov_deg: float, aspect: float,
+                    z_near: float, z_far: float):
         f = 1.0 / tan(radians(fov_deg) / 2.0)
         m = np.zeros((4, 4), dtype=np.float32)
         m[0, 0] = f / aspect
@@ -85,9 +86,6 @@ class Mat4:
 
     @staticmethod
     def look_at(eye, target, up) -> "Mat4":
-        """
-        Исправленная версия метода look_at
-        """
         f = (target - eye).astype(np.float32)
         f = f / np.linalg.norm(f)
 
@@ -120,4 +118,5 @@ class Mat4:
         return self.m.copy()
 
     def to_gl(self) -> np.ndarray:
+        """Транспонируем для передачи в OpenGL (столбцы‑массив)."""
         return self.m.T.copy()

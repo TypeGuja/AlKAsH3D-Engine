@@ -1,8 +1,10 @@
-# -*- coding: utf-8 -*-
+# alkash3d/math/vec3.py
 """
-Трёхмерный вектор на базе NumPy (для простоты – без надстройки над __array_interface__).
+Трёхмерный вектор – базовый тип на основе NumPy.
 """
+
 import numpy as np
+
 
 class Vec3:
     __slots__ = ("_v",)
@@ -70,7 +72,7 @@ class Vec3:
         return Vec3(*(self._v / n))
 
     def as_np(self) -> np.ndarray:
-        """Возврат копии 3‑элементного массива float32."""
+        """Копия 3‑элементного массива float32."""
         return self._v.copy()
 
     def __repr__(self):
