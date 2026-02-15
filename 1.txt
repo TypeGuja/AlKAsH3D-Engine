@@ -1,0 +1,110 @@
+alkash3d/
+│
+├─ assets/
+│   ├─ __init__.py
+│   ├─ material.py         # теперь формирует CBV + SRV
+│   └─ texture_manager.py   # использует DX‑текстуры
+│
+├─ culling/
+│   ├─ __init__.py
+│   ├─ bvh.py
+│   └─ octree.py ---
+│
+├─ core/
+│   ├─ __init__.py
+│   ├─ input.py ---
+│   └─ timer.py ---
+│
+├─ graphics/                     ← **Новый слой**
+│   ├─ __init__.py               # select('dx12') / select('gl')
+│   ├─ backend.py                # абстрактный API
+│   ├─ gl_backend.py             # оставляем старый OpenGL‑бэкенд
+│   ├─ dx12_backend.py           # DirectX 12‑реализация
+│   └─ utils/
+│        ├─ __init__.py
+│        ├─ d3d12_wrapper.py    # thin‑wrapper через ctypes
+│        └─ descriptor_heap.py  # helper‑класс для CBV/SRV/UAV heap
+│
+├─ math/
+│   ├─ __init__.py
+│   ├─ vec3.py ---
+│   ├─ vec4.py ---
+│   ├─ mat4.py ---
+│   └─ quat.py ---
+│
+├─ mesh/
+│   ├─ __init__.py
+│   └─ mesh.py ---                 # draw(backend) → D3D12‑draws
+│
+├─ plugins/
+│   ├─ __init__.py
+│   ├─ plugin_manager.py ---
+│   └─ example_plugin.py ---
+│
+├─ postproc/
+│   ├─ __init__.py
+│   ├─ pipeline.py ---
+│   ├─ bloom.py
+│   ├─ ssao.py ---
+│   ├─ temporal_aa.py ---
+│   ├─ color_grading.py
+│   └─ tonemap.py               # все пассы используют backend.draw_fullscreen_quad()
+│
+├─ renderer/
+│   ├─ __init__.py
+│   ├─ base_renderer.py ---
+│   ├─ pas.py                  # абстрактный RenderPass (перемещён в graphics)
+│   ├─ shader.py               # теперь HLSL‑shader‑менеджер
+│   └─ pipelines/
+│        ├─ __init__.py
+│        ├─ forward.py
+│        ├─ deferred.py
+│        ├─ hybrid.py
+│        ├─ rtx_renderer.py
+│        └─ rt_pipeline.py ---
+│
+├─ scene/
+│   ├─ __init__.py
+│   ├─ node.py ---
+│   ├─ camera.py
+│   ├─ light.py ---
+│   ├─ mesh.py
+│   ├─ model.py
+│   └─ scene.py
+│
+├─ utils/
+│   ├─ __init__.py
+│   ├─ logger.py
+│   ├─ config.py ---
+│   ├─ fps_counter.py ---
+│   ├─ profiler.py ---
+│   └─ texture_loader.py ---       # теперь проксирует в graphics.utils.d3d12_wrapper
+│
+├─ engine.py
+├─ window.py                     # glfw‑NO_API + HWND
+├─ resources/
+│   ├─ shaders/
+│   │   ├─ quad_vert.hlsl
+│   │   ├─ forward_vert.hlsl
+│   │   ├─ forward_frag.hlsl
+│   │   ├─ deferred_geom_vert.hlsl
+│   │   ├─ deferred_geom_frag.hlsl
+│   │   ├─ deferred_light_vert.hlsl
+│   │   ├─ deferred_light_frag.hlsl
+│   │   ├─ bloom_threshold_frag.hlsl
+│   │   ├─ bloom_blur_frag.hlsl
+│   │   ├─ ssao_frag.hlsl
+│   │   ├─ temporal_aa_frag.hlsl
+│   │   ├─ color_grading_frag.hlsl
+│   │   └─ tonemap_frag.hlsl
+│   └─ models/ … (по‑прежнему)
+│
+├─alkash3d_rtx/
+│     ├─ Cargo.toml
+│     └─ src/
+│          └─ lib.rs               # ваш Python‑модуль‑обёртка
+│
+│
+├─ pyproject.toml                # PEP 517, указывает на build‑system (setuptools‑rust)
+├─ setup.py                      # собирает C++‑wrapper + Rust‑crate
+└─ README.md
