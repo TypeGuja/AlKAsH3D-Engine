@@ -1,13 +1,25 @@
 Metadata-Version: 2.4
 Name: alkash3d
-Version: 1.0.0
-Summary: AlKAsH3D Game Engine - A modern 3D game engine
+Version: 0.1.0
+Summary: AlKAsH3D Game Engine
+Author: Your Name
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
 Requires-Python: >=3.8
+License-File: LICENSE
 Requires-Dist: numpy>=1.20.0
-Requires-Dist: glfw>=2.5.0
-Requires-Dist: PyOpenGL>=3.1.5
-Requires-Dist: Pillow>=9.0.0
-Requires-Dist: numba>=0.55.0
+Requires-Dist: glfw>=1.12.0
+Requires-Dist: Pillow>=8.0.0
+Requires-Dist: PyGLM>=2.0.0
+Dynamic: author
+Dynamic: classifier
+Dynamic: license-file
 Dynamic: requires-dist
 Dynamic: requires-python
 Dynamic: summary
