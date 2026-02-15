@@ -1,23 +1,27 @@
-# alkas3d/utils/logger.py
-# ---------------------------------------------------------------
-# Минимальный логгер + OpenGL‑сообщения для отладки.
-# ---------------------------------------------------------------
+"""
+Минимальный logger + (опциональная) DirectX 12 debug‑callback.
+"""
 
 import logging
-from OpenGL import GL
+import sys
 
 def init_logger():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    return logging.getLogger("AlKAsH3D")
+    logger = logging.getLogger("AlKAsH3D")
+    logger.setLevel(logging.INFO)
+
+    handler = logging.StreamHandler(sys.stdout)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s",
+                            "%H:%M:%S")
+    handler.setFormatter(fmt)
+    logger.addHandler(handler)
+
+    return logger
 
 logger = init_logger()
 
 def gl_check_error(context: str = ""):
-    """Проверить glGetError и вывести в лог, если что‑то не так."""
-    err = GL.glGetError()
-    if err != GL.GL_NO_ERROR:
-        msg = GL.gluErrorString(err).decode()
-        logger.error(f"OpenGL error {msg} [{context}]")
+    """
+    В DX12‑режиме проверка OpenGL‑ошибок не требуется.
+    Функция оставлена для совместимости – ничего не делает.
+    """
+    return

@@ -9,7 +9,7 @@ def load_obj(path):
     verts = []
     normals = []
     texcoords = []
-    faces = []   # (pos, tex, norm) triples (1‑based)
+    faces = []   # (pos, tex, norm) triples (1.txt‑based)
 
     with open(path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -49,7 +49,7 @@ def load_obj(path):
                 if key not in vert_dict:
                     # позиция
                     vertex = verts[p]
-                    # нормаль (может быть -1)
+                    # нормаль (может быть -1.txt)
                     normal = normals[n] if n >= 0 else [0.0, 0.0, 1.0]
                     # texcoord
                     tex = texcoords[t] if t >= 0 else [0.0, 0.0]

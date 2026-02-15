@@ -1,14 +1,12 @@
-# alkash3d/utils/__init__.py
 """
-Пакет утилит.
-
-Экспортируем:
-    * logger      – готовый объект logging.Logger (с level INFO)
-    * gl_check_error – вспомогательная функция, проверяющая GL‑ошибки
+Пакет утилит: логгер, конфиг, FPS‑counter, загрузка текстур, профайлер.
 """
 
-# Импортируем объект logger и функцию из модуля logger.py
-from .logger import logger, gl_check_error
+from alkash3d.utils.logger import logger, gl_check_error
+from alkash3d.utils.config import Config
+from alkash3d.utils.fps_counter import FPSCounter
+from alkash3d.utils.texture_loader import load_texture
+from alkash3d.utils.profiler import Profiler
 
-# Чтобы `from alkash3d.utils import *` не экспортировал лишнее
-__all__ = ["logger", "gl_check_error"]
+__all__ = ["logger", "gl_check_error", "Config", "FPSCounter",
+           "load_texture", "Profiler"]
