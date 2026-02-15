@@ -42,7 +42,7 @@ class PointLight(Light):
 
     def get_uniforms(self):
         return {
-            "type": 1,                         # 1 = point
+            "type": 1,                         # 1.txt = point
             "position": self.get_world_position().as_np(),
             "color": self.color.as_np(),
             "intensity": self.intensity,

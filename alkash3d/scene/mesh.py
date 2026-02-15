@@ -1,16 +1,13 @@
-# alkas3d/scene/mesh.py
-# ---------------------------------------------------------------
-# Mesh – геометрический объект, содержит VBO/VAO.
-# VAO создаётся «лениво», только при первом draw().
-# ---------------------------------------------------------------
-import numpy as np
-from OpenGL import GL
-from alkash3d.scene.node import Node
+"""
+Примитивный объект – создаёт буферы в GPU‑драйвере при первом draw().
+"""
 
+import numpy as np
+from alkash3d.scene.node import Node
+from alkash3d.math.vec3 import Vec3
 
 class Mesh(Node):
-    """Загружает OBJ‑модель (упрощенно) и создаёт VAO только при первом draw()."""
-
+    """Примитивный объект – создаёт буферы в GPU‑драйвере при первом draw()."""
     def __init__(self,
                  vertices: np.ndarray,
                  normals: np.ndarray = None,
@@ -24,99 +21,47 @@ class Mesh(Node):
         self.texcoords = texcoords.astype(np.float32) if texcoords is not None else None
         self.indices = indices.astype(np.uint32) if indices is not None else None
 
-        # Пока VAO не создаётся – будем создавать в первом draw()
-        self.vao = None
-        self.vbo = None
-        self.nbo = None
-        self.tbo = None
-        self.ebo = None
+        self.vb = None
+        self.ib = None
+        self.index_count = len(self.indices) if self.indices is not None else len(self.vertices) // 3
+        self.color = Vec3(1.0, 1.0, 1.0)
 
-        if self.indices is not None:
-            self.index_count = len(self.indices)
-        else:
-            self.index_count = len(self.vertices) // 3
+        # bounding sphere
+        verts = self.vertices
+        if verts.ndim == 1:
+            verts = verts.reshape((-1, 3))
+        self._bounding_center = verts.mean(axis=0).astype(np.float32)
+        self._bounding_radius = np.linalg.norm(verts - self._bounding_center, axis=1).max()
 
-    # -----------------------------------------------------------------
-    # Создание VAO (вызывается один раз, когда уже есть GL‑контекст)
-    # -----------------------------------------------------------------
-    def _setup_vao(self):
-        self.vao = GL.glGenVertexArrays(1)
-        GL.glBindVertexArray(self.vao)
-
-        # VBO – позиции
-        self.vbo = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER,
-                        self.vertices.nbytes,
-                        self.vertices,
-                        GL.GL_STATIC_DRAW)
-        GL.glEnableVertexAttribArray(0)               # layout(location = 0)
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, False, 0, None)
-
-        # Нормали
+    def _setup_gpu_buffers(self, backend):
+        components = [self.vertices]
         if self.normals is not None:
-            self.nbo = GL.glGenBuffers(1)
-            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.nbo)
-            GL.glBufferData(GL.GL_ARRAY_BUFFER,
-                            self.normals.nbytes,
-                            self.normals,
-                            GL.GL_STATIC_DRAW)
-            GL.glEnableVertexAttribArray(1)           # layout(location = 1)
-            GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, False, 0, None)
-
-        # Текстурные координаты
-        # alkash3d/scene/mesh.py  (в блоке texcoords)
+            components.append(self.normals)
         if self.texcoords is not None:
-            self.tbo = GL.glGenBuffers(1)
-            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.tbo)
-            GL.glBufferData(GL.GL_ARRAY_BUFFER, self.texcoords.nbytes,
-                            self.texcoords, GL.GL_STATIC_DRAW)
-
-            # Текстурные координаты → location 2
-            GL.glEnableVertexAttribArray(2)
-            GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, False, 0, None)
-
-        # Индексы (если есть)
+            components.append(self.texcoords)
+        interleaved = np.column_stack(components).astype(np.float32).ravel()
+        self.vb = backend.create_buffer(interleaved.tobytes(), usage="vertex")
         if self.indices is not None:
-            self.ebo = GL.glGenBuffers(1)
-            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
-            GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER,
-                            self.indices.nbytes,
-                            self.indices,
-                            GL.GL_STATIC_DRAW)
-
-        GL.glBindVertexArray(0)   # отвязать
-
-    # -----------------------------------------------------------------
-    # Убедиться, что VAO готов
-    # -----------------------------------------------------------------
-    def _ensure_vao(self):
-        if self.vao is None:
-            self._setup_vao()
-
-    # -----------------------------------------------------------------
-    # Рендер
-    # -----------------------------------------------------------------
-    def draw(self):
-        self._ensure_vao()
-        GL.glBindVertexArray(self.vao)
-
-        if self.indices is not None:
-            GL.glDrawElements(GL.GL_TRIANGLES,
-                              self.index_count,
-                              GL.GL_UNSIGNED_INT,
-                              None)
+            self.ib = backend.create_buffer(self.indices.tobytes(), usage="index")
         else:
-            GL.glDrawArrays(GL.GL_TRIANGLES,
-                            0,
-                            self.index_count)
+            self.ib = None
 
-        GL.glBindVertexArray(0)
+    def draw(self, backend):
+        """Отрисовать меш, создавая буферы «лениво»."""
+        if self.vb is None:
+            self._setup_gpu_buffers(backend)
 
-    # -----------------------------------------------------------------
-    # Модель‑матрица для шейдера
-    # -----------------------------------------------------------------
-    def get_model_matrix(self):
-        """Возвратить world‑matrix как numpy‑массив 4×4."""
-        from ..math.mat4 import Mat4
-        return self.get_world_matrix().to_np()
+        backend.set_vertex_buffers(self.vb, self.ib)
+        if self.ib is not None:
+            backend.draw_indexed(self.index_count)
+        else:
+            backend.draw(self.index_count)
+
+    @property
+    def bounding_sphere(self):
+        """(центр, радиус) в мировых координатах."""
+        world = self.get_world_matrix().to_np()
+        centre_h = np.append(self._bounding_center, 1.0).astype(np.float32)
+        centre_world = world @ centre_h
+        scale = np.linalg.norm(world[0:3, 0:3], axis=0).max()
+        return centre_world[:3], float(self._bounding_radius * scale)

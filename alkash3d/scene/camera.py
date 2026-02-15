@@ -1,32 +1,37 @@
-# alkash3d/scene/camera.py
+"""
+Камера‑fly‑through.
+"""
+
 import glfw
 import numpy as np
 from alkash3d.scene.node import Node
 from alkash3d.math.vec3 import Vec3
 from alkash3d.math.mat4 import Mat4
 
-
 class Camera(Node):
+    """Камера‑fly‑through."""
     def __init__(self, fov=60.0, near=0.1, far=1000.0, name="Camera"):
         super().__init__(name)
         self.fov = fov
         self.near = near
         self.far = far
-        # Установка начальной позиции камеры
-        self.position = Vec3(0, 0, 5)
+        self.position = Vec3(0.0, 0.0, 5.0)
 
-    # alkash3d/scene/camera.py
     def get_view_matrix(self):
         eye = self.position.as_np()
         target = (self.position + self.forward).as_np()
-        up_vec = Vec3(0, 1, 0).as_np()
-        # <-- правильно: транспонировать перед отправкой в GL
+        up_vec = Vec3(0.0, 1.0, 0.0).as_np()
         return Mat4.look_at(eye, target, up_vec).to_gl()
 
     def get_projection_matrix(self, aspect_ratio):
-        # <-- тоже делаем to_gl()
-        return Mat4.perspective(self.fov, aspect_ratio,
-                                self.near, self.far).to_gl()
+        return Mat4.perspective(self.fov, aspect_ratio, self.near, self.far).to_gl()
+
+    def get_view_projection_frustum(self):
+        """Псевдо‑frustum – всегда возвращает True."""
+        class DummyFrustum:
+            def intersects_sphere(self, centre, radius):
+                return True
+        return DummyFrustum()
 
     def update_fly(self, dt, input_manager):
         speed = 5.0 * dt
@@ -50,6 +55,9 @@ class Camera(Node):
         self.rotation.x += dy * 0.1
         self.rotation.x = max(-89.0, min(89.0, self.rotation.x))
 
+        _, scroll_y = input_manager.get_scroll_delta()
+        self.fov = max(20.0, min(100.0, self.fov - scroll_y * 2.0))
+
     @property
     def forward(self):
         yaw = np.radians(self.rotation.y)
@@ -61,7 +69,7 @@ class Camera(Node):
 
     @property
     def right(self):
-        return self.forward.cross(Vec3(0, 1, 0)).normalized()
+        return self.forward.cross(Vec3(0.0, 1.0, 0.0)).normalized()
 
     @property
     def up(self):

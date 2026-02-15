@@ -1,5 +1,7 @@
-# -*- coding: utf-8 -*-
-"""Базовый узел графа сцены."""
+"""
+Базовый узел графа сцены.
+"""
+
 import numpy as np
 from alkash3d.math.vec3 import Vec3
 from alkash3d.math.mat4 import Mat4
@@ -11,16 +13,18 @@ class Node:
         self.children = []
         self.parent = None
         self.position = Vec3()
-        self.rotation = Vec3()   # Эйлеровы углы в градусах (можно заменить quaternion)
+        self.rotation = Vec3()   # Эйлеровы углы в градусах
         self.scale = Vec3(1.0, 1.0, 1.0)
 
-    # ----------------- трансформации -----------------
+    # ---------------------------- Трансформации ----------------------------
     def get_local_matrix(self):
         """model = T * R * S."""
-        T = Mat4.translate(self.position.x, self.position.y, self.position.z)
+        T = Mat4.translate(self.position.x,
+                           self.position.y,
+                           self.position.z)
         R = Mat4.from_euler(self.rotation.x,
-                             self.rotation.y,
-                             self.rotation.z)
+                            self.rotation.y,
+                            self.rotation.z)
         S = Mat4.scale(self.scale.x, self.scale.y, self.scale.z)
         return T @ R @ S
 
@@ -31,7 +35,7 @@ class Node:
         else:
             return self.parent.get_world_matrix() @ self.get_local_matrix()
 
-    # ----------------- иерархия -----------------
+    # ---------------------------- Иерархия ----------------------------
     def add_child(self, node):
         node.parent = self
         self.children.append(node)

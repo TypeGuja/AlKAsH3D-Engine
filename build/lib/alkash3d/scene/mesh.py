@@ -61,7 +61,7 @@ class Mesh(Node):
                             self.normals.nbytes,
                             self.normals,
                             GL.GL_STATIC_DRAW)
-            GL.glEnableVertexAttribArray(1)           # layout(location = 1)
+            GL.glEnableVertexAttribArray(1)           # layout(location = 1.txt)
             GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, False, 0, None)
 
         # Текстурные координаты
