@@ -3,39 +3,178 @@
   <component name="AutoImportSettings">
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
+  <component name="CMakePresetLoader">{
+  &quot;useNewFormat&quot;: true
+}</component>
+  <component name="CMakeProjectFlavorService">
+    <option name="flavorId" value="CMakePlainProjectFlavor" />
+  </component>
+  <component name="CMakeReloadState">
+    <option name="reloaded" value="true" />
+  </component>
+  <component name="CMakeSettings">
+    <configurations>
+      <configuration PROFILE_NAME="Debug" ENABLED="true" CONFIG_NAME="Debug" />
+    </configurations>
+  </component>
+  <component name="CargoProjects">
+    <cargoProject FILE="$PROJECT_DIR$/alkash3d/rtx/src/ffi/Cargo.toml" />
+    <cargoProject FILE="$PROJECT_DIR$/toml/Cargo.toml">
+      <package file="$PROJECT_DIR$/toml">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+    <cargoProject FILE="$PROJECT_DIR$/alkash3d/rtx/Cargo.toml" />
+    <cargoProject FILE="$PROJECT_DIR$/alkash3d/rtx/rust/Cargo.toml" />
+    <cargoProject FILE="$PROJECT_DIR$/alkash3d/_rtx/Cargo.toml" />
+    <cargoProject FILE="$PROJECT_DIR$/alkash3d/alkash3d_rtx/Cargo.toml">
+      <package file="$PROJECT_DIR$/alkash3d/alkash3d_rtx">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+    <cargoProject FILE="$PROJECT_DIR$/alkash3d/alkash3d_dx12/Cargo.toml">
+      <package file="$PROJECT_DIR$/alkash3d/alkash3d_dx12">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+  </component>
   <component name="ChangeListManager">
     <list default="true" id="ef9bb2be-dc37-40fd-9b98-968926a06cfa" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/LICENSE" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/examples/minimal_example.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/alkash3d/graphics/utils/alkash3d_dx12.dll" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/alkash3d_rtx/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/alkash3d_rtx/_kernel.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/check_func.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/conftest.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/debug_test.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/examples/example_game.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/minimal_dx12.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/simple_dx12.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_backend_real.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_backend_stub.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_config.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_dx12.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_engine.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_math.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_scene.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_texture_loader.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/test_working.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/check_all.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/test_backend.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/test_buffer_texture.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/test_d3dcompiler.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/test_descriptor_heap.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/test_minimal.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/test_shader_compilation.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/tester_func/window_test.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/testers/conftest.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/testers/engine_full.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/AlKAsH3D-Engine.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/AlKAsH3D-Engine.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/1" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/1.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d.egg-info/PKG-INFO" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d.egg-info/PKG-INFO" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d.egg-info/SOURCES.txt" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d.egg-info/SOURCES.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d.egg-info/top_level.txt" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d.egg-info/top_level.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/core/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/core/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/core/input.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/core/input.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/core/timer.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/core/timer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/engine.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/math/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/math/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/math/mat4.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/math/mat4.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/math/quat.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/math/quat.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/math/vec3.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/math/vec3.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/math/vec4.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/math/vec4.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/multithread/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/multithread/task_pool.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/base_renderer.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/base_renderer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/pipelines/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/pipelines/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/pipelines/deferred.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/pipelines/deferred.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/renderer/pipelines/forward.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/pipelines/forward.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/forward_frag.glsl" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/resources/shaders/forward_frag.glsl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/forward_vert.glsl" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/resources/shaders/forward_vert.glsl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/pipelines/rt_pipeline.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/pipelines/rt_pipeline.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/rasterizer.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/raytracer.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/raytracer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/shader.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/shader.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/default_frag.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/default_vert.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/deferred_geom_frag.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/deferred_geom_vert.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/deferred_light_frag.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/deferred_light_vert.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/forward_frag.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/forward_vert.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/quad_frag.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/resources/shaders/quad_vert.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/scene/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/scene/camera.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/camera.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/scene/light.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/light.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/scene/mesh.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/mesh.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/scene/model.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/model.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/scene/node.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/node.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/scene/scene.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/scene.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/utils/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/utils/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/utils/loader.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/utils/logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/utils/logger.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/utils/texture_loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/utils/texture_loader.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/window.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/math/vec4.py" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/math/vec4.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/renderer/pipelines/forward.py" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/renderer/pipelines/forward.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/renderer/shader.py" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/renderer/shader.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/resources/shaders/deferred_geom_frag.glsl" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/resources/shaders/deferred_geom_frag.glsl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/resources/shaders/deferred_light_frag.glsl" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/resources/shaders/deferred_light_frag.glsl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/resources/shaders/forward_frag.glsl" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/resources/shaders/forward_frag.glsl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/scene/light.py" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/scene/light.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/scene/mesh.py" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/scene/mesh.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build/lib/alkash3d/utils/loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/build/lib/alkash3d/utils/loader.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/examples/basic_example.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/basic_example.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/examples/debug_shaders/debug_frag.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/examples/debug_shaders/debug_vert.glsl" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/setup.py" beforeDir="false" afterPath="$PROJECT_DIR$/setup.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
+  <component name="ClangdSettings">
+    <option name="formatViaClangd" value="false" />
+  </component>
   <component name="CopilotPersistence">
     <persistenceIdMap>
       <entry key="_C:/Users/user/Documents/GitHub/AlKAsH3D-Engine" value="39M1nNGXnTZxUDskTc8iiKN6eFn" />
     </persistenceIdMap>
   </component>
+  <component name="ExecutionTargetManager" SELECTED_TARGET="RsBuildProfile:dev" />
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
       <list>
+        <option value="Rust File" />
         <option value="Python Script" />
       </list>
     </option>
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="HighlightingSettingsPerFile">
+    <setting file="file://$USER_HOME$/AppData/Local/Programs/Python/Python312/Lib/ctypes/__init__.py" root0="SKIP_INSPECTION" />
+    <setting file="file://$PROJECT_DIR$/alkash3d/alkash3d_dx12/Cargo.toml" root0="FORCE_HIGHLIGHTING" />
+  </component>
+  <component name="MacroExpansionManager">
+    <option name="directoryName" value="FHZfgNOZ" />
+  </component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
+  <component name="ProjectApplicationVersion">
+    <option name="ide" value="CLion" />
+    <option name="majorVersion" value="2025" />
+    <option name="minorVersion" value="2.4" />
+    <option name="productBranch" value="Classic" />
   </component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 6
@@ -48,65 +187,132 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Python.1.executor&quot;: &quot;Run&quot;,
-    &quot;Python.23ъ.executor&quot;: &quot;Run&quot;,
-    &quot;Python.__init__ (1).executor&quot;: &quot;Run&quot;,
-    &quot;Python.__init__ (2).executor&quot;: &quot;Run&quot;,
-    &quot;Python.__init__ (3).executor&quot;: &quot;Run&quot;,
-    &quot;Python.__init__.executor&quot;: &quot;Run&quot;,
-    &quot;Python.base_renderer.executor&quot;: &quot;Run&quot;,
-    &quot;Python.basic_example.executor&quot;: &quot;Run&quot;,
-    &quot;Python.camera.executor&quot;: &quot;Run&quot;,
-    &quot;Python.debug_render.executor&quot;: &quot;Debug&quot;,
-    &quot;Python.deferred.executor&quot;: &quot;Run&quot;,
-    &quot;Python.engine.executor&quot;: &quot;Run&quot;,
-    &quot;Python.forward.executor&quot;: &quot;Run&quot;,
-    &quot;Python.game_template.executor&quot;: &quot;Run&quot;,
-    &quot;Python.input.executor&quot;: &quot;Run&quot;,
-    &quot;Python.light.executor&quot;: &quot;Run&quot;,
-    &quot;Python.loader.executor&quot;: &quot;Run&quot;,
-    &quot;Python.logger.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main (1).executor&quot;: &quot;Run&quot;,
-    &quot;Python.main.executor&quot;: &quot;Run&quot;,
-    &quot;Python.mesh.executor&quot;: &quot;Run&quot;,
-    &quot;Python.minimal_example.executor&quot;: &quot;Run&quot;,
-    &quot;Python.model.executor&quot;: &quot;Run&quot;,
-    &quot;Python.node.executor&quot;: &quot;Run&quot;,
-    &quot;Python.rasterizer.executor&quot;: &quot;Run&quot;,
-    &quot;Python.raytracer.executor&quot;: &quot;Run&quot;,
-    &quot;Python.rt_pipeline.executor&quot;: &quot;Run&quot;,
-    &quot;Python.scene.executor&quot;: &quot;Run&quot;,
-    &quot;Python.setup.executor&quot;: &quot;Run&quot;,
-    &quot;Python.shader.executor&quot;: &quot;Run&quot;,
-    &quot;Python.task_pool.executor&quot;: &quot;Run&quot;,
-    &quot;Python.texture_loader.executor&quot;: &quot;Run&quot;,
-    &quot;Python.timer.executor&quot;: &quot;Run&quot;,
-    &quot;Python.window.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/user/Documents/GitHub/AlKAsH3D-Engine/alkash3d/renderer&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python tests.Python tests for test_backend_stub.test_backend_falls_back_to_stub_if_no_dll.executor": "Run",
+    "Python tests.Python tests in engine_full.py.executor": "Run",
+    "Python tests.Python tests in test_backend_real.py.executor": "Run",
+    "Python tests.Python tests in test_backend_stub.py.executor": "Run",
+    "Python tests.Python tests in test_config.py.executor": "Run",
+    "Python tests.Python tests in test_dx12.py.executor": "Run",
+    "Python tests.Python tests in test_engine.py.executor": "Run",
+    "Python tests.Python tests in test_working.py.executor": "Run",
+    "Python.1.executor": "Run",
+    "Python.2.executor": "Run",
+    "Python.23ъ.executor": "Run",
+    "Python.3.executor": "Run",
+    "Python.4.executor": "Run",
+    "Python.5.executor": "Run",
+    "Python.6.executor": "Run",
+    "Python.7.executor": "Run",
+    "Python.Full_backend.executor": "Run",
+    "Python.Space-shooter Demo.executor": "Run",
+    "Python.__init__ (1).executor": "Run",
+    "Python.__init__ (2).executor": "Run",
+    "Python.__init__ (3).executor": "Run",
+    "Python.__init__.executor": "Run",
+    "Python.base_renderer.executor": "Run",
+    "Python.basic_example.executor": "Run",
+    "Python.calls_seq.executor": "Run",
+    "Python.camera.executor": "Run",
+    "Python.check_all.executor": "Debug",
+    "Python.check_func.executor": "Run",
+    "Python.collect_game.executor": "Run",
+    "Python.conftest.executor": "Run",
+    "Python.cvb_test.executor": "Run",
+    "Python.debug_render.executor": "Debug",
+    "Python.debug_test.executor": "Run",
+    "Python.deferred.executor": "Run",
+    "Python.delay_test.executor": "Run",
+    "Python.desc_handles.executor": "Run",
+    "Python.desc_heap.executor": "Run",
+    "Python.dx12_backend.executor": "Run",
+    "Python.engine.executor": "Debug",
+    "Python.example_game.executor": "Run",
+    "Python.forward.executor": "Run",
+    "Python.full_chain.executor": "Run",
+    "Python.game_template.executor": "Run",
+    "Python.input.executor": "Run",
+    "Python.light.executor": "Run",
+    "Python.loader.executor": "Run",
+    "Python.logger.executor": "Run",
+    "Python.main (1).executor": "Run",
+    "Python.main.executor": "Run",
+    "Python.mesh.executor": "Run",
+    "Python.min_test.executor": "Run",
+    "Python.minimal_dx12.executor": "Run",
+    "Python.minimal_example.executor": "Run",
+    "Python.model.executor": "Run",
+    "Python.mys.executor": "Run",
+    "Python.node.executor": "Run",
+    "Python.racing_demo.executor": "Run",
+    "Python.rasterizer.executor": "Run",
+    "Python.raytracer.executor": "Run",
+    "Python.rt_pipeline.executor": "Run",
+    "Python.rtv_test.executor": "Run",
+    "Python.rtx_demo.executor": "Run",
+    "Python.run_editor (1).executor": "Run",
+    "Python.run_editor.executor": "Run",
+    "Python.run_editor_qt (1).executor": "Run",
+    "Python.run_editor_qt.executor": "Run",
+    "Python.scene.executor": "Run",
+    "Python.setup.executor": "Run",
+    "Python.shader.executor": "Run",
+    "Python.shader_test.executor": "Run",
+    "Python.shadow_game_alt.executor": "Run",
+    "Python.simple_game.executor": "Run",
+    "Python.task_pool.executor": "Run",
+    "Python.test.executor": "Run",
+    "Python.test_all.executor": "Run",
+    "Python.test_backend.executor": "Run",
+    "Python.test_comp.executor": "Run",
+    "Python.test_core_full.executor": "Run",
+    "Python.test_d3dcompiler.executor": "Run",
+    "Python.test_rtx.executor": "Run",
+    "Python.test_shader.executor": "Run",
+    "Python.test_step_by_step_backend.executor": "Run",
+    "Python.test_wrappers.executor": "Run",
+    "Python.texture_loader.executor": "Run",
+    "Python.timer.executor": "Run",
+    "Python.window.executor": "Run",
+    "Python.window_test.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.rust.reset.selective.auto.import": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "RunOnceActivity.west.config.association.type.startup.service": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
+    "git-widget-placeholder": "main",
+    "last_opened_file_path": "C:/Users/user/Documents/GitHub/AlKAsH3D-Engine/alkash3d/graphics/utils",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "org.rust.cargo.project.model.PROJECT_DISCOVERY": "true",
+    "settings.editor.selected.configurable": "preferences.pluginManager",
+    "vue.rearranger.settings.migration": "true"
   }
-}</component>
+}]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
-      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d\renderer" />
+      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d\graphics\utils" />
+      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine" />
       <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d" />
+      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\multithread" />
+      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\examples 2" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\tester_func" />
       <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine" />
-      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d\resources" />
-      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d\renderer\shaders" />
-      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d\renderer" />
+      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\testers" />
       <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d" />
+      <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d\resources" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.basic_example">
+  <component name="RunManager" selected="Python.example_game">
     <configuration name="basic_example" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
@@ -129,7 +335,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="debug_render" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="collect_game" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -138,11 +344,11 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples 2" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/debug_render.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples 2/collect_game.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -151,51 +357,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="game_template" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="AlKAsH3D-Engine" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/game_template.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
-    <configuration name="minimal_example" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="AlKAsH3D-Engine" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/minimal_example.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
-    <configuration name="setup" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="debug_test" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -208,7 +370,51 @@
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/setup.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/debug_test.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="example_game" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="AlKAsH3D-Engine" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/example_game.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="main" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="AlKAsH3D-Engine" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples 2" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples 2/main.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -219,13 +425,16 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.example_game" />
         <item itemvalue="Python.basic_example" />
-        <item itemvalue="Python.debug_render" />
-        <item itemvalue="Python.minimal_example" />
-        <item itemvalue="Python.game_template" />
-        <item itemvalue="Python.setup" />
+        <item itemvalue="Python.main" />
+        <item itemvalue="Python.collect_game" />
+        <item itemvalue="Python.debug_test" />
       </list>
     </recent_temporary>
+  </component>
+  <component name="RustProjectSettings">
+    <option name="toolchainHomeDirectory" value="$USER_HOME$/.cargo/bin" />
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -241,19 +450,40 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1770491291200</updated>
+      <workItem from="1770800986101" duration="1555000" />
+      <workItem from="1770818171129" duration="13067000" />
+      <workItem from="1770870630398" duration="5161000" />
+      <workItem from="1770912334965" duration="7715000" />
+      <workItem from="1770953544766" duration="6612000" />
+      <workItem from="1770992280095" duration="7257000" />
+      <workItem from="1771001621900" duration="5642000" />
+      <workItem from="1771039498498" duration="1480000" />
+      <workItem from="1771073109394" duration="2963000" />
+      <workItem from="1771079374055" duration="7447000" />
+      <workItem from="1771091030868" duration="4189000" />
+      <workItem from="1771130860535" duration="8119000" />
+      <workItem from="1771145034966" duration="759000" />
     </task>
     <servers />
   </component>
-  <component name="XDebuggerManager">
-    <breakpoint-manager>
-      <breakpoints>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/alkash3d/core/window.py</url>
-          <line>1</line>
-          <option name="timeStamp" value="1" />
-        </line-breakpoint>
-      </breakpoints>
-    </breakpoint-manager>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="VCPKGProject">
+    <isAutomaticCheckingOnLaunch value="false" />
+    <isAutomaticFoundErrors value="true" />
+    <isAutomaticReloadCMake value="true" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
   </component>
   <component name="github-copilot-workspace">
     <instructionFileLocations>

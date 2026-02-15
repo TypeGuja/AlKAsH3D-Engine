@@ -2,7 +2,9 @@
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/alkash3d/alkash3d_dx12/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/alkash3d/alkash3d_dx12/target" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.12 (AlKAsH3D-Engine)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
