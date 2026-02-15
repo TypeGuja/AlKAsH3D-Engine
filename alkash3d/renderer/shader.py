@@ -1,123 +1,84 @@
-# alkash3d/renderer/shader.py
-from OpenGL import GL
-import pathlib
+"""
+Простейший менеджер HLSL‑шейдеров для DirectX 12.
+* Компилирует VS/PS через DX12‑бекенд.
+* Создаёт один constant‑buffer, в который записываются матрицы.
+"""
+
+import os
 import numpy as np
+from alkash3d.utils import logger
+from alkash3d.graphics.dx12_backend import DX12Backend
 
 class Shader:
-    def __init__(self, vertex_path: str, fragment_path: str):
-        self.vertex_path = pathlib.Path(vertex_path).resolve()
-        self.fragment_path = pathlib.Path(fragment_path).resolve()
-        self.program = None
-        self._last_mtime = (0, 0)
-        self.compile()
+    """Обёртка над парой VS/PS‑blob‑ов и готовым PSO."""
+    _MAT_OFFSETS = {
+        "uView": 0,
+        "uProj": 64,
+        "uModel": 128,
+    }
+    _CB_SIZE = 192
 
-    def _read(self, p: pathlib.Path) -> str:
-        if not p.is_file():
-            # Создание простого fallback шейдера если файл не найден
-            if "vert" in p.name:
-                return """
-                #version 450 core
-                layout(location = 0) in vec3 aPos;
-                uniform mat4 uModel;
-                uniform mat4 uView;
-                uniform mat4 uProj;
-                void main() {
-                    gl_Position = uProj * uView * uModel * vec4(aPos, 1.0);
-                }
-                """
-            else:
-                return """
-                #version 450 core
-                out vec4 FragColor;
-                void main() {
-                    FragColor = vec4(1.0, 0.0, 0.0, 1.0); // Красный цвет для отладки
-                }
-                """
-        return p.read_text(encoding="utf-8")
+    def __init__(self, backend: DX12Backend, vertex_path: str, fragment_path: str):
+        self.backend = backend
 
-    def compile(self):
-        try:
-            v_src = self._read(self.vertex_path)
-            f_src = self._read(self.fragment_path)
+        print("=" * 50)
+        print("[Shader] Initializing shader program")
+        print(f"[Shader] Vertex shader path: {vertex_path}")
+        print(f"[Shader] Fragment shader path: {fragment_path}")
+        print("=" * 50)
 
-            vert = GL.glCreateShader(GL.GL_VERTEX_SHADER)
-            GL.glShaderSource(vert, v_src)
-            GL.glCompileShader(vert)
-            self._check_compile(vert, "VERTEX")
+        print("[Shader] Compiling vertex shader...")
+        self.vs_blob = backend.compile_shader("vs", vertex_path)
+        if not self.vs_blob:
+            raise RuntimeError(f"Failed to compile vertex shader: {vertex_path}")
+        print(f"[Shader] Vertex shader compiled: {hex(self.vs_blob)}")
 
-            frag = GL.glCreateShader(GL.GL_FRAGMENT_SHADER)
-            GL.glShaderSource(frag, f_src)
-            GL.glCompileShader(frag)
-            self._check_compile(frag, "FRAGMENT")
+        print("[Shader] Compiling fragment shader...")
+        self.ps_blob = backend.compile_shader("ps", fragment_path)
+        if not self.ps_blob:
+            raise RuntimeError(f"Failed to compile fragment shader: {fragment_path}")
+        print(f"[Shader] Fragment shader compiled: {hex(self.ps_blob)}")
 
-            program = GL.glCreateProgram()
-            GL.glAttachShader(program, vert)
-            GL.glAttachShader(program, frag)
-            GL.glLinkProgram(program)
-            self._check_link(program)
+        print("[Shader] Creating graphics pipeline...")
+        self.pso = backend.create_graphics_ps(self.vs_blob, self.ps_blob)
+        if not self.pso:
+            raise RuntimeError("Failed to create graphics pipeline")
+        print(f"[Shader] Graphics pipeline created: {hex(self.pso)}")
+        print("=" * 50)
 
-            GL.glDeleteShader(vert)
-            GL.glDeleteShader(frag)
+        self._frame_cb = backend.create_constant_buffer(
+            b"\x00" * self._CB_SIZE
+        )
 
-            if self.program:
-                GL.glDeleteProgram(self.program)
-            self.program = program
-            self._last_mtime = (self.vertex_path.stat().st_mtime if self.vertex_path.exists() else 0,
-                                self.fragment_path.stat().st_mtime if self.fragment_path.exists() else 0)
-        except Exception as e:
-            print(f"Shader compilation error: {e}")
+        idx = backend.cbv_srv_uav_heap.next_free()
+        cpu_handle = backend.cbv_srv_uav_heap.get_cpu_handle(idx)
+        backend.create_shader_resource_view(self._frame_cb, cpu_handle)
 
-    def _check_compile(self, shader, typ):
-        status = GL.glGetShaderiv(shader, GL.GL_COMPILE_STATUS)
-        if not status:
-            log = GL.glGetShaderInfoLog(shader).decode()
-            print(f"{typ} shader compile error:\n{log}")
+        self._frame_cb_gpu = backend.cbv_srv_uav_heap.get_gpu_handle(idx)
+        self._frame_data = bytearray(self._CB_SIZE)
 
-    def _check_link(self, program):
-        status = GL.glGetProgramiv(program, GL.GL_LINK_STATUS)
-        if not status:
-            log = GL.glGetProgramInfoLog(program).decode()
-            print(f"Program link error:\n{log}")
+    def use(self) -> None:
+        self.backend.set_graphics_pipeline(self.pso)
 
-    def use(self):
-        if self.program:
-            GL.glUseProgram(self.program)
-
-    def set_uniform_mat4(self, name: str, mat):
-        loc = GL.glGetUniformLocation(self.program, name)
-        if loc < 0:
+    def set_uniform_mat4(self, name: str, mat) -> None:
+        if name not in self._MAT_OFFSETS:
+            logger.debug(f"[Shader] Unknown mat4 uniform: {name}")
             return
-        if hasattr(mat, "to_np"):
-            mat = mat.to_np()
-        elif hasattr(mat, "to_gl"):
-            mat = mat.to_gl()
-        GL.glUniformMatrix4fv(loc, 1, GL.GL_FALSE, mat)  # GL_FALSE вместо GL_TRUE
 
-    def set_uniform_vec3(self, name: str, vec):
-        loc = GL.glGetUniformLocation(self.program, name)
-        if loc < 0:
-            return
-        if hasattr(vec, "as_np"):
-            vec = vec.as_np()
-        GL.glUniform3fv(loc, 1, vec)
+        arr = np.asarray(mat, dtype=np.float32).reshape(16)
+        offset = self._MAT_OFFSETS[name]
+        self._frame_data[offset: offset + 64] = arr.tobytes()
+        self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
+        self.backend.set_root_descriptor_table(0, self._frame_cb_gpu)
 
-    def set_uniform_int(self, name: str, value: int):
-        loc = GL.glGetUniformLocation(self.program, name)
-        if loc < 0:
-            return
-        GL.glUniform1i(loc, int(value))
+    def set_uniform_vec3(self, name: str, vec) -> None:
+        pass
 
-    def set_uniform_float(self, name: str, value: float):
-        loc = GL.glGetUniformLocation(self.program, name)
-        if loc < 0:
-            return
-        GL.glUniform1f(loc, float(value))
+    def set_uniform_int(self, name: str, value: int) -> None:
+        pass
+
+    def set_uniform_float(self, name: str, value: float) -> None:
+        pass
 
     def reload_if_needed(self):
-        if not self.vertex_path.exists() or not self.fragment_path.exists():
-            return
-        vm = self.vertex_path.stat().st_mtime
-        fm = self.fragment_path.stat().st_mtime
-        if (vm, fm) != self._last_mtime:
-            print("[Shader] Change detected, recompiling…")
-            self.compile()
+        pass

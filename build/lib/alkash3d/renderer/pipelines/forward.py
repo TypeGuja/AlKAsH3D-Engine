@@ -20,7 +20,7 @@ SHADER_DIR = Path(__file__).resolve().parents[2] / "resources" / "shaders"
 class ForwardRenderer(BaseRenderer):
     """
     Простой forward‑pipeline.
-    При отсутствии реальной текстуры автоматически создаётся 1×1‑белая
+    При отсутствии реальной текстуры автоматически создаётся 1.txt×1.txt‑белая
     текстура‑заглушка, а uniform‑sampler `uAlbedo` привязывается к
     текстурному юниту 0.
     """
@@ -38,7 +38,7 @@ class ForwardRenderer(BaseRenderer):
         self._setup_state()
 
         # ---------------------------------------------------------
-        # Белая текстура‑заглушка (1×1, полностью белая)
+        # Белая текстура‑заглушка (1.txt×1.txt, полностью белая)
         # ---------------------------------------------------------
         self._create_default_white_texture()
 
@@ -59,16 +59,16 @@ class ForwardRenderer(BaseRenderer):
         gl_check_error("ForwardRenderer._setup_state")
 
     # -----------------------------------------------------------------
-    # Белая 1×1 текстура‑заглушка
+    # Белая 1.txt×1.txt текстура‑заглушка
     # -----------------------------------------------------------------
     def _create_default_white_texture(self) -> None:
         """
-        Создаёт 1×1 белую текстуру и привязывает её к texture unit 0.
+        Создаёт 1.txt×1.txt белую текстуру и привязывает её к texture unit 0.
         """
         self.default_tex = GL.glGenTextures(1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.default_tex)
 
-        # 1×1 белый пиксель (RGBA = 255,255,255,255)
+        # 1.txt×1.txt белый пиксель (RGBA = 255,255,255,255)
         white_pixel = (255).to_bytes(1, "little") * 4
         GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8,
                         1, 1, 0,
@@ -93,7 +93,7 @@ class ForwardRenderer(BaseRenderer):
     def render(self, scene, camera) -> None:
         """
         Прорисовка кадра:
-        1) Обновляем uniform‑ы камеры.
+        1.txt) Обновляем uniform‑ы камеры.
         2) Передаём массив lights.
         3) Очищаем буфер и рисуем все Mesh‑ы.
         """

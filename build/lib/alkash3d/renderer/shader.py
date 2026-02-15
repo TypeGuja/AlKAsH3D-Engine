@@ -22,7 +22,7 @@ class Shader:
                 uniform mat4 uView;
                 uniform mat4 uProj;
                 void main() {
-                    gl_Position = uProj * uView * uModel * vec4(aPos, 1.0);
+                    gl_Position = uProj * uView * uModel * vec4(aPos, 1.txt.0);
                 }
                 """
             else:
@@ -30,7 +30,7 @@ class Shader:
                 #version 450 core
                 out vec4 FragColor;
                 void main() {
-                    FragColor = vec4(1.0, 0.0, 0.0, 1.0); // Красный цвет для отладки
+                    FragColor = vec4(1.txt.0, 0.0, 0.0, 1.txt.0); // Красный цвет для отладки
                 }
                 """
         return p.read_text(encoding="utf-8")

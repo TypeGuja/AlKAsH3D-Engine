@@ -1,119 +1,104 @@
-# alkash3d/renderer/pipelines/forward.py
-# ---------------------------------------------------------------
-# Forward‑renderer с фиксированным массивом MAX_LIGHTS = 8.
-# ---------------------------------------------------------------
-from __future__ import annotations
-from pathlib import Path
-from alkash3d.scene.light import DirectionalLight, PointLight, SpotLight
+# ------------------------------------------------------------
+# Forward‑renderer с корректным созданием белой 1×1‑текстуры
+# (UPLOAD‑heap → UpdateTexture) и без «перезаписи» CBV‑слота.
+# ------------------------------------------------------------
 
-from ..base_renderer import BaseRenderer
-from ..shader import Shader
-from ...utils.logger import gl_check_error
-from OpenGL import GL
+import numpy as np
 
-MAX_LIGHTS = 8
+from alkash3d.renderer.shader import Shader
+from alkash3d.utils import logger
+from alkash3d.graphics import select_backend
 
-# Путь к каталогу, где лежат шейдеры (от уровня pipelines)
-SHADER_DIR = Path(__file__).resolve().parents[2] / "resources" / "shaders"
-
-
-class ForwardRenderer(BaseRenderer):
+class ForwardRenderer:
     """
     Простой forward‑pipeline.
-    При отсутствии реальной текстуры автоматически создаётся 1×1‑белая
-    текстура‑заглушка, а uniform‑sampler `uAlbedo` привязывается к
-    текстурному юниту 0.
+    Если у меша нет материала – используется 1×1‑белая placeholder‑текстура.
     """
-
-    def __init__(self, window):
+    def __init__(self, window, backend=None):
         self.window = window
+        self.backend = backend or select_backend("dx12")
 
-        # ---------------------------------------------------------
-        # Шейдер
-        # ---------------------------------------------------------
+        # ---------- 1️⃣ Шейдер ----------
         self.shader = Shader(
-            vertex_path=str(SHADER_DIR / "forward_vert.glsl"),
-            fragment_path=str(SHADER_DIR / "forward_frag.glsl"),
+            vertex_path=str(window.resource_path("shaders/forward_vert.hlsl")),
+            fragment_path=str(window.resource_path("shaders/forward_frag.hlsl")),
+            backend=self.backend,
         )
-        self._setup_state()
 
-        # ---------------------------------------------------------
-        # Белая текстура‑заглушка (1×1, полностью белая)
-        # ---------------------------------------------------------
-        self._create_default_white_texture()
+        # ---------- 2️⃣ Белая placeholder ----------
+        self._create_white_placeholder()
 
-        # ---------------------------------------------------------
-        # Установим uniform‑sampler `uAlbedo` → текстурный юнит 0
-        # ---------------------------------------------------------
-        self.shader.use()
-        self.shader.set_uniform_int("uAlbedo", 0)          # sampler = unit 0
-        # По‑умолчанию будем использовать fallback‑цвет (белый)
-        self.shader.set_uniform_int("uUseTexture", 0)
+        # ---------- 3️⃣ Дескриптор‑хип ----------
+        if self.backend.cbv_srv_uav_heap:
+            self.backend.set_descriptor_heaps([self.backend.cbv_srv_uav_heap])
 
-    # -----------------------------------------------------------------
-    # OpenGL‑state (depth‑test)
-    # -----------------------------------------------------------------
-    def _setup_state(self) -> None:
-        GL.glEnable(GL.GL_DEPTH_TEST)
-        GL.glDepthFunc(GL.GL_LEQUAL)
-        gl_check_error("ForwardRenderer._setup_state")
+        # ---------- 4️⃣ PSO ----------
+        self.backend.set_graphics_pipeline(self.shader.pso)
 
-    # -----------------------------------------------------------------
-    # Белая 1×1 текстура‑заглушка
-    # -----------------------------------------------------------------
-    def _create_default_white_texture(self) -> None:
-        """
-        Создаёт 1×1 белую текстуру и привязывает её к texture unit 0.
-        """
-        self.default_tex = GL.glGenTextures(1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.default_tex)
-
-        # 1×1 белый пиксель (RGBA = 255,255,255,255)
+    def _create_white_placeholder(self):
+        """Создать 1×1‑белую текстуру и SRV."""
         white_pixel = (255).to_bytes(1, "little") * 4
-        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8,
-                        1, 1, 0,
-                        GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, white_pixel)
 
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+        upload_buf = self.backend.create_buffer(white_pixel, usage="upload")
 
-        # Привязываем к юниту 0
-        GL.glActiveTexture(GL.GL_TEXTURE0)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.default_tex)
+        self.white_tex = self.backend.create_texture(
+            data=None,
+            w=1,
+            h=1,
+            fmt="RGBA8",
+        )
 
-    # -----------------------------------------------------------------
-    # Resize‑callback
-    # -----------------------------------------------------------------
+        self.backend.update_texture(self.white_tex, white_pixel, w=1, h=1)
+
+        srv_idx = self.backend.cbv_srv_uav_heap.next_free()
+        cpu_handle = self.backend.cbv_srv_uav_heap.get_cpu_handle(srv_idx)
+        self.backend.create_shader_resource_view(self.white_tex, cpu_handle)
+
+        self.default_srv_gpu = self.backend.cbv_srv_uav_heap.get_gpu_handle(srv_idx)
+
     def resize(self, w: int, h: int) -> None:
-        GL.glViewport(0, 0, w, h)
+        self.backend.set_viewport(0, 0, w, h)
+        self.backend.set_scissor_rect(0, 0, w, h)
 
-    # -----------------------------------------------------------------
-    # Основной рендер‑проход
-    # -----------------------------------------------------------------
     def render(self, scene, camera) -> None:
-        """
-        Упрощённая версия рендера без сложной системы освещения.
-        """
-        self.shader.reload_if_needed()
-        self.shader.use()
+        self.backend.begin_frame()
+        self.backend.set_viewport(0, 0,
+                                 self.window.width, self.window.height)
+        self.backend.set_scissor_rect(0, 0,
+                                      self.window.width, self.window.height)
 
-        # Установка uniform-ов камеры
         view = camera.get_view_matrix()
         proj = camera.get_projection_matrix(self.window.width / self.window.height)
+
         self.shader.set_uniform_mat4("uView", view)
         self.shader.set_uniform_mat4("uProj", proj)
-        self.shader.set_uniform_vec3("uCamPos", camera.position.as_np())
-        self.shader.set_uniform_int("uUseTexture", 0)
+        self.shader.set_uniform_vec3("uCamPos", camera.position)
 
-        # Очистка буфера
-        GL.glClearColor(0.07, 0.07, 0.08, 1.0)
-        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        self.shader.use()
 
-        # Рендеринг объектов сцены
+        rtv0 = self.backend.rtv_heap.get_cpu_handle(0)
+        self.backend.set_render_target(rtv0)
+        self.backend.clear_render_target(rtv0, (0.07, 0.07, 0.08, 1.0))
+
         for node in scene.traverse():
-            if hasattr(node, "draw"):
-                model = node.get_world_matrix().to_gl()
-                self.shader.set_uniform_mat4("uModel", model)
-                node.draw()
+            if not hasattr(node, "draw"):
+                continue
 
-        gl_check_error("ForwardRenderer.render")
+            if hasattr(node, "material"):
+                node.material.bind(self.backend)
+            else:
+                # НЕ меняем слот 0 – он уже указывает на CBV
+                pass
+
+            self.shader.set_uniform_mat4("uModel", node.get_world_matrix().to_gl())
+
+            if hasattr(node, "color"):
+                self.shader.set_uniform_vec3("uTint", node.color)
+            else:
+                self.shader.set_uniform_vec3(
+                    "uTint", np.array([1.0, 1.0, 1.0], np.float32)
+                )
+
+            node.draw(self.backend)
+
+        self.backend.end_frame()
