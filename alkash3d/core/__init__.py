@@ -1,3 +1,6 @@
+"""
+Core‑подсистема (пока пустая).
+"""
+from alkash3d.core.timer import Timer
 
-# alkas3d/core/__init__.py
-# (пустой – нужен только чтобы Python видел каталог как пакет)
+__all__ = ["Timer"]
