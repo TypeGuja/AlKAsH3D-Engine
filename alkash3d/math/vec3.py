@@ -1,10 +1,8 @@
-# alkash3d/math/vec3.py
 """
 Трёхмерный вектор – базовый тип на основе NumPy.
 """
 
 import numpy as np
-
 
 class Vec3:
     __slots__ = ("_v",)
@@ -12,9 +10,6 @@ class Vec3:
     def __init__(self, x=0.0, y=0.0, z=0.0):
         self._v = np.array([x, y, z], dtype=np.float32)
 
-    # -------------------------------------------------
-    # свойства с сеттерами
-    # -------------------------------------------------
     @property
     def x(self) -> float:
         return float(self._v[0])
@@ -39,9 +34,6 @@ class Vec3:
     def z(self, value: float):
         self._v[2] = float(value)
 
-    # -------------------------------------------------
-    # арифметика (не меняет исходный объект)
-    # -------------------------------------------------
     def __add__(self, other):
         return Vec3(*(self._v + other._v))
 
@@ -53,9 +45,6 @@ class Vec3:
 
     __rmul__ = __mul__
 
-    # -------------------------------------------------
-    # вспомогательные методы
-    # -------------------------------------------------
     def dot(self, other):
         return float(np.dot(self._v, other._v))
 

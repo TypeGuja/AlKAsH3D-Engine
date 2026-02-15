@@ -1,4 +1,3 @@
-# alkash3d/math/__init__.py
 """
 Математический суб‑пакет: Vec3, Vec4, Mat4, Quat.
 """

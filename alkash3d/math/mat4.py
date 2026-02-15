@@ -1,7 +1,9 @@
-# alkash3d/math/mat4.py
+"""
+4×4 матрица с базовыми трансформациями.
+"""
+
 import numpy as np
 from math import radians, tan, sin, cos
-
 
 class Mat4:
     __slots__ = ("m",)
