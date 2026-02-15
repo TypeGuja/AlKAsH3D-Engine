@@ -1,62 +1,43 @@
-# -*- coding: utf-8 -*-
-# alkash3d/window.py
-# ---------------------------------------------------------------
-# Оконная подсистема – обёртка над glfw.
-# ---------------------------------------------------------------
+"""
+Окно + GLFW‑контекст (без OpenGL‑контекста, нужен для DX12).
+"""
+
 import glfw
-from OpenGL import GL
-
 from alkash3d.core.input import InputManager
-
+from pathlib import Path
 
 class Window:
-    """Окно + контекст OpenGL."""
-    def __init__(self, width: int = 1280, height: int = 720,
-                 title: str = "AlKAsH3D Engine"):
+    """Окно + GLFW‑контекст."""
+    def __init__(self, width: int = 1280, height: int = 720, title: str = "AlKAsH3D Engine"):
         if not glfw.init():
             raise RuntimeError("Failed to initialize GLFW")
-        # -----------------------------------------------------------
-        # Отключаем запрос 4.5 core, если драйвер её не поддерживает.
-        # Можно оставить 4.5, но для совместимости ставим 3.3.
-        # -----------------------------------------------------------
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)   # ← 3 вместо 4
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)   # ← 3 вместо 5
-        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
 
-        # alkash3d/window.py  (принудительный viewport)
+        glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
+
         self.handle = glfw.create_window(width, height, title, None, None)
         if not self.handle:
             glfw.terminate()
             raise RuntimeError("Failed to create GLFW window")
-        glfw.make_context_current(self.handle)
+        self.hwnd = glfw.get_win32_window(self.handle)
 
-        # сразу после создания контекста задаём начальный viewport
-        w, h = glfw.get_framebuffer_size(self.handle)
-        GL.glViewport(0, 0, w, h)
-
-        glfw.make_context_current(self.handle)
-
-        # -----------------------------------------------------------
-        # Остальная часть файла оставляем без изменений
-        # -----------------------------------------------------------
-        self.width = width
-        self.height = height
+        self.width, self.height = width, height
         self.title = title
-
         self.input = InputManager(self.handle)
 
-        # callback for resize
         glfw.set_framebuffer_size_callback(self.handle, self._on_resize)
+        self.set_vsync(True)
 
-    def _on_resize(self, window, w, h):
+    def _on_resize(self, _win, w, h):
         self.width, self.height = w, h
-        GL.glViewport(0, 0, w, h)
+
+    def set_vsync(self, enable: bool = True):
+        pass
 
     def should_close(self) -> bool:
         return glfw.window_should_close(self.handle)
 
     def swap_buffers(self):
-        glfw.swap_buffers(self.handle)
+        pass
 
     def poll_events(self):
         glfw.poll_events()
@@ -65,8 +46,11 @@ class Window:
         glfw.set_window_should_close(self.handle, True)
 
     def __del__(self):
-        # glfw.terminate() может бросить исключение, если уже был вызван.
         try:
             glfw.terminate()
         except Exception:
             pass
+
+    def resource_path(self, relative_path: str) -> Path:
+        repo_root = Path(__file__).resolve().parents[1]
+        return repo_root / "resources" / relative_path
