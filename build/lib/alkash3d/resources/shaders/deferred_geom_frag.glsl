@@ -21,7 +21,7 @@ void main()
     float spec = texture(uSpecular, vTexCoord).r;
 
     // Fallback, если текстурный фреймбуфер пуст (all zeros):
-    //   – белый альбедо (1,1,1)
+    //   – белый альбедо (1.txt,1.txt,1.txt)
     //   – отсутствие спекуляра (0)
     if (all(equal(albedo, vec3(0.0)))) {
         albedo = vec3(1.0);

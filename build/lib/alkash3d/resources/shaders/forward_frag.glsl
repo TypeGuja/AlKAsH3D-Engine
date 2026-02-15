@@ -2,7 +2,7 @@
 #define MAX_LIGHTS 8
 
 struct Light {
-    int   type;          // -1 = none, 0 = directional, 1 = point, 2 = spot
+    int   type;          // -1.txt = none, 0 = directional, 1.txt = point, 2 = spot
     vec3  color;
     float intensity;
     vec3  direction;     // directional
