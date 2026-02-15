@@ -40,41 +40,13 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="ef9bb2be-dc37-40fd-9b98-968926a06cfa" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/alkash3d/graphics/utils/alkash3d_dx12.dll" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d_rtx/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d_rtx/_kernel.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/check_func.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/conftest.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/debug_test.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/examples/example_game.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/minimal_dx12.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/simple_dx12.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_backend_real.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_backend_stub.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_config.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_dx12.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_engine.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_math.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_scene.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_texture_loader.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/test_working.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/check_all.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/test_backend.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/test_buffer_texture.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/test_d3dcompiler.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/test_descriptor_heap.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/test_minimal.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/test_shader_compilation.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tester_func/window_test.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/testers/conftest.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/testers/engine_full.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/AlKAsH3D-Engine.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/AlKAsH3D-Engine.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/1" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/1.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d.egg-info/PKG-INFO" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d.egg-info/PKG-INFO" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d.egg-info/SOURCES.txt" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d.egg-info/SOURCES.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d.egg-info/requires.txt" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d.egg-info/requires.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d.egg-info/top_level.txt" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d.egg-info/top_level.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/core/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/core/__init__.py" afterDir="false" />
@@ -312,7 +284,7 @@
       <recent name="C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d\resources" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.example_game">
+  <component name="RunManager" selected="Python.setup">
     <configuration name="basic_example" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
@@ -349,28 +321,6 @@
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples 2/collect_game.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
-    <configuration name="debug_test" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="AlKAsH3D-Engine" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/debug_test.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -423,13 +373,35 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="setup" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="AlKAsH3D-Engine" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/setup.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.setup" />
         <item itemvalue="Python.example_game" />
         <item itemvalue="Python.basic_example" />
         <item itemvalue="Python.main" />
         <item itemvalue="Python.collect_game" />
-        <item itemvalue="Python.debug_test" />
       </list>
     </recent_temporary>
   </component>
