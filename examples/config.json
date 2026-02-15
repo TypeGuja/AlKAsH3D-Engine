@@ -1,0 +1,15 @@
+{
+    "window": {
+        "width": 1280,
+        "height": 720,
+        "title": "AlKAsH3D Engine"
+    },
+    "v_sync": true,
+    "show_fps": true,
+    "upscale": {
+        "enabled": false,
+        "mode": "fsr",
+        "quality": "medium"
+    },
+    "editor_app": false
+}

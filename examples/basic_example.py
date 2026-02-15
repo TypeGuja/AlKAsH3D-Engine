@@ -1,130 +1,286 @@
-import alkash3d as ak
-from alkash3d.utils import logger, gl_check_error
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Пример‑игра «Вращающийся куб» на базе AlKAsH3D.
+* Forward‑renderer (можно менять на "deferred", "hybrid" или "rtx").
+* DX12‑бекенд (по умолчанию) – если в системе нет реальной
+  библиотеки, движок переключится в «head‑less»‑режим с заглушками.
+"""
+
+from __future__ import annotations
+
+import math
 import numpy as np
+import sys
 
+# --------------------------------------------------------------
+# 1️⃣  Импортируем публичные объекты из пакета
+# --------------------------------------------------------------
+from alkash3d import (
+    Engine,
+    Scene,
+    Camera,
+    DirectionalLight,
+    PointLight,
+    SpotLight,
+    Mesh,
+    Model,
+    Node,
+    Vec3,
+    Vec4,
+    Mat4,
+    Quat,
+)
+from alkash3d.assets.material import PBRMaterial
+from alkash3d.assets.texture_manager import TextureManager
+from alkash3d.utils import logger
 
-def create_cube():
-    """Создаёт куб с вершинами, нормалями И текстурными координатами"""
-    # Вершины куба
-    vertices = np.array([
-        # Front face
-        -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1,
-        # Back face
-        -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, -1, -1,
-        # Top face
-        -1, 1, -1, -1, 1, 1, 1, 1, 1, 1, 1, -1,
-        # Bottom face
-        -1, -1, -1, 1, -1, -1, 1, -1, 1, -1, -1, 1,
-        # Right face
-        1, -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1,
-        # Left face
-        -1, -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, -1,
-    ], dtype=np.float32).reshape(-1, 3)
-
-    # Индексы
-    indices = np.array([
-        0, 1, 2, 0, 2, 3,
-        4, 6, 5, 4, 7, 6,
-        8, 9, 10, 8, 10, 11,
-        12, 13, 14, 12, 14, 15,
-        16, 17, 18, 16, 18, 19,
-        20, 21, 22, 20, 22, 23,
-    ], dtype=np.uint32)
-
-    # Нормали
-    normals = np.array([
-        0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
-        0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1,
-        0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
-        0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0,
-        1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0,
-        -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0,
-    ], dtype=np.float32).reshape(-1, 3)
-
-    # ДОБАВЛЯЕМ ТЕКСТУРНЫЕ КООРДИНАТЫ
-    texcoords = np.array([
-        # Front face
-        0, 0, 1, 0, 1, 1, 0, 1,
-        # Back face
-        0, 0, 1, 0, 1, 1, 0, 1,
-        # Top face
-        0, 0, 1, 0, 1, 1, 0, 1,
-        # Bottom face
-        0, 0, 1, 0, 1, 1, 0, 1,
-        # Right face
-        0, 0, 1, 0, 1, 1, 0, 1,
-        # Left face
-        0, 0, 1, 0, 1, 1, 0, 1,
-    ], dtype=np.float32).reshape(-1, 2)
-
-    mesh = ak.Mesh(
-        vertices=vertices,
-        normals=normals,
-        indices=indices,
-        texcoords=texcoords,
-        name="Cube"
+# --------------------------------------------------------------
+# 2️⃣  Утилита – генератор куба (позиции, нормали, UV, индексы)
+# --------------------------------------------------------------
+def make_cube() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Возвращает 4 numpy‑массива:
+        vertices   – (N, 3)  float32
+        normals    – (N, 3)  float32
+        texcoords  – (N, 2)  float32
+        indices    – (M,)    uint32   (по 3 индекса на треугольник)
+    Для простоты создаём 24‑вершинный куб (по 4 вершины на каждый из 6
+    квадрантов) – тогда нормали и UV правильно совпадают с каждой гранью.
+    """
+    # --- Позиции (координаты куба от -0.5 до +0.5) -----------------
+    p = np.array(
+        [
+            #   x   y   z   (по 4 вершины на грань)
+            # Front (+Z)
+            [-0.5, -0.5, +0.5],
+            [+0.5, -0.5, +0.5],
+            [+0.5, +0.5, +0.5],
+            [-0.5, +0.5, +0.5],
+            # Back (‑Z)
+            [+0.5, -0.5, -0.5],
+            [-0.5, -0.5, -0.5],
+            [-0.5, +0.5, -0.5],
+            [+0.5, +0.5, -0.5],
+            # Left (‑X)
+            [-0.5, -0.5, -0.5],
+            [-0.5, -0.5, +0.5],
+            [-0.5, +0.5, +0.5],
+            [-0.5, +0.5, -0.5],
+            # Right (+X)
+            [+0.5, -0.5, +0.5],
+            [+0.5, -0.5, -0.5],
+            [+0.5, +0.5, -0.5],
+            [+0.5, +0.5, +0.5],
+            # Top (+Y)
+            [-0.5, +0.5, +0.5],
+            [+0.5, +0.5, +0.5],
+            [+0.5, +0.5, -0.5],
+            [-0.5, +0.5, -0.5],
+            # Bottom (‑Y)
+            [-0.5, -0.5, -0.5],
+            [+0.5, -0.5, -0.5],
+            [+0.5, -0.5, +0.5],
+            [-0.5, -0.5, +0.5],
+        ],
+        dtype=np.float32,
     )
-    return mesh
+
+    # --- Нормали (по граней) ------------------------------------
+    n = np.array(
+        [
+            # Front
+            [0, 0, 1],
+            [0, 0, 1],
+            [0, 0, 1],
+            [0, 0, 1],
+            # Back
+            [0, 0, -1],
+            [0, 0, -1],
+            [0, 0, -1],
+            [0, 0, -1],
+            # Left
+            [-1, 0, 0],
+            [-1, 0, 0],
+            [-1, 0, 0],
+            [-1, 0, 0],
+            # Right
+            [1, 0, 0],
+            [1, 0, 0],
+            [1, 0, 0],
+            [1, 0, 0],
+            # Top
+            [0, 1, 0],
+            [0, 1, 0],
+            [0, 1, 0],
+            [0, 1, 0],
+            # Bottom
+            [0, -1, 0],
+            [0, -1, 0],
+            [0, -1, 0],
+            [0, -1, 0],
+        ],
+        dtype=np.float32,
+    )
+
+    # --- UV‑координаты -------------------------------------------
+    uv = np.array(
+        [
+            # Каждая грань – квадрат (0,0) → (1,1)
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+        ] * 6,
+        dtype=np.float32,
+    )
+
+    # --- Индексный массив (по 2 треугольника на грань) ---------
+    # 0‑3 – первая грань, 4‑7 – вторая, …  (по 4 вершины на грань)
+    indices = []
+    for i in range(0, 24, 4):
+        indices.extend([i, i + 1, i + 2, i, i + 2, i + 3])
+    indices = np.array(indices, dtype=np.uint32)
+
+    return p, n, uv, indices
 
 
-class Game:
-    def __init__(self):
-        logger.info("=== Инициализация игры ===")
+# --------------------------------------------------------------
+# 3️⃣  Кастомный Mesh‑класс, который вращается каждый кадр
+# --------------------------------------------------------------
+class RotatingCube(Mesh):
+    """Куб, вращающийся вокруг оси Y.  Метод on_update вызывается в
+    Engine.scene.update(dt)."""
 
-        self.engine = ak.Engine(
-            width=1280,
-            height=720,
-            title="AlKAsH3D Game Example",
-            renderer="forward"
-        )
+    def __init__(self, *args, rotation_speed: float = 30.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rotation_speed = rotation_speed  # градусов в секунду
 
-        gl_check_error("После создания Engine")
-        logger.info("✓ Движок инициализирован")
-
-        self.setup_scene()
-
-        gl_check_error("После setup_scene")
-        logger.info("✓ Сцена подготовлена")
-
-    def setup_scene(self):
-        logger.info("Подготовка сцены...")
-
-        logger.info("Создание куба...")
-        self.cube = create_cube()
-        self.cube.position = ak.Vec3(0, 0, 0)
-        self.engine.scene.add_child(self.cube)
-        logger.info("✓ Куб добавлен в сцену")
-        logger.info(f"✓ Куб имеет текстурные координаты: {self.cube.texcoords is not None}")
-
-        gl_check_error("После добавления куба")
-
-        logger.info("Создание освещения...")
-        light = ak.DirectionalLight(
-            direction=ak.Vec3(-1, -1, -1),
-            color=ak.Vec3(1, 1, 1),
-            intensity=1.0
-        )
-        self.engine.scene.add_child(light)
-        logger.info("✓ Свет добавлен в сцену")
-
-        gl_check_error("После добавления света")
-
-        logger.info("Настройка камеры...")
-        self.engine.camera.position = ak.Vec3(0, 0, 5)
-        logger.info("✓ Камера позиционирована")
-
-        gl_check_error("После настройки камеры")
-
-        objects = list(self.engine.scene.traverse())
-        logger.info(f"Объектов в сцене: {len(objects)}")
-        for obj in objects:
-            logger.info(f"  - {obj.name}")
-
-    def run(self):
-        logger.info("=== Запуск основного цикла ===")
-        self.engine.run()
+    def on_update(self, dt: float) -> None:
+        # Обновляем локальный угол Y.
+        self.rotation.y = (self.rotation.y + self.rotation_speed * dt) % 360.0
 
 
+# --------------------------------------------------------------
+# 4️⃣  Сборка сцены
+# --------------------------------------------------------------
+def build_scene() -> Scene:
+    scene = Scene()
+
+    # ---------- Камера (fly‑through) ----------
+    cam = Camera(fov=70.0, near=0.1, far=200.0)
+    cam.position = Vec3(0.0, 1.0, 3.0)     # стартовая позиция
+    cam.rotation = Vec3(-15.0, 0.0, 0.0)   # немного наклоним вниз
+    scene.add_child(cam)
+
+    # ---------- Свет ----------
+    # 1) Направленный (day‑light)
+    sun = DirectionalLight(
+        direction=Vec3(-0.7, -1.0, -0.4),
+        color=Vec3(1.0, 0.95, 0.9),
+        intensity=3.5,
+    )
+    scene.add_child(sun)
+
+    # 2) Точечный свет – небольшая лампа
+    lamp = PointLight(
+        position=Vec3(2.0, 2.0, 0.0),   # позиция задаётся в world‑space (через трансформацию)
+        radius=6.0,
+        color=Vec3(1.0, 0.7, 0.4),
+        intensity=2.0,
+    )
+    scene.add_child(lamp)
+
+    # ---------- Куб ----------
+    verts, norms, uvs, inds = make_cube()
+    cube = RotatingCube(
+        vertices=verts,
+        normals=norms,
+        texcoords=uvs,
+        indices=inds,
+        name="RotatingCube",
+    )
+
+    # Добавляем материал PBR (с альбедо‑цветом, без текстур)
+    cube.material = PBRMaterial(
+        albedo=(0.8, 0.2, 0.1, 1.0),   # красно‑оранжевый базовый цвет
+        metallic=0.0,
+        roughness=0.4,
+        ao=1.0,
+        emissive=(0.0, 0.0, 0.0),
+    )
+    scene.add_child(cube)
+
+    # ---------- Пол (плоскость) ----------
+    # Простейший паркетный пол можно сделать из двух треугольников.
+    # В реальном проекте обычно грузятся из модели, но здесь сделаем вручную.
+    floor_verts = np.array(
+        [
+            [-5.0, 0.0, -5.0],
+            [+5.0, 0.0, -5.0],
+            [+5.0, 0.0, +5.0],
+            [-5.0, 0.0, +5.0],
+        ],
+        dtype=np.float32,
+    )
+    floor_norms = np.array([[0, 1, 0]] * 4, dtype=np.float32)
+    floor_uvs = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+    floor_inds = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+
+    floor = Mesh(
+        vertices=floor_verts,
+        normals=floor_norms,
+        texcoords=floor_uvs,
+        indices=floor_inds,
+        name="Floor",
+    )
+    floor.material = PBRMaterial(
+        albedo=(0.7, 0.7, 0.7, 1.0),   # светло‑серый пол
+        metallic=0.0,
+        roughness=0.9,
+        ao=1.0,
+    )
+    scene.add_child(floor)
+
+    # ---------- Привязываем камеру к сцене (чтобы Engine мог её обновлять) ----------
+    scene.camera = cam
+    return scene
+
+
+# --------------------------------------------------------------
+# 5️⃣  Основная точка входа – создаём Engine и запускаем игру
+# --------------------------------------------------------------
+def main() -> None:
+    """
+    Запуск демо‑игры.
+    Параметры Engine:
+        * renderer – one of: "forward", "deferred", "hybrid", "rtx"
+        * backend_name – "dx12" (по‑умолчанию) или "gl"
+    """
+    # Выбираем рендерер; в этом демо удобно forward.
+    engine = Engine(
+        width=1280,
+        height=720,
+        title="AlKAsH3D – rotating cube demo",
+        renderer="forward",          # попробуйте "deferred" / "hybrid" / "rtx"
+        backend_name="dx12",        # если хотите OpenGL‑режим, поставьте "gl"
+    )
+
+    # Подменяем корневую сцену, построенную выше
+    engine.scene = build_scene()
+
+    # Запуск главного цикла
+    engine.run()
+
+
+# --------------------------------------------------------------
+# 6️⃣  Точка входа скрипта
+# --------------------------------------------------------------
 if __name__ == "__main__":
-    game = Game()
-    game.run()
+    # Если скрипт запущен из IDE, можно поймать исключения
+    # и вывести стек‑трейс в консоль, чтобы было удобно отлаживать.
+    try:
+        main()
+    except Exception as exc:
+        logger.error(f"[demo_game] Fatal error: {exc}")
+        raise
