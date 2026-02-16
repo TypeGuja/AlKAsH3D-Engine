@@ -53,6 +53,8 @@ struct GlobalState {
     frame_index: u32,
     fence: Option<ID3D12Fence>,
     fence_value: u64,
+    rtv_heap: Option<ID3D12DescriptorHeap>,
+    rtv_handle_size: u32,
 }
 
 impl GlobalState {
@@ -70,6 +72,8 @@ impl GlobalState {
             frame_index: 0,
             fence: None,
             fence_value: 0,
+            rtv_heap: None,
+            rtv_handle_size: 0,
         }
     }
 }
@@ -285,21 +289,6 @@ mod device_mod {
         debug_println!("[device] Failed to create device");
         None
     }
-
-    pub unsafe fn save_device_state(device: &ID3D12Device, root_sig: ID3D12RootSignature) {
-        let rtv_sz = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        let dsv_sz = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-        let cbv_sz = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-        let mut state = STATE.lock().unwrap();
-        state.device = Some(device.clone());
-        state.root_signature = Some(root_sig.clone()); // Используем clone
-        state.rtv_descriptor_size = rtv_sz;
-        state.dsv_descriptor_size = dsv_sz;
-        state.cbv_srv_uav_descriptor_size = cbv_sz;
-
-        println!("[device] State saved - RTV: {}, DSV: {}, CBV: {}", rtv_sz, dsv_sz, cbv_sz);
-    }
 }
 
 /* ==================== КОМАНДНАЯ ОЧЕРЕДЬ ==================== */
@@ -332,15 +321,15 @@ mod command_mod {
     use super::*;
 
     pub unsafe fn create_allocator(device: &ID3D12Device) -> Option<ID3D12CommandAllocator> {
-        println!("[command] create_allocator: calling CreateCommandAllocator...");
+        debug_println!("[command] create_allocator: calling CreateCommandAllocator...");
 
         match device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) {
             Ok(a) => {
-                println!("[command] create_allocator: SUCCESS");
+                debug_println!("[command] create_allocator: SUCCESS");
                 Some(a)
             },
             Err(e) => {
-                println!("[command] create_allocator: FAILED with HRESULT 0x{:X}", e.code().0);
+                debug_println!("[command] create_allocator: FAILED with HRESULT 0x{:X}", e.code().0);
                 None
             }
         }
@@ -351,7 +340,7 @@ mod command_mod {
         allocator: &ID3D12CommandAllocator,
         pso: Option<&ID3D12PipelineState>,
     ) -> Option<ID3D12GraphicsCommandList> {
-        println!("[command] create_command_list: calling CreateCommandList...");
+        debug_println!("[command] create_command_list: calling CreateCommandList...");
 
         let result: Result<ID3D12GraphicsCommandList, _> = device.CreateCommandList(
             0,
@@ -362,18 +351,18 @@ mod command_mod {
 
         match result {
             Ok(list) => {
-                println!("[command] create_command_list: SUCCESS");
+                debug_println!("[command] create_command_list: SUCCESS");
 
-                println!("[command] create_command_list: closing list...");
+                debug_println!("[command] create_command_list: closing list...");
                 if let Err(e) = list.Close() {
-                    println!("[command] create_command_list: close FAILED: {:?}", e);
+                    debug_println!("[command] create_command_list: close FAILED: {:?}", e);
                 } else {
-                    println!("[command] create_command_list: closed successfully");
+                    debug_println!("[command] create_command_list: closed successfully");
                 }
                 Some(list)
             },
             Err(e) => {
-                println!("[command] create_command_list: FAILED with HRESULT 0x{:X}", e.code().0);
+                debug_println!("[command] create_command_list: FAILED with HRESULT 0x{:X}", e.code().0);
                 None
             }
         }
@@ -478,22 +467,27 @@ mod heap_mod {
         device: &ID3D12Device,
         num_descriptors: u32,
         heap_type: u32,
+        shader_visible: bool,
     ) -> Option<ID3D12DescriptorHeap> {
         let heap_ty = match heap_type {
             0 => D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
             1 => D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
             2 => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             _ => {
-                debug_println!("[heap] Invalid type: {}", heap_type);
+                eprintln!("[heap] Invalid type: {}", heap_type);
                 return None;
             }
         };
 
-        let flags = if heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV {
+        // Только CBV/SRV/UAV кучи могут быть шейдер-видимыми
+        let flags = if heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && shader_visible {
             D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
         } else {
             D3D12_DESCRIPTOR_HEAP_FLAG_NONE
         };
+
+        eprintln!("[heap] Creating: type={:?}, count={}, flags={:?}",
+                  heap_ty, num_descriptors, flags);
 
         let desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: heap_ty,
@@ -502,18 +496,14 @@ mod heap_mod {
             NodeMask: 0,
         };
 
-        debug_println!("[heap] Creating with {} descriptors, type={}, flags={:?}",
-                  num_descriptors, heap_type, flags);
-
-        let result: Result<ID3D12DescriptorHeap, _> = device.CreateDescriptorHeap(&desc);
-
-        match result {
+        // ИСПРАВЛЕНО: явно указываем тип ID3D12DescriptorHeap
+        match device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&desc) {
             Ok(heap) => {
-                debug_println!("[heap] Created successfully");
+                eprintln!("[heap] Created successfully at {:p}", heap.as_raw());
                 Some(heap)
             },
             Err(e) => {
-                debug_println!("[heap] Failed: HRESULT 0x{:X}", e.code().0);
+                eprintln!("[heap] Failed: HRESULT 0x{:X}", e.code().0);
                 None
             }
         }
@@ -521,67 +511,15 @@ mod heap_mod {
 }
 
 #[no_mangle]
-pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> usize {
-    debug_println!("\n[API] GetCPUDescriptorHandleForHeapStart({:p})", heap_ptr);
-
-    if heap_ptr.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
-        let handle = heap.GetCPUDescriptorHandleForHeapStart();
-        let result = handle.ptr as usize;
-        debug_println!("[API] GetCPUDescriptorHandleForHeapStart returning: {:#x}", result);
-        std::mem::forget(heap);
-        result
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> usize {
-    debug_println!("\n[API] GetGPUDescriptorHandleForHeapStart({:p})", heap_ptr);
-
-    if heap_ptr.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
-        let handle = heap.GetGPUDescriptorHandleForHeapStart();
-        let result = handle.ptr as usize;
-        debug_println!("[API] GetGPUDescriptorHandleForHeapStart returning: {:#x}", result);
-        std::mem::forget(heap);
-        result
-    }
-}
-
-/* ==================== RENDER TARGET ==================== */
-#[no_mangle]
-pub unsafe extern "C" fn set_render_target(rtv: usize) {
-    debug_println!("\n[API] set_render_target({:#x})", rtv);
-
+pub extern "C" fn get_device() -> *mut c_void {
     let state = STATE.lock().unwrap();
-    if let Some(list) = &state.command_list {
-        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
-        list.OMSetRenderTargets(1, Some(&rtv_handle), false, None);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn clear_render_target(rtv: usize, color: *const f32) {
-    debug_println!("\n[API] clear_render_target({:#x})", rtv);
-
-    let state = STATE.lock().unwrap();
-    if let Some(list) = &state.command_list {
-        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
-        let color_array: [f32; 4] = if color.is_null() {
-            [0.0, 0.0, 0.0, 1.0]
-        } else {
-            let slice = std::slice::from_raw_parts(color, 4);
-            [slice[0], slice[1], slice[2], slice[3]]
-        };
-        list.ClearRenderTargetView(rtv_handle, &color_array, None);
+    match &state.device {
+        Some(device) => {
+            let ptr = device.as_raw();
+            std::mem::forget(device.clone());
+            ptr as *mut c_void
+        },
+        None => std::ptr::null_mut()
     }
 }
 
@@ -954,6 +892,21 @@ mod pso_mod {
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn set_render_target(rtv: usize) {
+    debug_println!("\n[API] set_render_target({:#x})", rtv);
+
+    let state = STATE.lock().unwrap();
+    if let Some(list) = &state.command_list {
+        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
+        list.OMSetRenderTargets(1, Some(&rtv_handle), false, None);
+        debug_println!("[API] Render target set");
+    } else {
+        debug_println!("[API] ERROR: No command list available");
+    }
+}
+
+
 /* ==================== VIEWS ==================== */
 mod view_mod {
     use super::*;
@@ -1279,8 +1232,10 @@ pub extern "C" fn create_descriptor_heap(
     device_ptr: *mut c_void,
     num_descriptors: u32,
     heap_type: u32,
+    shader_visible: bool,
 ) -> *mut c_void {
-    debug_println!("\n[API] create_descriptor_heap({}, type={})", num_descriptors, heap_type);
+    debug_println!("\n[API] create_descriptor_heap({}, type={}, shader_visible={})",
+                   num_descriptors, heap_type, shader_visible);
 
     unsafe {
         use ptr_utils::*;
@@ -1298,7 +1253,7 @@ pub extern "C" fn create_descriptor_heap(
             return ptr::null_mut();
         }
 
-        let heap = match heap_mod::create(&device, num_descriptors, heap_type) {
+        let heap = match heap_mod::create(&device, num_descriptors, heap_type, shader_visible) {
             Some(h) => h,
             None => return ptr::null_mut(),
         };
@@ -1308,6 +1263,42 @@ pub extern "C" fn create_descriptor_heap(
 
         debug_println!("[API] Heap created at {:p}", raw_ptr);
         raw_ptr as *mut c_void
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> usize {
+    debug_println!("\n[API] GetCPUDescriptorHandleForHeapStart({:p})", heap_ptr);
+
+    if heap_ptr.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
+        let handle = heap.GetCPUDescriptorHandleForHeapStart();
+        let result = handle.ptr as usize;
+        debug_println!("[API] GetCPUDescriptorHandleForHeapStart returning: {:#x}", result);
+        std::mem::forget(heap);
+        result
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> usize {
+    debug_println!("\n[API] GetGPUDescriptorHandleForHeapStart({:p})", heap_ptr);
+
+    if heap_ptr.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
+        let handle = heap.GetGPUDescriptorHandleForHeapStart();
+        let result = handle.ptr as usize;
+        debug_println!("[API] GetGPUDescriptorHandleForHeapStart returning: {:#x}", result);
+        std::mem::forget(heap);
+        result
     }
 }
 
@@ -1626,112 +1617,26 @@ pub extern "C" fn create_graphics_ps(
             }
         };
 
-        let input_elements = [
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR("POSITION\0".as_ptr() as *const u8),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: D3D12_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR("NORMAL\0".as_ptr() as *const u8),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: D3D12_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR("TEXCOORD\0".as_ptr() as *const u8),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: D3D12_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-        ];
-
-        let input_layout = D3D12_INPUT_LAYOUT_DESC {
-            pInputElementDescs: input_elements.as_ptr(),
-            NumElements: input_elements.len() as u32,
-        };
-        println!("[API] Input layout created with {} elements", input_elements.len());
-
-        let mut pso_desc = std::mem::zeroed::<D3D12_GRAPHICS_PIPELINE_STATE_DESC>();
-
-        pso_desc.pRootSignature = ManuallyDrop::new(Some(root_sig));
-        pso_desc.VS = D3D12_SHADER_BYTECODE {
-            pShaderBytecode: vs_blob.GetBufferPointer(),
-            BytecodeLength: vs_blob.GetBufferSize(),
-        };
-        pso_desc.PS = D3D12_SHADER_BYTECODE {
-            pShaderBytecode: ps_blob.GetBufferPointer(),
-            BytecodeLength: ps_blob.GetBufferSize(),
-        };
-        pso_desc.BlendState = D3D12_BLEND_DESC {
-            AlphaToCoverageEnable: FALSE,
-            IndependentBlendEnable: FALSE,
-            RenderTarget: [D3D12_RENDER_TARGET_BLEND_DESC {
-                BlendEnable: FALSE,
-                LogicOpEnable: FALSE,
-                SrcBlend: D3D12_BLEND_ONE,
-                DestBlend: D3D12_BLEND_ZERO,
-                BlendOp: D3D12_BLEND_OP_ADD,
-                SrcBlendAlpha: D3D12_BLEND_ONE,
-                DestBlendAlpha: D3D12_BLEND_ZERO,
-                BlendOpAlpha: D3D12_BLEND_OP_ADD,
-                LogicOp: D3D12_LOGIC_OP_NOOP,
-                RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
-            }; 8],
-        };
-        pso_desc.SampleMask = u32::MAX;
-        pso_desc.RasterizerState = D3D12_RASTERIZER_DESC {
-            FillMode: D3D12_FILL_MODE_SOLID,
-            CullMode: D3D12_CULL_MODE_BACK,
-            FrontCounterClockwise: FALSE,
-            DepthBias: 0,
-            DepthBiasClamp: 0.0,
-            SlopeScaledDepthBias: 0.0,
-            DepthClipEnable: TRUE,
-            MultisampleEnable: FALSE,
-            AntialiasedLineEnable: FALSE,
-            ForcedSampleCount: 0,
-            ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
-        };
-        pso_desc.DepthStencilState = D3D12_DEPTH_STENCIL_DESC {
-            DepthEnable: FALSE,
-            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
-            DepthFunc: D3D12_COMPARISON_FUNC_LESS,
-            StencilEnable: FALSE,
-            StencilReadMask: D3D12_DEFAULT_STENCIL_READ_MASK as u8,
-            StencilWriteMask: D3D12_DEFAULT_STENCIL_WRITE_MASK as u8,
-            FrontFace: D3D12_DEPTH_STENCILOP_DESC::default(),
-            BackFace: D3D12_DEPTH_STENCILOP_DESC::default(),
-        };
-        pso_desc.InputLayout = input_layout;
-        pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pso_desc.NumRenderTargets = 1;
-        pso_desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        pso_desc.SampleDesc = DXGI_SAMPLE_DESC { Count: 1, Quality: 0 };
-        pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-
-        match device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&pso_desc) {
-            Ok(pso) => {
-                let raw_ptr = pso.as_raw();
-                std::mem::forget(pso);
-                println!("[API] PSO created successfully at {:p}", raw_ptr);
-                raw_ptr as *mut c_void
-            },
-            Err(e) => {
-                println!("[API] Failed to create PSO: HRESULT 0x{:X}", e.code().0);
-                ptr::null_mut()
+        let pso = match pso_mod::create_graphics(&device, &root_sig, &vs_blob, &ps_blob) {
+            Some(p) => p,
+            None => {
+                println!("[API] ERROR: Failed to create PSO");
+                return ptr::null_mut();
             }
-        }
+        };
+
+        let raw_ptr = pso.as_raw();
+
+        // ВАЖНО: Не вызываем никаких дополнительных функций!
+        // Просто забываем все временные объекты
+        std::mem::forget(pso);
+        std::mem::forget(device);
+        std::mem::forget(vs_blob);
+        std::mem::forget(ps_blob);
+        std::mem::forget(root_sig);
+
+        println!("[API] PSO created successfully at {:p}", raw_ptr);
+        raw_ptr as *mut c_void
     }
 }
 
@@ -1749,12 +1654,15 @@ pub unsafe extern "C" fn begin_frame() {
         )
     };
 
-    if let Some(ref allocator) = allocator {
+    if let (Some(allocator), Some(list)) = (allocator, list) {
         let _ = allocator.Reset();
-    }
+        let _ = list.Reset(&allocator, None);
+        debug_println!("[API] Command list reset");
 
-    if let (Some(ref allocator), Some(ref list)) = (allocator.as_ref(), list.as_ref()) {
-        let _ = list.Reset(*allocator, None);
+        // Сохраняем обратно
+        let mut state = STATE.lock().unwrap();
+        state.command_allocator = Some(allocator);
+        state.command_list = Some(list);
     }
 }
 
@@ -1864,24 +1772,29 @@ pub unsafe extern "C" fn set_vertex_buffers(vertex_buffer: *mut c_void, index_bu
     if let Some(list) = &state.command_list {
         if !vertex_buffer.is_null() {
             if let Some(buffer) = as_resource(vertex_buffer) {
+                // Получаем реальный размер буфера
+                let desc = buffer.GetDesc();
                 let view = D3D12_VERTEX_BUFFER_VIEW {
                     BufferLocation: buffer.GetGPUVirtualAddress(),
-                    SizeInBytes: 1024 * 1024,
-                    StrideInBytes: 32,
+                    SizeInBytes: desc.Width as u32,  // Реальный размер
+                    StrideInBytes: 12,  // 3 * 4 bytes для float32 (позиция x,y,z)
                 };
                 list.IASetVertexBuffers(0, Some(&[view]));
+                debug_println!("[API] Vertex buffer set: size={}, stride=12", desc.Width);
                 std::mem::forget(buffer);
             }
         }
 
         if !index_buffer.is_null() {
             if let Some(buffer) = as_resource(index_buffer) {
+                let desc = buffer.GetDesc();
                 let view = D3D12_INDEX_BUFFER_VIEW {
                     BufferLocation: buffer.GetGPUVirtualAddress(),
-                    SizeInBytes: 1024 * 1024,
+                    SizeInBytes: desc.Width as u32,  // Реальный размер
                     Format: DXGI_FORMAT_R32_UINT,
                 };
                 list.IASetIndexBuffer(Some(&view));
+                debug_println!("[API] Index buffer set: size={}", desc.Width);
                 std::mem::forget(buffer);
             }
         }
@@ -1917,8 +1830,14 @@ pub unsafe extern "C" fn draw_indexed_instanced(
 
     let state = STATE.lock().unwrap();
     if let Some(list) = &state.command_list {
+        // Убеждаемся, что topology установлен
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        // Рисуем
         list.DrawIndexedInstanced(index_count, instance_count, start_index, base_vertex, start_instance);
+        debug_println!("[API] Draw call executed");
+    } else {
+        debug_println!("[API] ERROR: No command list!");
     }
 }
 
@@ -1967,4 +1886,329 @@ pub extern "C" fn get_rtv_descriptor_size() -> u32 {
 #[no_mangle]
 pub extern "C" fn get_dsv_descriptor_size() -> u32 {
     STATE.lock().unwrap().dsv_descriptor_size
+}
+
+/* ==================== ОСНОВНЫЕ ФУНКЦИИ ДЛЯ PYTHON API ==================== */
+
+#[no_mangle]
+pub extern "C" fn init_device(hwnd: usize, width: u32, height: u32) -> bool {
+    println!("\n[API] init_device() called - ИНИЦИАЛИЗАЦИЯ УСТРОЙСТВА");
+    println!("  hwnd: {:#x}", hwnd);
+    println!("  width: {}, height: {}", width, height);
+
+    unsafe {
+        // Создаем устройство
+        println!("[API] Creating device...");
+        let device = match device_mod::create_d3d12_device() {
+            Some(d) => {
+                println!("[API] Device created successfully");
+                d
+            },
+            None => {
+                println!("[API] FAILED to create device");
+                return false;
+            }
+        };
+
+        // Получаем размеры дескрипторов ДО перемещения device
+        let rtv_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        let dsv_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        let cbv_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        // Создаем корневую сигнатуру
+        println!("[API] Creating root signature...");
+        let root_sig = match root_sig::create_graphics_root_signature(&device) {
+            Some(s) => {
+                println!("[API] Root signature created successfully");
+                s
+            },
+            None => {
+                println!("[API] FAILED to create root signature");
+                return false;
+            }
+        };
+
+        // Создаем командную очередь
+        println!("[API] Creating command queue...");
+        let queue = match queue_mod::create(&device) {
+            Some(q) => {
+                println!("[API] Command queue created successfully");
+                q
+            },
+            None => {
+                println!("[API] FAILED to create command queue");
+                return false;
+            }
+        };
+
+        // Создаем командный аллокатор
+        println!("[API] Creating command allocator...");
+        let allocator = match command_mod::create_allocator(&device) {
+            Some(a) => {
+                println!("[API] Command allocator created successfully");
+                a
+            },
+            None => {
+                println!("[API] FAILED to create command allocator");
+                return false;
+            }
+        };
+
+        // Создаем командный список
+        println!("[API] Creating command list...");
+        let command_list = match command_mod::create_command_list(&device, &allocator, None) {
+            Some(l) => {
+                println!("[API] Command list created successfully");
+                l
+            },
+            None => {
+                println!("[API] FAILED to create command list");
+                return false;
+            }
+        };
+
+        // Создаем swap chain
+        println!("[API] Creating swap chain...");
+        let swap_chain = match swapchain_mod::create(&queue, hwnd, width, height) {
+            Some(s) => {
+                println!("[API] Swap chain created successfully");
+                s
+            },
+            None => {
+                println!("[API] FAILED to create swap chain");
+                return false;
+            }
+        };
+
+        // Создаем fence для синхронизации
+        println!("[API] Creating fence...");
+        let fence = match device.CreateFence(0, D3D12_FENCE_FLAG_NONE) {
+            Ok(f) => {
+                println!("[API] Fence created successfully");
+                f
+            },
+            Err(e) => {
+                println!("[API] FAILED to create fence: HRESULT 0x{:X}", e.code().0);
+                return false;
+            }
+        };
+
+        // Создаем RTV heap
+        println!("[API] Creating RTV heap...");
+        let rtv_heap = match heap_mod::create(&device, 2, 0, false) {
+            Some(h) => {
+                println!("[API] RTV heap created successfully");
+                h
+            },
+            None => {
+                println!("[API] FAILED to create RTV heap");
+                return false;
+            }
+        };
+
+        // Получаем размер RTV дескриптора
+        let rtv_handle_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+        // Сохраняем все в глобальное состояние
+        println!("[API] Saving state...");
+        {
+            let mut state = STATE.lock().unwrap();
+            state.device = Some(device);
+            state.command_queue = Some(queue);
+            state.swap_chain = Some(swap_chain);
+            state.command_allocator = Some(allocator);
+            state.command_list = Some(command_list);
+            state.fence = Some(fence);
+            state.root_signature = Some(root_sig);
+            state.rtv_heap = Some(rtv_heap);
+            state.rtv_handle_size = rtv_handle_size;
+
+            // Используем сохраненные значения
+            state.rtv_descriptor_size = rtv_size;
+            state.dsv_descriptor_size = dsv_size;
+            state.cbv_srv_uav_descriptor_size = cbv_size;
+
+            println!("[API] Descriptor sizes: RTV={}, DSV={}, CBV={}",
+                     rtv_size, dsv_size, cbv_size);
+        }
+
+        println!("[API] init_device() - УСПЕШНО");
+        true
+    }
+}
+
+// Функция render_frame УДАЛЕНА - используем begin_frame/end_frame
+
+#[no_mangle]
+pub unsafe extern "C" fn end_frame() -> bool {
+    println!("\n[API] end_frame() called");
+
+    let (device, list, queue, swap_chain, rtv_heap, rtv_handle_size, frame_index) = {
+        let state = STATE.lock().unwrap();
+        (
+            state.device.clone(),
+            state.command_list.clone(),
+            state.command_queue.clone(),
+            state.swap_chain.clone(),
+            state.rtv_heap.clone(),
+            state.rtv_handle_size,
+            state.frame_index,
+        )
+    };
+
+    if device.is_none() || list.is_none() || queue.is_none() || swap_chain.is_none() || rtv_heap.is_none() {
+        println!("[API] end_frame: missing resources");
+        return false;
+    }
+
+    let device = device.unwrap();
+    let list = list.unwrap();
+    let queue = queue.unwrap();
+    let swap_chain = swap_chain.unwrap();
+    let rtv_heap = rtv_heap.unwrap();
+
+    // ПОЛУЧАЕМ BACK BUFFER
+    let back_buffer: ID3D12Resource = match swap_chain.GetBuffer(frame_index) {
+        Ok(buffer) => buffer,
+        Err(e) => {
+            println!("[API] Failed to get back buffer: HRESULT 0x{:X}", e.code().0);
+            return false;
+        }
+    };
+
+    // СОЗДАЕМ RTV ДЛЯ BACK BUFFER
+    let rtv_handle = rtv_heap.GetCPUDescriptorHandleForHeapStart();
+    let rtv_handle_offset = D3D12_CPU_DESCRIPTOR_HANDLE {
+        ptr: rtv_handle.ptr + (frame_index as usize * rtv_handle_size as usize)
+    };
+    device.CreateRenderTargetView(&back_buffer, None, rtv_handle_offset);
+
+    // ПЕРЕХОД СОСТОЯНИЯ ДЛЯ ЗАПИСИ
+    let transition1 = D3D12_RESOURCE_TRANSITION_BARRIER {
+        pResource: ManuallyDrop::new(Some(back_buffer.clone())),
+        Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+        StateBefore: D3D12_RESOURCE_STATE_PRESENT,
+        StateAfter: D3D12_RESOURCE_STATE_RENDER_TARGET,
+    };
+
+    let barrier1 = D3D12_RESOURCE_BARRIER {
+        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+            Transition: ManuallyDrop::new(transition1),
+        },
+    };
+    list.ResourceBarrier(&[barrier1]);
+
+    // УСТАНАВЛИВАЕМ RENDER TARGET
+    list.OMSetRenderTargets(1, Some(&rtv_handle_offset), false, None);
+
+    // УСТАНАВЛИВАЕМ VIEWPORT
+    let viewport = D3D12_VIEWPORT {
+        TopLeftX: 0.0,
+        TopLeftY: 0.0,
+        Width: 800.0,
+        Height: 600.0,
+        MinDepth: 0.0,
+        MaxDepth: 1.0,
+    };
+    list.RSSetViewports(&[viewport]);
+
+    // УСТАНАВЛИВАЕМ SCISSOR RECT
+    let scissor_rect = RECT { left: 0, top: 0, right: 800, bottom: 600 };
+    list.RSSetScissorRects(&[scissor_rect]);
+
+    // ОЧИЩАЕМ ЭКРАН (ЧЕРНЫЙ) - ТЕПЕРЬ ДО КОМАНД ОТРИСОВКИ
+    let clear_color = [0.0, 0.0, 0.0, 1.0];
+    list.ClearRenderTargetView(rtv_handle_offset, &clear_color, None);
+
+    // ЗДЕСЬ БУДУТ КОМАНДЫ ОТРИСОВКИ (УЖЕ ДОБАВЛЕНЫ ЧЕРЕЗ Python)
+    // ВАЖНО: set_graphics_pipeline, set_vertex_buffers, draw_indexed_instanced
+    // были вызваны ДО end_frame, поэтому они уже в командном списке
+
+    // ПЕРЕХОД СОСТОЯНИЯ ДЛЯ ПРЕЗЕНТАЦИИ
+    let transition2 = D3D12_RESOURCE_TRANSITION_BARRIER {
+        pResource: ManuallyDrop::new(Some(back_buffer.clone())),
+        Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+        StateBefore: D3D12_RESOURCE_STATE_RENDER_TARGET,
+        StateAfter: D3D12_RESOURCE_STATE_PRESENT,
+    };
+
+    let barrier2 = D3D12_RESOURCE_BARRIER {
+        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+            Transition: ManuallyDrop::new(transition2),
+        },
+    };
+    list.ResourceBarrier(&[barrier2]);
+
+    // ЗАКРЫВАЕМ КОМАНДНЫЙ СПИСОК
+    if let Err(e) = list.Close() {
+        println!("[API] Failed to close command list: {:?}", e);
+        return false;
+    }
+
+    // ВЫПОЛНЯЕМ КОМАНДЫ
+    let raw_ptr = list.as_raw() as *mut c_void;
+    let cmd_list = ID3D12CommandList::from_raw(raw_ptr);
+    let lists = [Some(cmd_list)];
+    queue.ExecuteCommandLists(&lists);
+    println!("[API] Command list executed");
+
+    // ПРЕЗЕНТУЕМ
+    let hr = swap_chain.Present(1, 0);
+    if hr.is_err() {
+        println!("[API] Present failed");
+        return false;
+    }
+
+    // ОБНОВЛЯЕМ FRAME INDEX
+    {
+        let mut state = STATE.lock().unwrap();
+        state.frame_index = swap_chain.GetCurrentBackBufferIndex();
+    }
+
+    std::mem::forget(device);
+    std::mem::forget(list);
+    std::mem::forget(queue);
+    std::mem::forget(swap_chain);
+    std::mem::forget(rtv_heap);
+    std::mem::forget(back_buffer);
+
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn cleanup() {
+    println!("\n[API] cleanup() called - ОЧИСТКА РЕСУРСОВ");
+
+    unsafe {
+        let mut state = STATE.lock().unwrap();
+
+        // Освобождаем все ресурсы в правильном порядке
+        state.command_list = None;
+        state.command_allocator = None;
+        state.swap_chain = None;
+        state.command_queue = None;
+        state.root_signature = None;
+        state.fence = None;
+        state.rtv_heap = None;
+        state.device = None;
+
+        println!("[API] cleanup() - завершено");
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_last_error() -> *const std::os::raw::c_char {
+    static mut ERROR_BUFFER: [u8; 256] = [0; 256];
+    unsafe {
+        let error = "No error\0";
+        let bytes = error.as_bytes();
+        for (i, &byte) in bytes.iter().enumerate() {
+            ERROR_BUFFER[i] = byte;
+        }
+        ERROR_BUFFER.as_ptr() as *const std::os::raw::c_char
+    }
 }
