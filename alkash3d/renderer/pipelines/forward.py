@@ -1,10 +1,10 @@
+# alkash3d/renderer/pipelines/forward.py
 # ------------------------------------------------------------
 # Forward‑renderer с корректным созданием белой 1×1‑текстуры
 # (UPLOAD‑heap → UpdateTexture) и без «перезаписи» CBV‑слота.
 # ------------------------------------------------------------
 
 import numpy as np
-
 from alkash3d.renderer.shader import Shader
 from alkash3d.utils import logger
 from alkash3d.graphics import select_backend
@@ -37,29 +37,37 @@ class ForwardRenderer:
 
     def _create_white_placeholder(self):
         """Создать 1×1‑белую текстуру и SRV."""
+        # Белый пиксель – 0xFF 0xFF 0xFF 0xFF
         white_pixel = (255).to_bytes(1, "little") * 4
 
+        # 1) создаём буфер‑загрузку (UPLOAD‑heap)
         upload_buf = self.backend.create_buffer(white_pixel, usage="upload")
 
+        # 2) собственно создаём текстуру (DEFAULT‑heap)
         self.white_tex = self.backend.create_texture(
-            data=None,
+            data=None,          # никаких начальных данных – сразу будем копировать
             w=1,
             h=1,
             fmt="RGBA8",
         )
 
+        # 3) копируем данные из upload‑буфера в текстуру
         self.backend.update_texture(self.white_tex, white_pixel, w=1, h=1)
 
+        # 4) SRV‑дескриптор
         srv_idx = self.backend.cbv_srv_uav_heap.next_free()
         cpu_handle = self.backend.cbv_srv_uav_heap.get_cpu_handle(srv_idx)
         self.backend.create_shader_resource_view(self.white_tex, cpu_handle)
 
+        # 5) сохраняем GPU‑хендл для быстрых bind‑ов в материалах
         self.default_srv_gpu = self.backend.cbv_srv_uav_heap.get_gpu_handle(srv_idx)
 
+    # ------------------------------------------------------------
     def resize(self, w: int, h: int) -> None:
         self.backend.set_viewport(0, 0, w, h)
         self.backend.set_scissor_rect(0, 0, w, h)
 
+    # ------------------------------------------------------------
     def render(self, scene, camera) -> None:
         self.backend.begin_frame()
         self.backend.set_viewport(0, 0,
@@ -84,11 +92,12 @@ class ForwardRenderer:
             if not hasattr(node, "draw"):
                 continue
 
+            # Если у узла нет собственного материала – привязываем placeholder
             if hasattr(node, "material"):
                 node.material.bind(self.backend)
             else:
-                # НЕ меняем слот 0 – он уже указывает на CBV
-                pass
+                # Слот 0 уже содержит CBV, а слот 1 – наш белый SRV.
+                self.backend.set_root_descriptor_table(1, self.default_srv_gpu)
 
             self.shader.set_uniform_mat4("uModel", node.get_world_matrix().to_gl())
 
