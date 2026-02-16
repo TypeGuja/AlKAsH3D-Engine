@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 Полнофункциональный DirectX 12‑бэкенд.
+
 * При отсутствии нативной DLL переходим в stub‑режим.
-* Добавлен метод `recreate_swapchain_rtv()` – заново создает RTV‑дескрипторы
+* Добавлен метод `recreate_swapchain_rtv()` – заново создаёт RTV‑дескрипторы
   после замены `rtv_heap`.
-* `create_texture()` теперь **не вызывает `Map`** для ресурсов в `DEFAULT`‑heap – данные копируются через `dx.update_texture`,
-  тем самым устраняя ошибку `HRESULT 0x80070057`.
+* `create_texture()` теперь **не делает Map** для ресурсов в `DEFAULT`‑heap –
+  данные копируются через `dx.update_texture`, устраняя ошибку
+  `HRESULT 0x80070057`.
 """
 
 from __future__ import annotations
@@ -19,17 +21,22 @@ from alkash3d.graphics.utils import d3d12_wrapper as dx
 from alkash3d.graphics.utils.descriptor_heap import DescriptorHeap
 from alkash3d.utils.logger import logger
 
+
 class DX12Texture:
-    """Обёртка над ID3D12Resource*."""
+    """Объект‑обёртка над ID3D12Resource*."""
     __slots__ = ("ptr", "_srv_gpu")
 
     def __init__(self, ptr: ctypes.c_void_p):
         self.ptr = ptr
-        self._srv_gpu = None
+        self._srv_gpu: Optional[int] = None
+
 
 class DX12Backend(GraphicsBackend):
     """DirectX 12‑бэкенд с автоматическим переходом в stub‑режим."""
 
+    # -----------------------------------------------------------------
+    # Инициализация
+    # -----------------------------------------------------------------
     def __init__(self) -> None:
         self.device: Optional[ctypes.c_void_p] = None
         self.command_queue: Optional[ctypes.c_void_p] = None
@@ -51,9 +58,10 @@ class DX12Backend(GraphicsBackend):
         self._height: int = 0
 
     # -----------------------------------------------------------------
-    #   Private helpers
+    # Внутренние вспомогательные методы
     # -----------------------------------------------------------------
     def _reset_viewport_and_scissor(self, w: int, h: int) -> None:
+        """Установить начальные параметры Viewport/Scissor и отразить их в драйвере."""
         self.viewport = (0, 0, w, h)
         self.scissor = (0, 0, w, h)
 
@@ -62,7 +70,10 @@ class DX12Backend(GraphicsBackend):
             self.set_scissor_rect(0, 0, w, h)
 
     def _create_swapchain_rtv(self) -> None:
-        """Создать RTV‑дескрипторы для back‑buffer‑ов swap‑chain."""
+        """
+        Создать RTV‑дескрипторы для всех back‑buffer‑ов swap‑chain.
+        Вызывается сразу после создания/пересоздания swap‑chain.
+        """
         if not self.swap_chain or not self.swap_chain.value:
             logger.debug("[DX12Backend] No swap chain – RTV creation skipped")
             return
@@ -83,7 +94,7 @@ class DX12Backend(GraphicsBackend):
         logger.debug(f"[DX12Backend] Created {len(self._rtv_cpu_handles)} RTV(s)")
 
     # -----------------------------------------------------------------
-    #   Public API – device / swap‑chain creation
+    # Публичный API – инициализация устройства и swap‑chain
     # -----------------------------------------------------------------
     def init_device(self, hwnd: int, width: int, height: int) -> None:
         logger.info("[DX12Backend] Initialising DirectX 12 device")
@@ -92,22 +103,23 @@ class DX12Backend(GraphicsBackend):
         self._height = height
 
         try:
+            # ---------- Device ----------
             device_ptr = dx.create_device()
             if not device_ptr or not device_ptr.value:
                 raise RuntimeError("Failed to create device – null pointer")
             self.device = device_ptr
             logger.debug(f"[DX12Backend] Device created: {hex(self.device.value)}")
 
+            # ---------- Command queue ----------
             queue_ptr = dx.create_command_queue(self.device)
             if not queue_ptr or not queue_ptr.value:
                 raise RuntimeError("Failed to create command queue")
             self.command_queue = queue_ptr
             logger.debug(f"[DX12Backend] Command queue created: {hex(self.command_queue.value)}")
 
+            # ---------- Swap chain ----------
             if hwnd != 0:
-                swap_ptr = dx.create_swap_chain(
-                    self.command_queue, hwnd, width, height
-                )
+                swap_ptr = dx.create_swap_chain(self.command_queue, hwnd, width, height)
                 if not swap_ptr or not swap_ptr.value:
                     logger.warning("[DX12Backend] Swap chain creation failed")
                     self.swap_chain = None
@@ -120,6 +132,7 @@ class DX12Backend(GraphicsBackend):
 
             self._reset_viewport_and_scissor(width, height)
 
+            # ---------- RTV‑heap (по‑умолчанию 2 + 1) ----------
             self.rtv_heap = DescriptorHeap(
                 device=self.device,
                 num_descriptors=dx.SWAP_CHAIN_BUFFER_COUNT + 1,
@@ -127,6 +140,7 @@ class DX12Backend(GraphicsBackend):
             )
             logger.debug("[DX12Backend] RTV heap created")
 
+            # ---------- CBV/SRV/UAV‑heap ----------
             try:
                 self.cbv_srv_uav_heap = DescriptorHeap(
                     device=self.device,
@@ -135,18 +149,17 @@ class DX12Backend(GraphicsBackend):
                 )
                 logger.debug("[DX12Backend] CBV/SRV/UAV heap (1024) created")
             except Exception as e:
-                logger.warning(f"[DX12Backend] 1024‑descriptor heap failed ({e}); trying 256")
-                try:
-                    self.cbv_srv_uav_heap = DescriptorHeap(
-                        device=self.device,
-                        num_descriptors=256,
-                        heap_type="cbv_srv_uav",
-                    )
-                    logger.debug("[DX12Backend] CBV/SRV/UAV heap (256) created")
-                except Exception as e2:
-                    logger.error(f"[DX12Backend] Even 256‑descriptor heap failed ({e2}) – stub mode")
-                    self.cbv_srv_uav_heap = None
+                logger.warning(
+                    f"[DX12Backend] 1024‑descriptor heap failed ({e}); trying 256"
+                )
+                self.cbv_srv_uav_heap = DescriptorHeap(
+                    device=self.device,
+                    num_descriptors=256,
+                    heap_type="cbv_srv_uav",
+                )
+                logger.debug("[DX12Backend] CBV/SRV/UAV heap (256) created")
 
+            # ---------- Создаём RTV‑дескрипторы (если есть swap‑chain) ----------
             if self.rtv_heap and self.swap_chain:
                 self._create_swapchain_rtv()
             else:
@@ -161,7 +174,7 @@ class DX12Backend(GraphicsBackend):
             self.device = ctypes.c_void_p(0xDEADBEEF)
 
     # -----------------------------------------------------------------
-    #   Resize
+    # Resize
     # -----------------------------------------------------------------
     def resize(self, width: int, height: int) -> None:
         logger.info(f"[DX12Backend] Resize {width}x{height}")
@@ -177,18 +190,27 @@ class DX12Backend(GraphicsBackend):
                 self._in_stub_mode = True
 
     # -----------------------------------------------------------------
-    #   Present
+    # Present
     # -----------------------------------------------------------------
     def present(self) -> None:
+        """Present с учётом текущего флага V‑sync."""
         if not self._in_stub_mode and self.swap_chain and self.swap_chain.value:
             try:
-                dx.present_swap_chain(self.swap_chain, sync_interval=1)
+                sync = 1 if getattr(self, "_vsync_enabled", True) else 0
+                dx.present_swap_chain(self.swap_chain, sync_interval=sync)
             except Exception as e:
                 logger.error(f"[DX12Backend] Present failed: {e}")
                 self._in_stub_mode = True
 
     # -----------------------------------------------------------------
-    #   Shaders
+    # V‑sync (stub)
+    # -----------------------------------------------------------------
+    def set_vsync(self, enable: bool) -> None:
+        self._vsync_enabled = enable
+        # Реальная работа делается в `present`.
+
+    # -----------------------------------------------------------------
+    # Шейдеры
     # -----------------------------------------------------------------
     def compile_shader(self, shader_type: str, source_path: str) -> int:
         if self._in_stub_mode:
@@ -203,7 +225,7 @@ class DX12Backend(GraphicsBackend):
             return 0x12345678
 
         try:
-            result = dx.compile_hlsl(source_path, entry, profile)
+            result = dx.compile_shader(source_path, entry, profile)
             logger.debug(f"[DX12Backend] Shader compiled ({shader_type}) – {hex(result)}")
             return result
         except Exception as e:
@@ -220,7 +242,7 @@ class DX12Backend(GraphicsBackend):
             ps_ptr = ctypes.c_void_p(ps_blob)
             pso = dx.create_graphics_ps(self.device, vs_ptr, ps_ptr)
 
-            if pso and hasattr(pso, "value") and pso.value:
+            if pso and getattr(pso, "value", None):
                 logger.debug(f"[DX12Backend] PSO created: {hex(pso.value)}")
                 return pso.value
             else:
@@ -238,7 +260,7 @@ class DX12Backend(GraphicsBackend):
                 logger.debug(f"[DX12Backend] Set pipeline failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Buffers
+    # Буферы
     # -----------------------------------------------------------------
     def create_buffer(self, data: bytes, usage: str = "default") -> Any:
         if self._in_stub_mode or not self.device or not self.device.value:
@@ -256,22 +278,29 @@ class DX12Backend(GraphicsBackend):
         if self._in_stub_mode:
             return
         try:
-            dx.update_subresource(buffer, data)
+            dx.update_subresource(_to_cvoid(buffer), data)
         except Exception as e:
             logger.debug(f"[DX12Backend] Buffer update failed: {e}")
 
     def create_constant_buffer(self, data: bytes) -> Any:
+        """Создаём const‑buffer (используется в Shader)."""
         return self.create_buffer(data, usage="constant")
 
     # -----------------------------------------------------------------
-    #   Textures
+    # Текстуры
     # -----------------------------------------------------------------
-    def create_texture(self,
+    def create_texture(
+        self,
         data: bytes | None,
         w: int,
         h: int,
         fmt: str = "RGBA8",
     ) -> DX12Texture:
+        """
+        Создать 2‑D текстуру.
+        Параметр ``fmt`` может быть как ``str``, так и ``bytes`` – в
+        последнем случае он будет декодирован в UTF‑8.
+        """
         logger.debug(f"[DX12Backend] Creating texture {w}×{h} fmt={fmt}")
 
         if self._in_stub_mode or not self.device or not self.device.value:
@@ -280,19 +309,29 @@ class DX12Backend(GraphicsBackend):
             tex._srv_gpu = 0xDEADDEAD
             return tex
 
+        # -----------------------------------------------------------------
+        # Приводим fmt к строке, поддерживаем bytes
+        # -----------------------------------------------------------------
+        if isinstance(fmt, bytes):
+            fmt_str = fmt.decode("utf-8", errors="ignore")
+        else:
+            fmt_str = str(fmt)
+
+        fmt_bytes = fmt_str.lower().encode("utf-8")
+        # -----------------------------------------------------------------
+
         try:
-            fmt_bytes = fmt.lower().encode("utf-8")
-            tex_ptr = dx.create_texture_from_memory(
-                self.device, None, w, h, fmt_bytes
-            )
+            tex_ptr = dx.create_texture_from_memory(self.device, None, w, h, fmt_bytes)
             if not tex_ptr or not tex_ptr.value:
                 raise RuntimeError("Native texture creation returned nullptr")
 
             tex = DX12Texture(tex_ptr)
 
+            # Если заданы данные – сразу копируем их в текстуру
             if data is not None:
                 self.update_texture(tex, data, w, h)
 
+            # SRV‑дескриптор (если у бэкенда есть CBV/SRV/UAV‑heap)
             if self.cbv_srv_uav_heap:
                 idx = self.cbv_srv_uav_heap.next_free()
                 cpu_handle = self.cbv_srv_uav_heap.get_cpu_handle(idx)
@@ -311,9 +350,10 @@ class DX12Backend(GraphicsBackend):
             return tex
 
     # -----------------------------------------------------------------
-    #   Descriptor heaps
+    # Дескриптор‑хипы
     # -----------------------------------------------------------------
-    def create_descriptor_heap(self,
+    def create_descriptor_heap(
+        self,
         num_descriptors: int,
         heap_type: str = "cbv_srv_uav",
     ) -> Any:
@@ -330,7 +370,7 @@ class DX12Backend(GraphicsBackend):
         return heap.get_gpu_handle(index)
 
     # -----------------------------------------------------------------
-    #   SRV / RTV creation
+    # SRV / RTV
     # -----------------------------------------------------------------
     def create_shader_resource_view(self, resource: Any, cpu_handle) -> None:
         if self._in_stub_mode:
@@ -357,7 +397,7 @@ class DX12Backend(GraphicsBackend):
             logger.debug(f"[DX12Backend] RTV creation failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Root‑descriptor‑table
+    # Root‑descriptor‑table
     # -----------------------------------------------------------------
     def set_root_descriptor_table(self, root_index: int, gpu_handle: Any) -> None:
         if not self._in_stub_mode:
@@ -374,12 +414,12 @@ class DX12Backend(GraphicsBackend):
                 logger.debug(f"[DX12Backend] Set descriptor heaps failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Render‑target handling
+    # Render‑targets
     # -----------------------------------------------------------------
     def set_render_target(self, rtv: Any) -> None:
         if not self._in_stub_mode:
             try:
-                dx.set_render_target(rtv)
+                dx.set_render_target(ctypes.c_uintptr(rtv))
             except Exception as e:
                 logger.debug(f"[DX12Backend] Set render target failed: {e}")
 
@@ -390,7 +430,8 @@ class DX12Backend(GraphicsBackend):
             except Exception as e:
                 logger.debug(f"[DX12Backend] Set render targets failed: {e}")
 
-    def clear_render_target(self,
+    def clear_render_target(
+        self,
         rtv: Any,
         color: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
     ) -> None:
@@ -401,10 +442,14 @@ class DX12Backend(GraphicsBackend):
                 logger.debug(f"[DX12Backend] Clear render target failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Viewport / Scissor
+    # Viewport / Scissor
     # -----------------------------------------------------------------
-    def set_viewport(self,
-        x: int, y: int, w: int, h: int,
+    def set_viewport(
+        self,
+        x: int,
+        y: int,
+        w: int,
+        h: int,
         min_depth: float = 0.0,
         max_depth: float = 1.0,
     ) -> None:
@@ -415,8 +460,12 @@ class DX12Backend(GraphicsBackend):
             except Exception as e:
                 logger.debug(f"[DX12Backend] Set viewport failed: {e}")
 
-    def set_scissor_rect(self,
-        left: int, top: int, right: int, bottom: int,
+    def set_scissor_rect(
+        self,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
     ) -> None:
         self.scissor = (left, top, right, bottom)
         if not self._in_stub_mode:
@@ -426,9 +475,10 @@ class DX12Backend(GraphicsBackend):
                 logger.debug(f"[DX12Backend] Set scissor rect failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Vertex / Index buffers & draw calls
+    # Vertex / Index buffers & draw‑calls
     # -----------------------------------------------------------------
-    def set_vertex_buffers(self,
+    def set_vertex_buffers(
+        self,
         vertex_buffer: Any,
         index_buffer: Optional[Any] = None,
     ) -> None:
@@ -438,17 +488,15 @@ class DX12Backend(GraphicsBackend):
             except Exception as e:
                 logger.debug(f"[DX12Backend] Set vertex buffers failed: {e}")
 
-    def draw(self, vertex_count: int, start_vertex: int = 0,
-             instance_count: int = 1) -> None:
+    def draw(self, vertex_count: int, start_vertex: int = 0, instance_count: int = 1) -> None:
         if not self._in_stub_mode:
             try:
-                dx.draw_instanced(
-                    vertex_count, instance_count, start_vertex, 0
-                )
+                dx.draw_instanced(vertex_count, instance_count, start_vertex, 0)
             except Exception as e:
                 logger.debug(f"[DX12Backend] Draw failed: {e}")
 
-    def draw_indexed(self,
+    def draw_indexed(
+        self,
         index_count: int,
         start_index: int = 0,
         base_vertex: int = 0,
@@ -466,7 +514,8 @@ class DX12Backend(GraphicsBackend):
             except Exception as e:
                 logger.debug(f"[DX12Backend] Draw indexed failed: {e}")
 
-    def draw_fullscreen_quad(self,
+    def draw_fullscreen_quad(
+        self,
         pso: Any,
         descriptor_heaps: Sequence[Any],
         root_parameters: Sequence[Tuple[int, Any]],
@@ -483,7 +532,7 @@ class DX12Backend(GraphicsBackend):
             logger.debug(f"[DX12Backend] Draw fullscreen quad failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Sync / Release
+    # Sync / Release
     # -----------------------------------------------------------------
     def wait_for_gpu(self) -> None:
         if not self._in_stub_mode:
@@ -495,22 +544,27 @@ class DX12Backend(GraphicsBackend):
     def release_resource(self, resource: Any) -> None:
         if resource and not self._in_stub_mode:
             try:
-                dx.release_resource(resource)
+                dx.release_resource(_to_cvoid(resource))
             except Exception as e:
                 logger.debug(f"[DX12Backend] Release resource failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Frame management
+    # Frame‑management
     # -----------------------------------------------------------------
     def enable_depth_test(self, enable: bool) -> None:
         self._depth_test_enabled = enable
-        logger.debug("[DX12Backend] Depth test %s (stub)",
-                     "enabled" if enable else "disabled")
+        logger.debug("[DX12Backend] Depth test %s (stub)", "enabled" if enable else "disabled")
+        # Реальная настройка пока не реализована.
 
     def begin_frame(self) -> None:
         logger.debug("[DX12Backend] begin_frame")
-        # Reset‑allocator/command‑list делается в Rust‑модуле
-        pass
+        # Сбрасываем индексы дескриптор‑хипов каждый кадр,
+        # иначе они «набираются» и в итоге исчерпываются.
+        if self.rtv_heap:
+            self.rtv_heap.reset()
+        if self.cbv_srv_uav_heap:
+            self.cbv_srv_uav_heap.reset()
+        # Реальный reset‑allocator/command‑list делаем в Rust‑модуле (begin_frame).
 
     def end_frame(self) -> None:
         logger.debug("[DX12Backend] end_frame – presenting")
@@ -528,7 +582,7 @@ class DX12Backend(GraphicsBackend):
         self._resources.clear()
 
     # -----------------------------------------------------------------
-    #   Текстурные апдейты (используется в forward‑renderer)
+    # Текстурные апдейты (используется в forward‑renderer)
     # -----------------------------------------------------------------
     def update_texture(self, tex: Any, data: bytes, w: int, h: int) -> None:
         if self._in_stub_mode:
@@ -540,7 +594,7 @@ class DX12Backend(GraphicsBackend):
             logger.debug(f"[DX12Backend] Update texture failed: {e}")
 
     # -----------------------------------------------------------------
-    #   Информационные методы
+    # Информационные методы
     # -----------------------------------------------------------------
     def get_frame_index(self) -> int:
         return dx.get_frame_index()
@@ -554,6 +608,19 @@ class DX12Backend(GraphicsBackend):
     def recreate_swapchain_rtv(self) -> None:
         """
         Нужно вызвать после того, как приложение заменило `self.rtv_heap`
-        на новый объект. Пересоздаёт RTV‑дескрипторы для текущей swap‑chain.
+        на новый объект.  Пересоздаёт RTV‑дескрипторы для текущей swap‑chain.
         """
         self._create_swapchain_rtv()
+
+
+# ----------------------------------------------------------------------
+# Вспомогательная функция – безопасный каст к c_void_p (используется в
+# некоторых местах, где может быть передано как int, так и c_void_p)
+# ----------------------------------------------------------------------
+def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
+    if isinstance(ptr, ctypes.c_void_p):
+        return ptr
+    if ptr is None:
+        return ctypes.c_void_p()
+    # int, bool, etc.
+    return ctypes.c_void_p(int(ptr))

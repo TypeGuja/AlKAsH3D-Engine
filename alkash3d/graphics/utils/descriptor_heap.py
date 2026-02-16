@@ -6,6 +6,7 @@ import ctypes
 from typing import Optional
 from . import d3d12_wrapper as dx
 
+
 class DescriptorHeap:
     """Wrapper for D3D12 descriptor heap."""
 
@@ -19,7 +20,7 @@ class DescriptorHeap:
         self,
         device: ctypes.c_void_p,
         num_descriptors: int,
-        heap_type: str = "cbv_srv_uav"
+        heap_type: str = "cbv_srv_uav",
     ):
         if heap_type not in self._TYPE_MAP:
             raise ValueError(f"Unsupported heap type: {heap_type}")
@@ -27,7 +28,7 @@ class DescriptorHeap:
         if not isinstance(device, ctypes.c_void_p):
             try:
                 device = ctypes.c_void_p(int(device))
-            except (TypeError, ValueError):
+            except Exception:
                 raise TypeError(f"device must be convertible to c_void_p, got {type(device)}")
         self.device = device
         self.num_descriptors = num_descriptors
@@ -38,15 +39,10 @@ class DescriptorHeap:
         self._heap = dx.create_descriptor_heap(
             device,
             num_descriptors,
-            heap_type_int
+            heap_type_int,
         )
-
-        if self._heap is None:
-            raise RuntimeError("create_descriptor_heap returned None")
-
-        heap_val = self._heap.value if hasattr(self._heap, 'value') else int(self._heap) if self._heap else 0
-        if heap_val == 0 or heap_val == 0xDEADBEEF:
-            raise RuntimeError(f"create_descriptor_heap returned invalid pointer: {hex(heap_val)}")
+        if not self._heap or not self._heap.value:
+            raise RuntimeError("create_descriptor_heap returned invalid pointer")
 
         self.cpu_start = dx.GetCPUDescriptorHandleForHeapStart(self._heap)
         if heap_type == "cbv_srv_uav":
@@ -87,4 +83,5 @@ class DescriptorHeap:
         return dx.offset_descriptor_handle(self.gpu_start, index)
 
     def reset(self) -> None:
+        """Сброс указателя – вызывается каждый кадр."""
         self._next_free = 0
