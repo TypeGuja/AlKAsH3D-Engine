@@ -1,206 +1,288 @@
-# 📦 AlKAsH3D_engine – Python 3‑D Engine  
+--- File: README.md ---
+# 📦 AlKAsH3D Engine – Python 3‑D Engine  
+
+## !WARNING!
+
+<img width="1494" height="916" alt="image" src="https://github.com/user-attachments/assets/aea29422-1227-4e35-b3f5-1ec273b6451c" />
+for an unknown reason, there is no image when running any of the example games
+
 
 ## Overview  
 
-AlKAsH3D is a tiny but functional 3‑D graphics engine written completely in Python. It demonstrates how to build a modern rendering pipeline from the ground up while keeping the code base easy to read and extend. The engine provides:
+AlKAsH3D is a **tiny but functional** 3‑D graphics engine written primarily in Python, with a high‑performance DirectX 12 (or optional OpenGL) backend compiled from Rust.  
+It demonstrates how to build a modern rendering pipeline from the ground up while keeping the code base easy to read and extend.
+
+The engine provides:
 
 * **Two rasterisation pipelines** – Forward (single‑pass) and Deferred (G‑buffer + lighting).  
 * **An optional CUDA ray‑tracer** (requires an NVIDIA GPU).  
 * **A scene‑graph** with hierarchical transforms, lights, and meshes.  
 * **Math helpers** (`Vec3`, `Vec4`, `Mat4`, `Quat`) built on top of NumPy.  
-* **Shader manager** that automatically recompiles GLSL files when they change.  
+* **Shader manager** that automatically recompiles GLSL/HLSL files when they change.  
 * **Simple OBJ loader**, texture loader (via Pillow), and a multithreaded task pool.  
 * **Input handling** (keyboard + mouse) based on GLFW callbacks.  
 
-The engine is deliberately lightweight – it does not try to hide OpenGL, it simply gives you the plumbing so you can focus on the graphics concepts you want to explore.
+The engine is deliberately lightweight – it does not hide the graphics API, it simply gives you the plumbing so you can focus on the graphics concepts you want to explore.
 
----
+---  
 
-## Features at a glance  
+## Features at a Glance  
 
 | Category | What you get |
 |----------|---------------|
-| **Rendering** | Forward, Deferred, CUDA‑based ray tracing. |
-| **Math** | 3‑D/4‑D vectors, 4×4 matrices, quaternions, all with NumPy speed. |
+| **Rendering** | Forward, Deferred, optional CUDA‑based ray tracing. |
+| **Math** | 3‑D/4‑D vectors, 4 × 4 matrices, quaternions – all powered by NumPy. |
 | **Scene‑graph** | Nodes with position, rotation (Euler), scale, parent/child hierarchy. |
 | **Lights** | Directional, Point, Spot – each supplies a uniform block for shaders. |
 | **Meshes** | Raw vertex data, optional normals/texcoords, indexed drawing, lazy VAO creation. |
 | **Models** | Collections of meshes that behave as a single node. |
-| **Shader manager** | Load GLSL from files, auto‑recompile on change, uniform helper methods. |
+| **Shader manager** | Load GLSL/HLSL from files, auto‑recompile on change, uniform helper methods. |
 | **Input** | Keyboard state, mouse delta, cursor locked to the window. |
-| **Utilities** | Logger (Python `logging`), OpenGL error checker, simple OBJ parser, texture loader. |
-| **Multithreading** | `TaskPool` (ThreadPoolExecutor wrapper) for heavy CPU work. |
+| **Utilities** | Logger (`logging`), OpenGL error checker, simple OBJ parser, texture loader. |
+| **Multithreading** | `TaskPool` (wrapper around `ThreadPoolExecutor`) for heavy CPU work. |
 
----
+---  
 
 ## Installation  
 
-1. **Clone the repository**  
+### 1️⃣ Clone the repository  
 
-   ```text
-   git clone https://github.com/TypeGuja/alkash3d.git
-   cd alkash3d
-   ```
+```bash
+git clone https://github.com/yourorg/AlKAsH3D-Engine.git
+cd AlKAsH3D-Engine
+```
 
-2. **Install required Python packages**  
+### 2️⃣ Install the required Python packages  
 
-   ```text
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-   The required modules are: `numpy`, `PyOpenGL`, `glfw`, `Pillow`.  
-   If you plan to use the CUDA ray‑tracer, also install `numba` (requires a compatible NVIDIA driver and the CUDA Toolkit).  
+The required modules are:
 
-3. **Platform notes**  
+* `numpy`
+* `PyOpenGL`
+* `glfw`
+* `Pillow`
 
-   * macOS – you may need to install the `glfw` library via Homebrew (`brew install glfw`).  
-   * Windows – the binary wheels of `glfw` and `PyOpenGL` are usually sufficient.  
+If you plan to use the optional CUDA ray‑tracer, also install `numba` (it requires a compatible NVIDIA driver and the CUDA Toolkit).
 
----
+### 3️⃣ Platform notes  
 
-## Getting Started – High‑level workflow  
+| OS | Remarks |
+|----|---------|
+| **macOS** | You may need to install the GLFW library via Homebrew: `brew install glfw`. |
+| **Windows** | The binary wheels of `glfw` and `PyOpenGL` are usually sufficient. |
+| **Linux** | Ensure you have the development headers for X11/GLX (most distros provide them by default). |
 
-1. **Create a window** – the `Window` class wraps GLFW and creates an OpenGL 3.3 core context.  
+---  
 
-2. **Instantiate the engine** – supply window size, title, and the rendering pipeline you want (`forward`, `deferred`, or `rt`).  
+## Building the Native Backend  
 
-3. **Add a camera** – a `Camera` node is automatically placed under the scene root. Position it where you like.  
+The engine talks to DirectX 12 through a small Rust crate (`alkash3d_dx12`).  
+A compiled shared library (`alkash3d_dx12.dll` on Windows, `.so` on Linux, `.dylib` on macOS) must be present in the repository root.
 
-4. **Create geometry** – either build a `Mesh` from raw NumPy arrays (positions, optional normals, texcoords, indices) or load an OBJ file using the built‑in loader.  
+### One‑liner (Python) that builds **and** copies the library  
 
-5. **Insert geometry into the scene graph** – attach meshes or model containers as children of the root node or of any other node.  
+```bash
+python - <<'PY'
+import pathlib, platform, shutil, subprocess, sys
 
-6. **Run the engine loop** – the `Engine.run()` method handles input polling, camera movement (fly‑style), per‑frame updates, and rendering.  
+ROOT = pathlib.Path(__file__).resolve().parent
+CRATE = ROOT / "alkash3d_dx12"
 
+# Build in Release mode
+subprocess.check_call([
+    "cargo", "build", "--release",
+    "--manifest-path", str(CRATE / "Cargo.toml")
+])
+
+# Choose platform‑specific suffix
+suffix = {
+    "Windows": ".dll",
+    "Linux": ".so",
+    "Darwin": ".dylib"
+}[platform.system()]
+
+# Locate the compiled library
+target_dir = CRATE / "target" / "release"
+lib_path = next(target_dir.glob(f"*{suffix}"))
+shutil.copy2(lib_path, ROOT / lib_path.name)
+
+print(f"✅  {lib_path.name} → {ROOT}")
+PY
+```
+
+> **Optional RTX module** – If you need the CUDA‑based ray‑tracer, repeat the same snippet with `CRATE = ROOT / "alkash3d_rtx"`.
+
+After the command finishes, you will see `alkash3d_dx12.dll` (or the platform‑appropriate counterpart) sitting next to the Python source files. The engine will now be able to load it via `ctypes`.
+
+---  
+
+## Getting Started – High‑Level Workflow  
+
+1. **Create a window** – `Window` wraps GLFW and creates an OpenGL 3.3 core context (or a DX12 context under the hood).  
+2. **Instantiate the engine** – specify window size, title, and the rendering pipeline you want (`forward`, `deferred`, `hybrid`, or `rt`).  
+3. **Add a camera** – a `Camera` node is automatically placed under the scene root; position it wherever you like.  
+4. **Create geometry** – either build a `Mesh` from raw NumPy arrays (positions, optional normals, texcoords, indices) **or** load an OBJ file using the built‑in loader.  
+5. **Insert geometry into the scene graph** – attach meshes or model containers as children of the root node or any other node.  
+6. **Run the engine loop** – `Engine.run()` handles input polling, camera movement (fly‑style), per‑frame updates, and rendering.  
 7. **Shutdown** – the engine automatically destroys the window and terminates GLFW when the loop exits.  
 
-All of the above can be achieved without writing a single line of OpenGL code; you only need to call the high‑level methods listed in the next section.
+All of the above can be achieved without writing a single line of OpenGL/DirectX code; you only need to call the high‑level methods listed in the next section.
 
----
+---  
 
-## Core API – What you’ll use most  
+## Core API – What You’ll Use Most  
 
 | Module / Class | Primary responsibilities | Typical usage |
-|----------------|------------------------|--------------|
-| `alkash3d.window.Window` | Opens a GLFW window and creates an OpenGL context. Provides width/height, an `InputManager`, and a method to swap buffers. | Create once, pass to the engine. |
-| `alkash3d.engine.Engine` | Orchestrates the window, scene, camera, and chosen renderer. Offers `run()` and `shutdown()`. | Instantiate with desired pipeline, then call `run()`. |
-| `alkash3d.scene.Scene` | Root `Node` of the scene graph. Holds all renderable objects and lights. Provides `update(dt)` to call per‑frame. | Add nodes (`add_child`). |
-| `alkash3d.scene.Camera` | Calculates view and perspective matrices from its position and orientation. Supports fly‑style movement via `update_fly(dt, input_manager)`. | Set its `position`, optionally modify `rotation`. |
-| `alkash3d.scene.Node` | Base class for anything that can be placed in the scene graph. Stores `position`, `rotation`, `scale`, parent‑child relationships, and has `get_world_matrix()`. | Subclass (e.g., `Mesh`, `Model`) or use directly for empty transform nodes. |
-| `alkash3d.scene.Mesh` | Holds vertex data and lazy‑creates a VAO/VBO on first draw. Provides `draw()` and `get_model_matrix()`. | Build from NumPy arrays or link a loaded OBJ. |
-| `alkash3d.scene.Model` | Simple container that groups several meshes under a single node. | Use to represent a complex object consisting of many meshes. |
-| `alkash3d.scene.light.*` | Light nodes (Directional, Point, Spot) that expose a `get_uniforms()` dict for shader upload. | Add as children of the scene; the renderer automatically gathers them. |
-| `alkash3d.renderer.Shader` | Loads GLSL source, compiles, links, and provides convenient `set_uniform_*` helpers. Detects source modifications and recompiles on the fly. | Obtain the shader instance from a pipeline (`engine.renderer.shader`) and set uniforms as needed. |
-| `alkash3d.renderer.pipelines.ForwardRenderer` | Default forward pipeline; creates a fallback white texture and binds it to sampler 0. | Used when the engine is started with `renderer="forward"`. |
-| `alkash3d.renderer.pipelines.DeferredRenderer` | G‑buffer generation followed by a lighting pass; supports up to eight lights. | Used when the engine is started with `renderer="deferred"`. |
-| `alkash3d.renderer.pipelines.RTPipeline` | Thin wrapper around `RayTracer` (CUDA). | Used when the engine is started with `renderer="rt"` and a CUDA‑capable GPU is present. |
-| `alkash3d.utils.loader.load_obj(path)` | Minimal OBJ parser that returns NumPy arrays for positions, normals, texcoords, and indices. | Load a model and feed the arrays into a `Mesh`. |
-| `alkash3d.utils.texture_loader.load_texture(path)` | Loads an image via Pillow and creates an OpenGL texture with mip‑mapping enabled. | Load your own textures and bind them to a texture unit before drawing. |
-| `alkash3d.multithread.TaskPool` | Wrapper around `ThreadPoolExecutor`; submit callables and wait for all tasks. | Use for CPU‑heavy operations such as culling or animation blending. |
-| `alkash3d.core.input.InputManager` | Stores the current keyboard state and mouse movement delta; disables the OS cursor and locks it to the window. | Query keys (`is_key_pressed`) or mouse delta each frame. |
-| `alkash3d.utils.logger` & `gl_check_error` | Simple logger (`logging.INFO` level) and a function that reports any pending OpenGL error. | Insert `gl_check_error("description")` after a group of OpenGL calls to catch mistakes early. |
+|----------------|------------------------|---------------|
+| `alkash3d.window.Window` | Opens a GLFW window, creates an OpenGL (or DX12) context, gives you width/height, an `InputManager`, and a `swap_buffers()` method. | Create once, pass to the engine. |
+| `alkash3d.engine.Engine` | Orchestrates the window, scene, camera, and chosen renderer. Provides `run()` and `shutdown()`. | `engine = Engine(...); engine.run()` |
+| `alkash3d.scene.Scene` | Root `Node` of the scene graph; holds all renderable objects and lights; `update(dt)` is called each frame. | `scene.add_child(mesh)` |
+| `alkash3d.scene.Camera` | Computes view & projection matrices from its position & orientation; implements `update_fly(dt, input_manager)` for classic FPS‑style movement. | `camera.position = Vec3(0,0,5)` |
+| `alkash3d.scene.Node` | Base class for anything placed in the scene graph; stores `position`, `rotation`, `scale`, parent‑child relationships; provides `get_world_matrix()`. | Subclass (`Mesh`, `Model`) or use directly for empty transform nodes. |
+| `alkash3d.scene.Mesh` | Holds vertex data; lazily creates VAO/VBO on first draw; provides `draw(backend)` and `bounding_sphere`. | `mesh = Mesh(vertices, normals, texcoords, indices)` |
+| `alkash3d.scene.Model` | Simple container that groups several meshes under a single node. | Useful for complex objects made of many parts. |
+| `alkash3d.scene.light.*` | Light nodes (`DirectionalLight`, `PointLight`, `SpotLight`) that expose a `get_uniforms()` dict for shader upload. | Add as children of the scene; the renderer gathers them automatically. |
+| `alkash3d.renderer.Shader` | Loads GLSL/HLSL source, compiles, links, and provides `set_uniform_*` helpers (`mat4`, `vec3`, `int`, `float`). Detects source modifications and recompiles on the fly. | `shader = Shader(vs_path, fs_path); shader.use(); shader.set_uniform_mat4("uView", view)` |
+| `alkash3d.renderer.pipelines.ForwardRenderer` | Default forward pipeline; creates a fallback 1×1 white texture and binds it to sampler 0. | Used when `renderer="forward"` is passed to `Engine`. |
+| `alkash3d.renderer.pipelines.DeferredRenderer` | Generates G‑buffer textures, then performs a full‑screen lighting pass; supports up to eight lights. | Used when `renderer="deferred"`. |
+| `alkash3d.renderer.pipelines.HybridRenderer` | Deferred geometry + optional CUDA/OptiX ray tracing (if native `rt_core` module is available). Falls back to pure deferred if not. | Used when `renderer="hybrid"`. |
+| `alkash3d.renderer.pipelines.RTXRenderer` | Thin wrapper around the Rust `alkash3d_rtx` module: renders a scene to an RGBA buffer on the GPU and copies it to a DX12 texture. | Used when `renderer="rt"` and a CUDA‑capable GPU is present. |
+| `alkash3d.utils.loader.load_obj(path)` | Minimal OBJ parser that returns NumPy arrays for positions, normals, texcoords, and indices. | `verts, norms, uvs, inds = load_obj("model.obj")` |
+| `alkash3d.utils.texture_loader.load_texture(path, backend)` | Loads an image via Pillow and creates a GPU texture (DX12 or OpenGL, depending on backend). | `texture = load_texture("brick.png", backend)` |
+| `alkash3d.multithread.TaskPool` | Wrapper around `ThreadPoolExecutor`; submit callables and wait for completion. | Useful for CPU‑heavy tasks like nav‑mesh generation or BVH building. |
+| `alkash3d.core.input.InputManager` | Stores current keyboard state and mouse delta; disables the OS cursor and locks it to the window. | `if input.is_key_pressed(glfw.KEY_W): …` |
+| `alkash3d.utils.logger` & `gl_check_error` | Simple logger (`logging.INFO`) and a function that reports any pending OpenGL error. | Insert `gl_check_error("after draw")` to catch mistakes early. |
 
----
+---  
 
 ## Adding Your Own Geometry  
 
-1. **Prepare vertex data** – create NumPy `float32` arrays for positions (3 components). Optionally create arrays for normals (3) and texture coordinates (2).  
-
+1. **Prepare vertex data** – create NumPy `float32` arrays for positions (`Nx3`). Optionally create normals (`Nx3`) and texture coordinates (`Nx2`).  
 2. **Create indices** – a `uint32` NumPy array describing how vertices form triangles.  
+3. **Instantiate a `Mesh`** – pass the arrays to the constructor (`Mesh(vertices, normals, texcoords, indices)`).  
+4. **Add the mesh to the scene** – `scene.add_child(your_mesh)`.  
 
-3. **Instantiate a `Mesh`** – pass the arrays to the constructor (the order is `vertices`, optional `normals`, optional `texcoords`, optional `indices`).  
+If you prefer not to assemble the arrays manually, use the bundled OBJ loader:
 
-4. **Add the mesh to the scene** – call `scene.add_child(your_mesh)`.  
+```python
+from alkash3d.utils.loader import load_obj
+verts, norms, uvs, inds = load_obj("assets/models/teapot.obj")
+mesh = Mesh(verts, norms, uvs, inds)
+scene.add_child(mesh)
+```
 
-If you prefer not to assemble the arrays manually, use the bundled OBJ loader: call `load_obj("path/to/file.obj")`, receive the four arrays, and feed them straight into a `Mesh`.
-
----
+---  
 
 ## Adding Custom Shaders  
 
-1. **Place GLSL files** – store vertex and fragment shaders under `resources/shaders/`.  
+1. **Place GLSL/HLSL files** under `resources/shaders/`.  
+2. **Create a `Shader` instance** with the absolute paths to the vertex and fragment files.  
 
-2. **Create a `Shader` instance** – give it the absolute paths to the vertex and fragment files.  
+   ```python
+   from alkash3d.renderer import Shader
+   shader = Shader(
+       vertex_path="resources/shaders/custom_vert.glsl",
+       fragment_path="resources/shaders/custom_frag.glsl"
+   )
+   ```
 
-3. **Upload uniform values** – use the `set_uniform_*` methods:  
-   * `set_uniform_mat4(name, matrix)` – pass a `Mat4` (the manager will call `to_gl()` automatically).  
-   * `set_uniform_vec3(name, vec3)` – pass a `Vec3` or a NumPy array.  
-   * `set_uniform_int/name/float` for scalar values.  
+3. **Upload uniform values** using the helper methods:  
 
-4. **Bind textures** – enable a texture unit with `glActiveTexture(GL_TEXTURE0 + unit)` and bind the texture ID. Then set the corresponding sampler uniform to the unit number (e.g., `set_uniform_int("uAlbedo", 0)`).  
+   * `shader.set_uniform_mat4("uModel", model_matrix)`  
+   * `shader.set_uniform_vec3("uTint", Vec3(1,0,0))`  
+   * `shader.set_uniform_int("uTexture", 0)`  
 
-5. **Hot‑reloading** – the `Shader` object monitors the modification timestamps of its source files. When you edit a GLSL file while the program runs, the next call to `shader.use()` automatically recompiles and links the updated program.  
+4. **Bind textures** – activate a texture unit (`glActiveTexture(GL_TEXTURE0 + unit)`), bind the texture ID, then set the corresponding sampler uniform.  
 
-6. **Integrate into a pipeline** – if you need a completely custom render pass, subclass `BaseRenderer` and implement `render(scene, camera)`. Inside you can use your own `Shader` instances and OpenGL state as you wish.
+5. **Hot‑reloading** – the `Shader` object monitors the modification timestamps of its source files. Editing the shader on disk while the program runs will automatically trigger recompilation on the next `shader.use()`.  
 
----
+6. **Integrate into a pipeline** – if you need a completely custom render pass, subclass `BaseRenderer` and implement `render(scene, camera)`. Inside you can use any shaders you like.
+
+---  
 
 ## Working with Pipelines  
 
-* **Forward** – best for simple demos or hardware‑restricted environments. It draws every object once, applying a single material and optional texture.  
+| Pipeline | When to use | Remarks |
+|----------|-------------|--------|
+| **Forward** | Simple demos, low‑poly scenes, or when you need minimal draw‑call overhead. | Draws each object once, applying a single material and optional texture. |
+| **Deferred** | Scenes with many dynamic lights; you want lighting decoupled from geometry. | Splits rendering into a geometry pass (fills G‑buffer textures) and a full‑screen lighting pass. Requires 4 G‑buffer textures (position, normal, albedo, material) plus a depth buffer. |
+| **Hybrid** | Same as Deferred but with an optional CUDA/OptiX ray‑tracer for reflections, global illumination, etc. | If the native `rt_core` module is unavailable, it automatically falls back to pure deferred rendering. |
+| **RTX** | Pure GPU‑based ray tracing (CUDA) – useful for research or experimental effects. | Uses the separate Rust crate `alkash3d_rtx`. The kernel writes directly into a DX12 texture which is then displayed as a full‑screen quad. |
 
-* **Deferred** – splits rendering into geometry (fills G‑buffer textures) and lighting (full‑screen quad). It enables many light sources without additional draw calls. Requires the four G‑buffer textures (position, normal, albedo+specular, depth) and a set of uniform arrays describing the lights.  
+Select the pipeline when creating the engine:
 
-* **RT (Ray‑Tracer)** – executes a CUDA kernel that writes directly into an OpenGL texture, then blits the texture to the screen. Currently a very simple example (single sphere + background). Replace the kernel with your own algorithm for more advanced effects.  
+```python
+engine = Engine(
+    width=1280,
+    height=720,
+    title="AlKAsH3D Demo",
+    renderer="forward",   # forward | deferred | hybrid | rt
+    backend_name="dx12"  # dx12 (default) or gl (stub)
+)
+```
 
-You select the pipeline when constructing the engine (`Engine(..., renderer="forward")`). Switching pipelines at runtime is not currently supported; you must create a new `Engine` instance.
+---  
 
----
+## Input Handling  
 
-## Input handling  
+`InputManager` automatically registers GLFW callbacks for keyboard and mouse movement.
 
-The `InputManager` automatically registers GLFW callbacks for keyboard and mouse movement.  
+| Action | Code |
+|--------|------|
+| **Check if a key is pressed** | `if input.is_key_pressed(glfw.KEY_SPACE): …` |
+| **Get mouse delta** (relative movement since last query) | `dx, dy = input.get_mouse_delta()` |
+| **Get scroll delta** | `dx, dy = input.get_scroll_delta()` |
+| **Lock & hide cursor** – done automatically by the engine. | — |
 
-* **Keyboard** – call `input_manager.is_key_pressed(glfw.KEY_X)` to query the current state.  
+The default camera implements a classic “fly‑through” control (`WASD` for translation, mouse for yaw/pitch). You can replace it by subclassing `Camera` or by adding an `on_update(dt)` method to any node.
 
-* **Mouse** – each frame call `input_manager.get_mouse_delta()` to obtain the relative movement since the last query. The mouse cursor is hidden and locked to the center of the window.  
+---  
 
-The `Camera.update_fly(dt, input_manager)` method already implements a typical “fly‑through” control (WASD + mouse look). You can replace it with your own logic by subclassing `Camera` or by writing a custom `on_update` method for any node.  
+## Debugging Tips  
 
----
-
-## Debugging tips  
-
-| Situation | What to check |
-|-----------|---------------|
-| **Nothing appears (gray screen)** | Verify that the view and projection matrices are uploaded with `to_gl()` (column‑major). Confirm that the viewport was set (the `Window` class now forces a viewport on creation). |
-| **Object appears flat or missing texture** | Ensure texcoords are bound to attribute **location 2** (the default forward shader expects normals at location 1 and texcoords at location 2). |
-| **OpenGL errors after a draw call** | Insert `gl_check_error("description")` after the suspect code block; the logger will print the error message and the location. |
+| Symptom | What to check |
+|---------|----------------|
+| **Nothing appears (black screen)** | Verify view & projection matrices are uploaded (`to_gl()` returns column‑major), and the viewport has been set (the `Window` constructor forces a viewport). |
+| **Object appears flat or texture missing** | Ensure texcoords are bound to attribute location 2 (the default forward shader expects normals at location 1 and texcoords at location 2). |
+| **OpenGL errors after a draw call** | Insert `gl_check_error("description")` after the suspect block; the logger will print the error and the location. |
 | **Shader changes don’t show** | Make sure the shader files are saved on disk and that the `Shader` instance is still bound (`shader.use()`) when you render. |
-| **CUDA kernel crashes** | Verify that the GPU supports CUDA and that the `numba` version matches the installed CUDA Toolkit. On machines without a compatible GPU, avoid using the `rt` renderer. |
-| **Resizing the window leaves a black screen** | The engine registers a framebuffer‑size callback that forwards the new dimensions to the active renderer. If you add custom rendering code, remember to call `glViewport(0, 0, new_width, new_height)` inside your own resize handler. |
+| **CUDA kernel crashes** | Verify that the GPU supports CUDA and that the installed `numba` version matches the CUDA Toolkit. On machines without a compatible GPU, avoid the `rt` renderer. |
+| **Resizing the window leaves a black screen** | The engine registers a framebuffer‑size callback that forwards new dimensions to the active renderer. If you add custom rendering code, remember to call `glViewport(0, 0, new_width, new_height)` inside your own resize handler. |
 
----
+---  
 
-## Extending the engine  
+## Extending the Engine  
 
-* **New geometry formats** – implement another loader that returns the same four NumPy arrays (`positions, normals, texcoords, indices`).  
+* **New geometry formats** – implement a loader that returns the same four NumPy arrays (`positions, normals, texcoords, indices`).  
 * **Material system** – create a node that stores texture IDs, material parameters, and a method that binds them before drawing. Extend the shader to read those uniforms.  
-* **More light types** – subclass `Light`, add the needed uniform fields, and modify the deferred/forward shaders to handle them.  
+* **More light types** – subclass `Light`, add the needed uniform fields, and modify the forward/deferred shaders to handle them.  
 * **Post‑processing** – write a new `BaseRenderer` subclass that renders the scene to an off‑screen framebuffer, then draws a full‑screen quad with a post‑process shader (e.g., tone‑mapping, bloom).  
-* **Physics integration** – attach a physics body to a `Node` and update the node’s `position` and `rotation` each frame.  
+* **Physics integration** – attach a physics body to a `Node` and update the node’s `position`/`rotation` each frame.  
 
-All extensions can be built on top of the existing math, scene, and rendering utilities without touching the internal OpenGL boilerplate.
+All extensions can be built on top of the existing math, scene, and rendering utilities without touching the internal OpenGL/DirectX boilerplate.
 
----
+---  
 
 ## Contributing  
 
-1. Fork the repository.  
-2. Create a feature branch (`git checkout -b feature/awesome-thing`).  
+1. **Fork** the repository.  
+2. Create a feature branch: `git checkout -b feature/awesome-thing`.  
 3. Implement your changes. Add unit tests for any new mathematical utilities or helper functions (the rendering code itself is best verified visually).  
 4. Ensure the existing demo scripts still run on your platform.  
-5. Open a Pull Request describing the problem solved or the feature added.  
+5. Open a **Pull Request** describing the problem solved or the feature added.  
 
 Style follows **PEP‑8**, type hints are encouraged, and doc‑strings should be in English.  
 
----
+---  
 
 ## License  
 
 AlKAsH3D is released under the **MIT License**. See the `LICENSE` file for the full text.  
 
----
+---  
 
 ## Acknowledgements  
 
@@ -209,7 +291,7 @@ AlKAsH3D is released under the **MIT License**. See the `LICENSE` file for the f
 * **Numba** – JIT compilation for the optional CUDA ray‑tracer.  
 * **Pillow** – image loading for texture creation.  
 
----
+---  
 
 **Happy coding!** 🚀  
 
