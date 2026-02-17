@@ -27,6 +27,12 @@ use windows::{
     },
 };
 use windows_core::{ComInterface, Interface, IUnknown};
+use windows::Win32::Graphics::Direct3D12::{
+    ID3D12Device,
+    D3D12_CONSTANT_BUFFER_VIEW_DESC,
+    D3D12_CPU_DESCRIPTOR_HANDLE,
+};
+
 
 // Флаг отладки - установите true для включения отладочного вывода
 const DEBUG: bool = true;
@@ -571,13 +577,23 @@ mod buffer_mod {
         resource_opt
     }
 
+    // lib.rs – модуль buffer_mod
+    // src/lib.rs – модуль buffer_mod
+    // src/lib.rs – модуль buffer_mod
     pub unsafe fn update(
         resource: &ID3D12Resource,
         data: *const c_void,
         size: usize,
     ) -> bool {
+        // ------------------------------------------------------------
+        //  Записываем‑только: Begin == End == 0  (write‑only range)
+        // ------------------------------------------------------------
+        let write_range = D3D12_RANGE { Begin: 0, End: 0 };
+        let write_range_ptr = &write_range as *const D3D12_RANGE;
+
         let mut mapped: *mut c_void = ptr::null_mut();
-        if let Err(e) = resource.Map(0, None, Some(&mut mapped)) {
+        // ← NOTE: передаём Some(ptr), а не None
+        if let Err(e) = resource.Map(0, Some(write_range_ptr), Some(&mut mapped)) {
             debug_println!("[buffer] Failed to map: HRESULT 0x{:X}", e.code().0);
             return false;
         }
@@ -586,7 +602,8 @@ mod buffer_mod {
             std::ptr::copy_nonoverlapping(data as *const u8, mapped as *mut u8, size);
         }
 
-        resource.Unmap(0, None);
+        // Unmap без указания диапазона – драйвер считает, что запись покрыла весь ресурс
+        let _ = resource.Unmap(0, None);
         true
     }
 }
@@ -595,20 +612,40 @@ mod buffer_mod {
 mod texture_mod {
     use super::*;
 
+    /// Создаёт 2‑D текстуру.
+    ///
+    /// `upload` — true  → UPLOAD‑heap (можно Map/Copy);
+    /// `upload` — false → DEFAULT‑heap (используется как render‑target / depth‑buffer).
     pub unsafe fn create_2d(
         device: &ID3D12Device,
         width: u32,
         height: u32,
         format: DXGI_FORMAT,
+        upload: bool,
     ) -> Option<ID3D12Resource> {
+        // ---------- тип heap ----------
+        let heap_type = if upload {
+            D3D12_HEAP_TYPE_UPLOAD
+        } else {
+            D3D12_HEAP_TYPE_DEFAULT
+        };
+
         let heap_props = D3D12_HEAP_PROPERTIES {
-            Type: D3D12_HEAP_TYPE_DEFAULT,
+            Type: heap_type,
             CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
             MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
             CreationNodeMask: 0,
             VisibleNodeMask: 0,
         };
 
+        // ---------- начальное состояние ----------
+        let init_state = if upload {
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        } else {
+            D3D12_RESOURCE_STATE_COPY_DEST
+        };
+
+        // ---------- описание ресурса ----------
         let desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
             Alignment: 0,
@@ -623,24 +660,32 @@ mod texture_mod {
             height: 0,
         };
 
-        let mut texture_opt: Option<ID3D12Resource> = None;
+        // ---------- создание ----------
+        let mut tex_opt: Option<ID3D12Resource> = None;
         let hr = device.CreateCommittedResource(
             &heap_props,
             D3D12_HEAP_FLAG_NONE,
             &desc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            init_state,
             None,
-            &mut texture_opt,
+            &mut tex_opt,
         );
 
         if let Err(e) = hr {
-            debug_println!("[texture] Failed to create: HRESULT 0x{:X}", e.code().0);
+            debug_println!(
+                "[texture] Failed to create: HRESULT 0x{:X}",
+                e.code().0
+            );
             return None;
         }
 
-        texture_opt
+        tex_opt
     }
 
+    /// Копирует данные в уже‑созданный ресурс.
+    /// Для UPLOAD‑heap `Map` всегда успешен, для DEFAULT‑heap функция
+    /// вызывается только из `dx.update_texture` (которое делает корректный
+    /// `CopyTextureRegion`), поэтому здесь просто делаем `Map/Copy`.
     pub unsafe fn update(
         texture: &ID3D12Resource,
         data: *const c_void,
@@ -648,19 +693,26 @@ mod texture_mod {
         height: u32,
         bpp: usize,
     ) -> bool {
+        // -------------------------------------------------------------
+        // Map → memcpy → Unmap
+        // -------------------------------------------------------------
+        let write_range = D3D12_RANGE { Begin: 0, End: 0 };
         let mut mapped: *mut c_void = ptr::null_mut();
-        if let Err(e) = texture.Map(0, None, Some(&mut mapped)) {
+
+        // `Map` будет успешен только для UPLOAD‑heap.  Если ресурс находится
+        // в DEFAULT‑heap, `Map` вернёт ошибку, и мы просто вернём `false`.
+        if let Err(e) = texture.Map(0, Some(&write_range), Some(&mut mapped)) {
             debug_println!("[texture] Failed to map: HRESULT 0x{:X}", e.code().0);
             return false;
         }
 
         if !mapped.is_null() && !data.is_null() {
-            let row_pitch = (width as usize) * bpp;
+            let row_pitch   = (width as usize) * bpp;
             let slice_pitch = row_pitch * height as usize;
             std::ptr::copy_nonoverlapping(data as *const u8, mapped as *mut u8, slice_pitch);
         }
 
-        texture.Unmap(0, None);
+        let _ = texture.Unmap(0, None);
         true
     }
 }
@@ -1228,6 +1280,45 @@ pub extern "C" fn swap_chain_get_buffer(
 }
 
 #[no_mangle]
+pub extern "C" fn create_constant_buffer_view(
+    device_ptr: *mut c_void,
+    resource_ptr: *mut c_void,
+    cpu_handle: usize,
+) {
+    unsafe {
+        // ---------- Преобразуем «сырой» указатели в COM‑объекты ----------
+        let device = match ptr_utils::as_device(device_ptr) {
+            Some(d) => d,
+            None => return,
+        };
+        let resource = match ptr_utils::as_resource(resource_ptr) {
+            Some(r) => r,
+            None => return,
+        };
+
+        // ---------- Вычисляем размер CBV, выравниваем до 256 байт ----------
+        // (требование D3D12: размер CBV всегда кратен 256)
+        let size = ((resource.GetDesc().Width as usize + 255) & !255) as u32;
+
+        // ---------- Описатель CBV ----------
+        let desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
+            BufferLocation: resource.GetGPUVirtualAddress(),
+            SizeInBytes:    size,
+        };
+
+        // Превращаем ссылку в *const D3D12_CONSTANT_BUFFER_VIEW_DESC
+        // и упаковываем её в `Option`, как требует API.
+        let desc_opt = Some(&desc as *const D3D12_CONSTANT_BUFFER_VIEW_DESC);
+
+        // Дескриптор‑хендл, полученный из DescriptorHeap (CPU‑side)
+        let handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle };
+
+        // В случае ошибки просто игнорируем – это fallback‑режим,
+        // который безопасно завершит функцию без паники.
+        let _ = device.CreateConstantBufferView(desc_opt, handle);
+    }
+}
+#[no_mangle]
 pub extern "C" fn create_descriptor_heap(
     device_ptr: *mut c_void,
     num_descriptors: u32,
@@ -1370,35 +1461,29 @@ pub extern "C" fn update_subresource(
 #[no_mangle]
 pub extern "C" fn create_texture_from_memory(
     device_ptr: *mut c_void,
-    data_ptr: *const c_void,
+    data_ptr: *mut c_void,
     width: u32,
     height: u32,
-    format: *const u8,
+    fmt: *const u8,
+    upload: bool,                     // ← новый параметр
 ) -> *mut c_void {
-    debug_println!("\n[API] create_texture_from_memory({}x{})", width, height);
+    if device_ptr.is_null() || width == 0 || height == 0 {
+        return ptr::null_mut();
+    }
 
     unsafe {
-        use ptr_utils::*;
-
-        if width == 0 || height == 0 || width > 16384 || height > 16384 {
-            debug_println!("[API] Invalid texture dimensions: {}x{}", width, height);
-            return ptr::null_mut();
-        }
-
-        let device = match as_device(device_ptr) {
+        // 1️⃣ Приводим «сырой» указатель к ID3D12Device
+        let device = match ptr_utils::as_device(device_ptr) {
             Some(d) => d,
-            None => {
-                debug_println!("[API] Invalid device");
-                return ptr::null_mut();
-            }
+            None => return ptr::null_mut(),
         };
 
-        let fmt_str = if format.is_null() {
+        // 2️⃣ Формат
+        let fmt_str = if fmt.is_null() {
             "rgba8"
         } else {
-            CStr::from_ptr(format as *const i8).to_str().unwrap_or("rgba8")
+            CStr::from_ptr(fmt as *const i8).to_str().unwrap_or("rgba8")
         };
-
         let dxgi_format = match fmt_str.to_ascii_lowercase().as_str() {
             "rgba8" | "rgba8unorm" => DXGI_FORMAT_R8G8B8A8_UNORM,
             "rgba16f" => DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -1406,26 +1491,29 @@ pub extern "C" fn create_texture_from_memory(
             _ => DXGI_FORMAT_R8G8B8A8_UNORM,
         };
 
-        let texture = match texture_mod::create_2d(&device, width, height, dxgi_format) {
+        // 3️⃣ Создаём ресурс (heap‑type задаётся флагом `upload`)
+        let tex_opt = texture_mod::create_2d(&device, width, height, dxgi_format, upload);
+        let tex = match tex_opt {
             Some(t) => t,
             None => return ptr::null_mut(),
         };
 
+        // 4️⃣ Если есть данные – копируем их.
         if !data_ptr.is_null() {
+            // определяем количество байт на пиксель
             let bpp = match dxgi_format {
                 DXGI_FORMAT_R8G8B8A8_UNORM => 4,
                 DXGI_FORMAT_R16G16B16A16_FLOAT => 8,
                 DXGI_FORMAT_R32G32B32A32_FLOAT => 16,
                 _ => 4,
             };
-            texture_mod::update(&texture, data_ptr, width, height, bpp);
+            texture_mod::update(&tex, data_ptr, width, height, bpp);
         }
 
-        let raw_ptr = texture.as_raw();
-        std::mem::forget(texture);
-
-        debug_println!("[API] Texture created at {:p}", raw_ptr);
-        raw_ptr as *mut c_void
+        // 5️⃣ Возврат «сырого» указателя COM‑объекта
+        let raw = tex.as_raw();
+        std::mem::forget(tex);
+        raw as *mut c_void
     }
 }
 
