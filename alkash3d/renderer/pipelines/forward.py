@@ -1,17 +1,21 @@
 # alkash3d/renderer/pipelines/forward.py
-# ------------------------------------------------------------
-# Forward‑renderer с корректным созданием белой 1×1‑текстуры
-# (UPLOAD‑heap → UpdateTexture) и без «перезаписи» CBV‑слота.
-# ------------------------------------------------------------
+# -*- coding: utf-8 -*-
+"""
+Forward‑renderer с корректным созданием белой 1×1‑текстуры
+(UPLOAD‑heap → UpdateTexture) и без «перезаписи» CBV‑слота.
+"""
 
 import numpy as np
+
 from alkash3d.renderer.shader import Shader
 from alkash3d.utils import logger
 from alkash3d.graphics import select_backend
 
+
 class ForwardRenderer:
     """
     Простой forward‑pipeline.
+
     Если у меша нет материала – используется 1×1‑белая placeholder‑текстура.
     """
     def __init__(self, window, backend=None):
@@ -29,78 +33,81 @@ class ForwardRenderer:
         self._create_white_placeholder()
 
         # ---------- 3️⃣ Дескриптор‑хип ----------
-        if self.backend.cbv_srv_uav_heap:
-            self.backend.set_descriptor_heaps([self.backend.cbv_srv_uav_heap])
+        # Передаём **сырой** указатель, а не объект‑обёртку
+        self.backend.set_descriptor_heaps([self.backend.cbv_srv_uav_heap])
 
         # ---------- 4️⃣ PSO ----------
         self.backend.set_graphics_pipeline(self.shader.pso)
 
+    # -----------------------------------------------------------------
     def _create_white_placeholder(self):
         """Создать 1×1‑белую текстуру и SRV."""
-        # Белый пиксель – 0xFF 0xFF 0xFF 0xFF
-        white_pixel = (255).to_bytes(1, "little") * 4
+        white_pixel = (255).to_bytes(1, "little") * 4   # RGBA = (255,255,255,255)
 
-        # 1) создаём буфер‑загрузку (UPLOAD‑heap)
-        upload_buf = self.backend.create_buffer(white_pixel, usage="upload")
-
-        # 2) собственно создаём текстуру (DEFAULT‑heap)
+        # сразу создаём текстуру, сразу же заполняя её данными
         self.white_tex = self.backend.create_texture(
-            data=None,          # никаких начальных данных – сразу будем копировать
+            data=white_pixel,
             w=1,
             h=1,
             fmt="RGBA8",
         )
 
-        # 3) копируем данные из upload‑буфера в текстуру
-        self.backend.update_texture(self.white_tex, white_pixel, w=1, h=1)
-
-        # 4) SRV‑дескриптор
+        # SRV‑дескриптор
         srv_idx = self.backend.cbv_srv_uav_heap.next_free()
         cpu_handle = self.backend.cbv_srv_uav_heap.get_cpu_handle(srv_idx)
         self.backend.create_shader_resource_view(self.white_tex, cpu_handle)
 
-        # 5) сохраняем GPU‑хендл для быстрых bind‑ов в материалах
+        # GPU‑хендл для быстрого bind‑а
         self.default_srv_gpu = self.backend.cbv_srv_uav_heap.get_gpu_handle(srv_idx)
 
-    # ------------------------------------------------------------
+    # -----------------------------------------------------------------
     def resize(self, w: int, h: int) -> None:
         self.backend.set_viewport(0, 0, w, h)
         self.backend.set_scissor_rect(0, 0, w, h)
 
-    # ------------------------------------------------------------
+    # -----------------------------------------------------------------
     def render(self, scene, camera) -> None:
         self.backend.begin_frame()
+
         self.backend.set_viewport(0, 0,
                                  self.window.width, self.window.height)
         self.backend.set_scissor_rect(0, 0,
                                       self.window.width, self.window.height)
 
         view = camera.get_view_matrix()
-        proj = camera.get_projection_matrix(self.window.width / self.window.height)
+        proj = camera.get_projection_matrix(self.window.width /
+                                            self.window.height)
 
         self.shader.set_uniform_mat4("uView", view)
         self.shader.set_uniform_mat4("uProj", proj)
-        self.shader.set_uniform_vec3("uCamPos", camera.position)
+        # ← *ключевой* фикс: преобразуем Vec3 в массив
+        self.shader.set_uniform_vec3("uCamPos", camera.position.as_np())
 
         self.shader.use()
 
+        # bind back‑buffer (swap‑chain RTV0)
         rtv0 = self.backend.rtv_heap.get_cpu_handle(0)
         self.backend.set_render_target(rtv0)
         self.backend.clear_render_target(rtv0, (0.07, 0.07, 0.08, 1.0))
 
+        # -------------------------------------------------------------
+        # Обходим все узлы сцены
+        # -------------------------------------------------------------
         for node in scene.traverse():
             if not hasattr(node, "draw"):
                 continue
 
-            # Если у узла нет собственного материала – привязываем placeholder
+            # Если у узла есть материал – используем её,
+            # иначе привязываем white‑placeholder к слоту 1.
             if hasattr(node, "material"):
                 node.material.bind(self.backend)
             else:
-                # Слот 0 уже содержит CBV, а слот 1 – наш белый SRV.
                 self.backend.set_root_descriptor_table(1, self.default_srv_gpu)
 
+            # Model‑матрица
             self.shader.set_uniform_mat4("uModel", node.get_world_matrix().to_gl())
 
+            # Пользовательский цвет (если есть)
             if hasattr(node, "color"):
                 self.shader.set_uniform_vec3("uTint", node.color)
             else:
@@ -108,6 +115,7 @@ class ForwardRenderer:
                     "uTint", np.array([1.0, 1.0, 1.0], np.float32)
                 )
 
+            # Отрисовка меша (GPU‑буферы создаются внутри)
             node.draw(self.backend)
 
         self.backend.end_frame()

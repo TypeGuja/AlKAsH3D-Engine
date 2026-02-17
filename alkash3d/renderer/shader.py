@@ -1,3 +1,5 @@
+# alkash3d/renderer/shader.py
+# -*- coding: utf-8 -*-
 """
 Простейший менеджер HLSL‑шейдеров для DirectX 12.
 * Компилирует VS/PS через DX12‑бекенд.
@@ -14,15 +16,16 @@ from alkash3d.graphics.dx12_backend import DX12Backend
 
 class Shader:
     """Обёртка над парой VS/PS‑blob‑ов и готовым PSO."""
-    # простая таблица смещений внутри constant‑buffer
+    # смещения внутри constant‑buffer (по 64 байта для 4×4 матриц)
     _MAT_OFFSETS = {
         "uView":   0,
-        "uProj":  64,
+        "uProj":   64,
         "uModel": 128,
-        # пользовательские uniform‑ы можно добавить, указав их смещение
-        # (например, "uTint": 192)
+        "uTint": 192,                 # vec3 (12 байт) – сразу после трёх матриц
     }
-    _CB_SIZE = 192  # 3 * 64 байт (по три матрицы 4×4)
+
+    # 3 матрицы (3*64) + место для vec3 (12) → 204, выравниваем до 256 байт
+    _CB_SIZE = 256
 
     def __init__(self, backend: DX12Backend, vertex_path: str, fragment_path: str):
         self.backend = backend
@@ -48,71 +51,70 @@ class Shader:
             raise RuntimeError("Failed to create graphics pipeline")
 
         # ---------- constant‑buffer ----------
-        self._frame_cb = backend.create_constant_buffer(b"\x00" * self._CB_SIZE)
+        # backend.create_constant_buffer теперь возвращает (buffer, gpu_handle)
+        self._frame_cb, self._frame_cb_gpu = backend.create_constant_buffer(b"\x00" * self._CB_SIZE)
 
-        # один CBV‑дескриптор для constant‑buffer
-        idx = backend.cbv_srv_uav_heap.next_free()
-        cpu_handle = backend.cbv_srv_uav_heap.get_cpu_handle(idx)
-        backend.create_shader_resource_view(self._frame_cb, cpu_handle)
-        self._frame_cb_gpu = backend.cbv_srv_uav_heap.get_gpu_handle(idx)
-
-        # локальная копия данных (позволяет менять только нужные части)
+        # локальная копия данных (может менять только нужные части)
         self._frame_data = bytearray(self._CB_SIZE)
 
-        # Сохранить времена изменения файлов для hot‑reload
+        # запоминаем времена изменения файлов (для hot‑reload)
         self._vs_mtime = os.path.getmtime(vertex_path)
         self._ps_mtime = os.path.getmtime(fragment_path)
 
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     def use(self) -> None:
         """Привязать PSO к текущему командному списку."""
         self.backend.set_graphics_pipeline(self.pso)
 
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
+    def _write_to_cb(self, name: str, data_bytes: bytes) -> None:
+        """Общий помощник – записывает «data_bytes» в constant‑buffer."""
+        if name not in self._MAT_OFFSETS:
+            logger.debug(f"[Shader] Unknown uniform: {name}")
+            return
+        offset = self._MAT_OFFSETS[name]
+        self._frame_data[offset : offset + len(data_bytes)] = data_bytes
+        self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
+        self.backend.set_root_descriptor_table(0, self._frame_cb_gpu)
+
+    # -------------------------------------------------------------
     def set_uniform_mat4(self, name: str, mat) -> None:
-        """Записать 4×4‑матрицу в constant‑buffer."""
         if name not in self._MAT_OFFSETS:
             logger.debug(f"[Shader] Unknown mat4 uniform: {name}")
             return
-        offset = self._MAT_OFFSETS[name]
         arr = np.asarray(mat, dtype=np.float32).reshape(16)
-        self._frame_data[offset: offset + 64] = arr.tobytes()
-        self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
-        self.backend.set_root_descriptor_table(0, self._frame_cb_gpu)
+        self._write_to_cb(name, arr.tobytes())
 
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     def set_uniform_vec3(self, name: str, vec) -> None:
-        """Записать vec3 (12 байт) в constant‑buffer."""
+        """Принимает либо обычный массив/список, либо объект Vec3."""
         if name not in self._MAT_OFFSETS:
             logger.debug(f"[Shader] Unknown vec3 uniform: {name}")
             return
-        offset = self._MAT_OFFSETS[name]
-        arr = np.asarray(vec, dtype=np.float32).reshape(3)
-        self._frame_data[offset: offset + 12] = arr.tobytes()
-        self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
-        self.backend.set_root_descriptor_table(0, self._frame_cb_gpu)
 
-    # -----------------------------------------------------------------
+        # Если передан our‑Vec3 – берём массив через as_np()
+        if hasattr(vec, "as_np"):
+            arr = np.asarray(vec.as_np(), dtype=np.float32).reshape(3)
+        else:
+            arr = np.asarray(vec, dtype=np.float32).reshape(3)
+
+        self._write_to_cb(name, arr.tobytes())
+
+    # -------------------------------------------------------------
     def set_uniform_int(self, name: str, value: int) -> None:
         if name not in self._MAT_OFFSETS:
             logger.debug(f"[Shader] Unknown int uniform: {name}")
             return
-        offset = self._MAT_OFFSETS[name]
-        self._frame_data[offset: offset + 4] = struct.pack("<i", int(value))
-        self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
-        self.backend.set_root_descriptor_table(0, self._frame_cb_gpu)
+        self._write_to_cb(name, struct.pack("<i", int(value)))
 
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     def set_uniform_float(self, name: str, value: float) -> None:
         if name not in self._MAT_OFFSETS:
             logger.debug(f"[Shader] Unknown float uniform: {name}")
             return
-        offset = self._MAT_OFFSETS[name]
-        self._frame_data[offset: offset + 4] = struct.pack("<f", float(value))
-        self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
-        self.backend.set_root_descriptor_table(0, self._frame_cb_gpu)
+        self._write_to_cb(name, struct.pack("<f", float(value)))
 
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     def reload_if_needed(self) -> None:
         """Перекомпилировать шейдер, если файл изменился."""
         try:

@@ -25,22 +25,19 @@ class DescriptorHeap:
         if heap_type not in self._TYPE_MAP:
             raise ValueError(f"Unsupported heap type: {heap_type}")
 
+        # Приводим device к c_void_p (если передан «int»)
         if not isinstance(device, ctypes.c_void_p):
             try:
                 device = ctypes.c_void_p(int(device))
             except Exception:
                 raise TypeError(f"device must be convertible to c_void_p, got {type(device)}")
         self.device = device
-        self.num_descriptors = num_descriptors
+        self._num_descriptors = num_descriptors
         self.heap_type = heap_type
         self._next_free = 0
 
         heap_type_int = self._TYPE_MAP[heap_type]
-        self._heap = dx.create_descriptor_heap(
-            device,
-            num_descriptors,
-            heap_type_int,
-        )
+        self._heap = dx.create_descriptor_heap(device, num_descriptors, heap_type_int)
         if not self._heap or not self._heap.value:
             raise RuntimeError("create_descriptor_heap returned invalid pointer")
 
@@ -55,33 +52,45 @@ class DescriptorHeap:
         elif heap_type == "dsv":
             self._increment_size = dx.get_dsv_descriptor_size()
         else:
+            # типичный размер для CBV/SRV/UAV‑хипа
             self._increment_size = 32
 
+    # ------------------------------------------------------------------
     @property
     def heap(self) -> ctypes.c_void_p:
+        """Raw heap pointer – нужен драйверу."""
         return self._heap
 
+    @property
+    def num_descriptors(self) -> int:
+        """Количество дескрипторов – используется в Engine при росте RTV‑heap."""
+        return self._num_descriptors
+
+    # ------------------------------------------------------------------
     def next_free(self) -> int:
-        if self._next_free >= self.num_descriptors:
+        if self._next_free >= self._num_descriptors:
             raise RuntimeError("Descriptor heap exhausted")
         idx = self._next_free
         self._next_free += 1
         return idx
 
+    # ------------------------------------------------------------------
     def get_cpu_handle(self, index: int) -> int:
-        if index < 0 or index >= self.num_descriptors:
+        if index < 0 or index >= self._num_descriptors:
             raise ValueError(f"Index {index} out of range")
         if self.cpu_start == 0:
             return index * self._increment_size
         return dx.offset_descriptor_handle(self.cpu_start, index)
 
+    # ------------------------------------------------------------------
     def get_gpu_handle(self, index: int) -> int:
         if self.gpu_start == 0:
             return 0
-        if index < 0 or index >= self.num_descriptors:
+        if index < 0 or index >= self._num_descriptors:
             raise ValueError(f"Index {index} out of range")
         return dx.offset_descriptor_handle(self.gpu_start, index)
 
+    # ------------------------------------------------------------------
     def reset(self) -> None:
         """Сброс указателя – вызывается каждый кадр."""
         self._next_free = 0

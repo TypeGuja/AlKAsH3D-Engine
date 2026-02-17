@@ -1,0 +1,30 @@
+AlKAsH3D Advanced Diagnostic Log
+==================================================
+
+Time: 2026-02-15 19:44:25
+Python: 3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]
+
+
+--- Совместимость системы ---
+
+--- Создание DX12 устройства ---
+
+--- Компиляция шейдеров ---
+
+--- Создание графического конвейера ---
+
+--- Кучи дескрипторов ---
+
+--- Реальный рендеринг ---
+
+--- Framebuffer операции ---
+STDERR:
+C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\.venv\Lib\site-packages\glfw\__init__.py:917: GLFWError: (65546) b'Cannot make current with a window that has no OpenGL or OpenGL ES context'
+  warnings.warn(message, GLFWError)
+
+
+--- Видимость окна ---
+STDERR:
+C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\.venv\Lib\site-packages\glfw\__init__.py:917: GLFWError: (65546) b'Cannot swap buffers of a window that has no OpenGL or OpenGL ES context'
+  warnings.warn(message, GLFWError)
+

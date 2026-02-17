@@ -1,3 +1,4 @@
+# alkash3d/graphics/utils/d3d12_wrapper.py
 # -*- coding: utf-8 -*-
 """
 Thin‑wrapper over the Rust crate ``alkash3d_dx12``.
@@ -9,7 +10,7 @@ import ctypes
 import os
 import sys
 from pathlib import Path
-from typing import Callable, Any, Optional, Tuple
+from typing import Callable, Any, Tuple, Optional
 
 DEBUG = True
 
@@ -63,16 +64,13 @@ def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
     """Возвращает ``ctypes.c_void_p`` независимо от того, что передано."""
     if isinstance(ptr, ctypes.c_void_p):
         return ptr
-    # ``None`` → NULL‑pointer
     if ptr is None:
         return ctypes.c_void_p()
-    # ``int`` → привести к указателю
-    return ctypes.c_void_p(ptr)
+    return ctypes.c_void_p(int(ptr))
 
 
 # ----------------------------------------------------------------------
 # Универсальная загрузка функции из DLL.
-# Если ``required`` == True и символ не найден → RuntimeError.
 # ----------------------------------------------------------------------
 def _load_func(
     name: str,
@@ -99,7 +97,7 @@ def _load_func(
 
 
 # ----------------------------------------------------------------------
-# Загрузка всех функций из DLL (только те, которые действительно нужны)
+# Загрузка всех нужных функций
 # ----------------------------------------------------------------------
 _create_device = _load_func("create_device", ctypes.c_void_p, [], required=True)
 
@@ -136,10 +134,10 @@ _compile_shader = _load_func(
     "compile_shader",
     ctypes.c_int,
     [
-        ctypes.c_wchar_p,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_wchar_p,  # путь к файлу (UTF‑16)
+        ctypes.c_char_p,   # entry point
+        ctypes.c_char_p,   # профиль
+        ctypes.POINTER(ctypes.c_void_p),  # out_blob
     ],
     required=True,
 )
@@ -166,15 +164,19 @@ _update_subresource = _load_func(
     "update_subresource", None, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
 )
 
+# ----------------------------------------------------------------------
+# *** ИЗМЕНЕНИЕ *** – добавлен параметр `upload` (bool)
+# ----------------------------------------------------------------------
 _create_texture_from_memory = _load_func(
     "create_texture_from_memory",
     ctypes.c_void_p,
     [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_uint,
-        ctypes.c_uint,
-        ctypes.c_char_p,
+        ctypes.c_void_p,   # device
+        ctypes.c_void_p,   # data (может быть NULL)
+        ctypes.c_uint,    # width
+        ctypes.c_uint,    # height
+        ctypes.c_char_p,   # fmt string (UTF‑8)
+        ctypes.c_bool,    # upload?  True → UPLOAD‑heap, False → DEFAULT‑heap
     ],
     required=True,
 )
@@ -235,7 +237,6 @@ _set_descriptor_heaps = _load_func(
     required=True,
 )
 
-# set_render_target – НЕ обязательна (есть fallback через set_render_targets)
 _set_render_target = _load_func(
     "set_render_target", None, [ctypes.c_uintptr], required=False
 )
@@ -300,18 +301,41 @@ _set_vsync = _load_func("set_vsync", None, [ctypes.c_bool], required=False)
 
 
 # ----------------------------------------------------------------------
-#   High‑level API (более «дружественные» функции)
+# NEW: создание CBV‑дескриптора для постоянного буфера
+# ----------------------------------------------------------------------
+_create_constant_buffer_view = _load_func(
+    "create_constant_buffer_view",
+    None,
+    [
+        ctypes.c_void_p,   # device
+        ctypes.c_void_p,   # resource (ID3D12Resource)
+        ctypes.c_void_p,   # CPU‑descriptor‑handle (умолчание intptr)
+    ],
+    required=False,   # если DLL без этой функции – fallback‑режим
+)
+
+
+def create_constant_buffer_view(
+    device: ctypes.c_void_p,
+    resource: ctypes.c_void_p,
+    cpu_handle: ctypes.c_void_p,
+) -> None:
+    """Создаёт CBV‑дескриптор для буфера."""
+    if device and resource and cpu_handle:
+        _create_constant_buffer_view(_to_cvoid(device), _to_cvoid(resource), _to_cvoid(cpu_handle))
+
+
+# ----------------------------------------------------------------------
+# High‑level API (более «дружественные» функции)
 # ----------------------------------------------------------------------
 def create_device() -> ctypes.c_void_p:
-    result = _create_device()
-    return _to_cvoid(result)
+    return _to_cvoid(_create_device())
 
 
 def create_command_queue(device: ctypes.c_void_p) -> ctypes.c_void_p:
     if not device:
         return ctypes.c_void_p()
-    result = _create_command_queue(device)
-    return _to_cvoid(result)
+    return _to_cvoid(_create_command_queue(device))
 
 
 def create_swap_chain(
@@ -319,13 +343,14 @@ def create_swap_chain(
 ) -> ctypes.c_void_p:
     if not command_queue or not hwnd:
         return ctypes.c_void_p()
-    result = _create_swap_chain(
-        command_queue,
-        ctypes.c_uintptr(hwnd),
-        ctypes.c_uint(width),
-        ctypes.c_uint(height),
+    return _to_cvoid(
+        _create_swap_chain(
+            command_queue,
+            ctypes.c_uintptr(hwnd),
+            ctypes.c_uint(width),
+            ctypes.c_uint(height),
+        )
     )
-    return _to_cvoid(result)
 
 
 def resize_swap_chain(swap_chain: ctypes.c_void_p, width: int, height: int) -> None:
@@ -349,7 +374,7 @@ def compile_shader(file_path: str, entry_point: str, profile: str) -> int:
 
     hr = _compile_shader(src_utf16, entry_c, profile_c, ctypes.byref(out_blob))
     if hr != 0:
-        raise RuntimeError(f"Shader compilation failed with HRESULT {hr:#x}")
+        raise RuntimeError(f"Shader compilation failed: HRESULT {hr:#x}")
     return out_blob.value
 
 
@@ -358,37 +383,33 @@ def create_graphics_ps(
 ) -> ctypes.c_void_p:
     if not device or not vs_blob or not ps_blob:
         return ctypes.c_void_p()
-    result = _create_graphics_ps(device, vs_blob, ps_blob)
-    return _to_cvoid(result)
+    return _to_cvoid(_create_graphics_ps(device, vs_blob, ps_blob))
 
 
 def set_graphics_pipeline(pso: ctypes.c_void_p) -> None:
     """Установить PSO (один вызов)."""
     if pso:
-        _set_graphics_pipeline(pso)   # единственный вызов
+        _set_graphics_pipeline(pso)
 
 
 def swap_chain_get_buffer(swap_chain: ctypes.c_void_p, buffer_index: int) -> ctypes.c_void_p:
     if not swap_chain:
         return ctypes.c_void_p()
-    result = _swap_chain_get_buffer(swap_chain, ctypes.c_uint(buffer_index))
-    return _to_cvoid(result)
+    return _to_cvoid(_swap_chain_get_buffer(swap_chain, ctypes.c_uint(buffer_index)))
 
 
 def create_buffer(device: ctypes.c_void_p, size: int, usage: str = "default") -> ctypes.c_void_p:
     if not device or size <= 0:
         return ctypes.c_void_p()
     usage_bytes = usage.encode("utf-8")
-    result = _create_buffer(device, ctypes.c_size_t(size), ctypes.c_char_p(usage_bytes))
-    return _to_cvoid(result)
+    return _to_cvoid(_create_buffer(device, ctypes.c_size_t(size), ctypes.c_char_p(usage_bytes)))
 
 
 def update_subresource(buffer: Any, data: bytes) -> None:
     if not buffer or not data:
         return
     raw = ctypes.create_string_buffer(data, len(data))
-    data_ptr = ctypes.c_void_p(ctypes.addressof(raw))
-    _update_subresource(_to_cvoid(buffer), data_ptr, ctypes.c_size_t(len(data)))
+    _update_subresource(_to_cvoid(buffer), ctypes.c_void_p(ctypes.addressof(raw)), ctypes.c_size_t(len(data)))
 
 
 def create_texture_from_memory(
@@ -399,60 +420,47 @@ def create_texture_from_memory(
     fmt: str | bytes = "rgba8",
 ) -> ctypes.c_void_p:
     """
-    Создать 2‑D‑текстуру. Параметр ``fmt`` может быть строкой
-    (например, ``"RGBA8"``) или уже готовым ``bytes``‑значением
-    (например, ``b"RGBA8"``).  Функция сама гарантирует, что передаёт
-    корректный UTF‑8‑массив в нативную DLL.
+    `data` может быть ``None`` – в этом случае создаётся *DEFAULT*‑heap
+    (чтобы использовать ресурс как render‑target / depth‑buffer).
+    Если `data` присутствует, используем *UPLOAD*‑heap, потому что
+    нам нужно выполнить Map/Copy, а DEFAULT‑heap не поддерживает Map.
     """
     if not device or width <= 0 or height <= 0:
         return ctypes.c_void_p()
 
-    # -----------------------------------------------------------------
-    # Приводим fmt к ``bytes`` – если уже ``bytes`` – оставляем как есть,
-    # иначе кодируем в UTF‑8.
-    # -----------------------------------------------------------------
-    if isinstance(fmt, bytes):
-        fmt_bytes = fmt               # уже готовый набор байт
-    else:
-        fmt_bytes = str(fmt).encode("utf-8")
+    fmt_bytes = fmt if isinstance(fmt, bytes) else str(fmt).encode("utf-8")
 
-    # -----------------------------------------------------------------
-    # Подготовка указателя на данные (может быть None)
-    # -----------------------------------------------------------------
     data_ptr = ctypes.c_void_p()
     if data:
         buf = ctypes.create_string_buffer(data, len(data))
         data_ptr = ctypes.c_void_p(ctypes.addressof(buf))
 
-    # -----------------------------------------------------------------
-    # Вызываем нативную функцию
-    # -----------------------------------------------------------------
-    result = _create_texture_from_memory(
-        device,
-        data_ptr,
-        ctypes.c_uint(width),
-        ctypes.c_uint(height),
-        ctypes.c_char_p(fmt_bytes),
+    # Выбираем тип heap: upload=True ⇔ у нас есть начальные данные.
+    upload = bool(data)
+
+    return _to_cvoid(
+        _create_texture_from_memory(
+            device,
+            data_ptr,
+            ctypes.c_uint(width),
+            ctypes.c_uint(height),
+            ctypes.c_char_p(fmt_bytes),
+            ctypes.c_bool(upload),
+        )
     )
-    return _to_cvoid(result)
 
 
 def update_texture(texture: ctypes.c_void_p, data: bytes, width: int, height: int) -> None:
     if not texture or not data:
         return
     buf = ctypes.create_string_buffer(data, len(data))
-    data_ptr = ctypes.c_void_p(ctypes.addressof(buf))
-    _update_texture(_to_cvoid(texture), data_ptr, ctypes.c_uint(width), ctypes.c_uint(height))
+    _update_texture(_to_cvoid(texture), ctypes.c_void_p(ctypes.addressof(buf)), width, height)
 
 
-def create_descriptor_heap(
-    device: ctypes.c_void_p, num_descriptors: int, heap_type: int
-) -> ctypes.c_void_p:
+def create_descriptor_heap(device: ctypes.c_void_p, num_descriptors: int, heap_type: int) -> ctypes.c_void_p:
     if not device or num_descriptors <= 0:
         raise RuntimeError("Invalid parameters for descriptor heap")
-    result = _create_descriptor_heap(device, ctypes.c_uint(num_descriptors), ctypes.c_uint(heap_type))
-    # ``result`` может быть как ``int``, так и ``c_void_p`` – приводим к ``c_void_p``.
-    return _to_cvoid(result)
+    return _to_cvoid(_create_descriptor_heap(device, ctypes.c_uint(num_descriptors), ctypes.c_uint(heap_type)))
 
 
 def GetCPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
@@ -486,16 +494,23 @@ def set_root_descriptor_table(root_index: int, gpu_handle: int) -> None:
 
 
 def set_descriptor_heaps(heaps: Tuple[ctypes.c_void_p, ...]) -> None:
-    count = len(heaps)
+    """
+    ``heaps`` – кортеж/список *raw* дескриптор‑хипов (ctypes.c_void_p).
+    Если в список передали объект ``DescriptorHeap`` – берём его атрибут ``heap``.
+    """
+    raw = []
+    for h in heaps:
+        if hasattr(h, "heap"):
+            raw.append(ctypes.c_void_p(int(h.heap)))
+        else:
+            raw.append(ctypes.c_void_p(int(h)))
+    count = len(raw)
     array_type = ctypes.c_void_p * count
-    _set_descriptor_heaps(ctypes.c_size_t(count), array_type(*heaps))
+    _set_descriptor_heaps(ctypes.c_size_t(count), array_type(*raw))
 
 
 def set_render_target(rtv: int) -> None:
-    """
-    Если в DLL функция ``set_render_target`` отсутствует – используем
-    ``set_render_targets`` с единственным элементом.
-    """
+    """Если в DLL функция ``set_render_target`` отсутствует – используем ``set_render_targets``."""
     if _set_render_target:
         _set_render_target(ctypes.c_uintptr(rtv))
     else:
@@ -533,10 +548,7 @@ def set_viewport(
 
 def set_scissor_rect(left: int, top: int, right: int, bottom: int) -> None:
     _set_scissor_rect(
-        ctypes.c_int(left),
-        ctypes.c_int(top),
-        ctypes.c_int(right),
-        ctypes.c_int(bottom),
+        ctypes.c_int(left), ctypes.c_int(top), ctypes.c_int(right), ctypes.c_int(bottom)
     )
 
 
@@ -628,6 +640,7 @@ __all__ = [
     "offset_descriptor_handle",
     "create_shader_resource_view",
     "create_render_target_view",
+    "create_constant_buffer_view",   # <<‑ NEW
     "set_root_descriptor_table",
     "set_descriptor_heaps",
     "set_render_target",

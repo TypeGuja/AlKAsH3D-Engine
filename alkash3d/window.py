@@ -1,13 +1,14 @@
 # alkash3d/window.py
+# -*- coding: utf-8 -*-
 """
 Окно + GLFW‑контекст (без OpenGL‑контекста, нужен для DX12).
 """
 
 import glfw
-import os
 from alkash3d.core.input import InputManager
 from pathlib import Path
 from typing import Optional
+
 
 class Window:
     """Окно + GLFW‑контекст."""
@@ -30,22 +31,10 @@ class Window:
         self.title = title
         self.input = InputManager(self.handle)
 
-        # После инициализации бекенд будет присвоен в Engine.__init__
+        # После инициализации бэкенд будет присвоен в Engine.__init__
         self.backend: Optional["alkash3d.graphics.backend.GraphicsBackend"] = None
 
         glfw.set_framebuffer_size_callback(self.handle, self._on_resize)
-
-        # ---------------------------------------------------------
-        #  **Важный момент** – делаем рабочий каталог тем же,
-        #  что и каталог, из которого запущен пример.
-        #  Это избавляет от необходимости в каждом скрипте делать
-        #  `os.chdir(...)`.
-        # ---------------------------------------------------------
-        script_dir = os.path.abspath(os.path.dirname(__file__))
-        os.chdir(os.path.abspath(os.path.join(script_dir, "..")))   # <-- перейти в корень проекта
-        # Если вы запускаете пример из любого места, cwd теперь будет
-        # корневой каталог репозитория, где находятся `examples`,
-        # `resources` и т.д.
 
         # V‑sync будет включён позже через Engine.set_vsync()
         self.set_vsync(True)
@@ -57,12 +46,12 @@ class Window:
     # ---------------------------------------------------------
     def set_vsync(self, enable: bool = True) -> None:
         """
-        Делегируем настройку V‑sync бекенду (DX12‑бекенд умеет
-        менять sync‑interval у Present).  В GL‑режиме можно было бы
-        вызвать glfw.swap_interval().
+        Делегируем настройку V‑Sync бекенду (DX12‑бекенд умеет менять sync‑interval у Present).
+        В GL‑режиме можно было бы вызвать `glfw.swap_interval()`.
         """
         self._vsync = enable
         if self.backend is not None:
+            # DX12‑бекенд реализует set_vsync через stub‑функцию в wrapper.
             self.backend.set_vsync(enable)
 
     # ---------------------------------------------------------

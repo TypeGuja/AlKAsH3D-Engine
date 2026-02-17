@@ -1,0 +1,161 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>AlKAsH3D Diagnostic Report</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .pass { color: green; }
+                .fail { color: red; }
+                .critical { background-color: #ffeeee; }
+                .important { background-color: #ffffcc; }
+                table { border-collapse: collapse; width: 100%; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                .suggestion { color: blue; }
+            </style>
+        </head>
+        <body>
+            <h1>AlKAsH3D Engine Diagnostic Report</h1>
+            <p>Generated: 2026-02-15 19:44:25</p>
+
+            <h2>System Information</h2>
+            <table>
+                <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>os</td><td>win32</td></tr><tr><td>python</td><td>3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]</td></tr><tr><td>cwd</td><td>C:\Users\user\Documents\GitHub\AlKAsH3D-Engine</td></tr><tr><td>path</td><td>['C:\\Users\\user\\Documents\\GitHub\\AlKAsH3D-Engine', 'C:\\Users\\user\\Documents\\GitHub\\AlKAsH3D-Engine', 'C:\\Users\\user\\Documents\\GitHub\\AlKAsH3D-Engine\\alkash3d\\alkash3d_dx12\\src', 'C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip', 'C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python312\\DLLs', 'C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python312\\Lib', 'C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python312', 'C:\\Users\\user\\Documents\\GitHub\\AlKAsH3D-Engine\\.venv', 'C:\\Users\\user\\Documents\\GitHub\\AlKAsH3D-Engine\\.venv\\Lib\\site-packages']</td></tr><tr><td>gpu</td><td>{'renderer': 'NVIDIA GeForce RTX 3050/PCIe/SSE2', 'vendor': 'NVIDIA Corporation', 'version': '4.6.0 NVIDIA 591.86', 'glsl_version': '4.60 NVIDIA'}</td></tr>
+            </table>
+
+            <h2>Test Results</h2>
+            <table>
+                <tr>
+                    <th>Test</th>
+                    <th>Level</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Details</th>
+                </tr>
+        
+                <tr class="critical">
+                    <td>Совместимость системы</td>
+                    <td>🔴 КРИТИЧЕСКИЙ</td>
+                    <td class="pass">✅ PASS</td>
+                    <td>0.03s</td>
+                    <td>Тест выполнен успешно<br>
+                        
+                        
+                    </td>
+                </tr>
+            
+                <tr class="critical">
+                    <td>Создание DX12 устройства</td>
+                    <td>🔴 КРИТИЧЕСКИЙ</td>
+                    <td class="fail">❌ FAIL</td>
+                    <td>0.15s</td>
+                    <td>Тест не пройден<br>
+                        <span class="fail">Error: Не удалось создать swap chain</span>
+                        <br><span class="suggestion">Suggestions: Проверьте настройки экрана и разрешение, Убедитесь, что окно не свернуто</span>
+                    </td>
+                </tr>
+            
+                <tr class="critical">
+                    <td>Компиляция шейдеров</td>
+                    <td>🔴 КРИТИЧЕСКИЙ</td>
+                    <td class="pass">✅ PASS</td>
+                    <td>0.00s</td>
+                    <td>Тест выполнен успешно<br>
+                        
+                        
+                    </td>
+                </tr>
+            
+                <tr class="critical">
+                    <td>Создание графического конвейера</td>
+                    <td>🔴 КРИТИЧЕСКИЙ</td>
+                    <td class="pass">✅ PASS</td>
+                    <td>0.31s</td>
+                    <td>Тест выполнен успешно<br>
+                        
+                        
+                    </td>
+                </tr>
+            
+                <tr class="important">
+                    <td>Кучи дескрипторов</td>
+                    <td>🟠 ВАЖНЫЙ</td>
+                    <td class="pass">✅ PASS</td>
+                    <td>0.02s</td>
+                    <td>Тест выполнен успешно<br>
+                        
+                        
+                    </td>
+                </tr>
+            
+                <tr class="critical">
+                    <td>Реальный рендеринг</td>
+                    <td>🔴 КРИТИЧЕСКИЙ</td>
+                    <td class="pass">✅ PASS</td>
+                    <td>0.17s</td>
+                    <td>Тест выполнен успешно<br>
+                        
+                        
+                    </td>
+                </tr>
+            
+                <tr class="important">
+                    <td>Framebuffer операции</td>
+                    <td>🟠 ВАЖНЫЙ</td>
+                    <td class="fail">❌ FAIL</td>
+                    <td>0.01s</td>
+                    <td>Тест не пройден<br>
+                        <span class="fail">Error: Ошибка framebuffer: GLError(
+	err = 1282,
+	description = b'\xed\xe5\xe4\xee\xef\xf3\xf1\xf2\xe8\xec\xe0\xff \xee\xef\xe5\xf0\xe0\xf6\xe8\xff',
+	baseOperation = glClearColor,
+	cArguments = (0.5, 0.5, 0.5, 1.0)
+)</span>
+                        
+                    </td>
+                </tr>
+            
+                <tr class="normal">
+                    <td>Видимость окна</td>
+                    <td>🔵 ОБЫЧНЫЙ</td>
+                    <td class="fail">❌ FAIL</td>
+                    <td>0.03s</td>
+                    <td>Тест не пройден<br>
+                        <span class="fail">Error: Ошибка окна: 1750383104</span>
+                        
+                    </td>
+                </tr>
+            
+            </table>
+
+            <h2>Captured Output</h2>
+            <pre>
+        
+--- Совместимость системы ---
+
+--- Создание DX12 устройства ---
+
+--- Компиляция шейдеров ---
+
+--- Создание графического конвейера ---
+
+--- Кучи дескрипторов ---
+
+--- Реальный рендеринг ---
+
+--- Framebuffer операции ---
+<span class='fail'>C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\.venv\Lib\site-packages\glfw\__init__.py:917: GLFWError: (65546) b'Cannot make current with a window that has no OpenGL or OpenGL ES context'
+  warnings.warn(message, GLFWError)
+</span>
+
+--- Видимость окна ---
+<span class='fail'>C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\.venv\Lib\site-packages\glfw\__init__.py:917: GLFWError: (65546) b'Cannot swap buffers of a window that has no OpenGL or OpenGL ES context'
+  warnings.warn(message, GLFWError)
+</span>
+
+            </pre>
+        </body>
+        </html>
+        

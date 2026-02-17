@@ -3,49 +3,28 @@
 PBR‑материал – хранит параметры (albedo, metallic, roughness, ao,
 emissive) и ссылки на DX12‑текстуры.
 
-В отличие от прежней реализации, здесь:
-
-1️⃣  Текстуры **загружаются** (по‑запросу) в методе
-    `_ensure_textures`.  Этот метод вызывается в начале `bind`,
-    поэтому материал гарантировано имеет готовый `DX12Texture`.
-
-2️⃣  Для материала **не создаётся свой CBV** – все матрицы передаются
-    через единственный `constant‑buffer`, который создаёт `Shader`
-    (`Shader._frame_cb`).  Поскольку в текущем `forward`‑шейдере
-    параметры материала не используются, отдельный CBV не нужен.
-    (Если в будущих шейдерах понадобится отдельный буфер,
-    его можно добавить, но сейчас – лишний оверхед).
-
-3️⃣  После загрузки текстуры создаётся **SRV‑дескриптор** в heap‑е
-    `cbv_srv_uav_heap`, а затем вызывается
-    `backend.set_root_descriptor_table(1, gpu_handle)`.  Слот 1
-    соответствует **SRV** в корневой подписи (CBV – slot 0,
-    SRV – slot 1).
-
-Таким образом `bind()` теперь действительно привязывает вашу
-текстуру к шейдеру, а чёрный экран исчезает.
+* Текстуры **загружаются** (по‑запросу) в методе `_ensure_textures`.
+* Для материала **не создаётся свой CBV** – все матрицы передаются через
+  один constant‑buffer, который создаёт `Shader` (`Shader._frame_cb`).
+* После загрузки текстуры создаётся **SRV‑дескриптор** в heap‑е
+  `cbv_srv_uav_heap`, а затем вызывается
+  `backend.set_root_descriptor_table(1, gpu_handle)`.  Слот 1
+  соответствует **SRV** в корневой подписи (CBV – slot 0,
+  SRV – slot 1).
 """
 
 from __future__ import annotations
 
 import numpy as np
-
 from alkash3d.utils import logger
 from alkash3d.utils.texture_loader import load_texture
-from alkash3d.graphics.dx12_backend import DX12Backend
+from alkash3d.graphics.dx12_backend import DX12Backend, DX12Texture
 
 
 class PBRMaterial:
-    """
-    Хранит параметры PBR‑материала и ссылки на DX12‑текстуры.
-    Привязывает только **одну** текстуру (по‑умолчанию – albedo‑map).
-    """
-
-    # Уникальный “binding point” – пока только для отладки/расширений.
+    """Хранит параметры PBR‑материала и ссылки на DX12‑текстуры."""
     _binding_counter = 0
 
-    # -------------------------------------------------------------
-    # Инициализация
     # -------------------------------------------------------------
     def __init__(
         self,
@@ -62,25 +41,15 @@ class PBRMaterial:
         emissive_map: str | None = None,
     ) -> None:
         # ---------------------------------------------------------
-        # 0️⃣  Уникальный id (не используется в текущей версии)
-        # ---------------------------------------------------------
         self.binding_point = PBRMaterial._binding_counter
         PBRMaterial._binding_counter += 1
 
         # ---------------------------------------------------------
-        # 1️⃣  Параметры материала (записываются в constant‑buffer
-        #     только в том случае, если шейдер их использует)
-        # ---------------------------------------------------------
         self._cb_data = np.array(
-            list(albedo)                     # 4 float – albedo
-            + [metallic, roughness, ao]      # 3 float
-            + list(emissive)                 # 3 float – emissive
-            + [0.0, 0.0, 0.0],               # 3 pad‑float’а
+            list(albedo) + [metallic, roughness, ao] + list(emissive) + [0.0, 0.0, 0.0],
             dtype=np.float32,
-        ).tobytes()                           # 48 байт, но сейчас не используется
+        ).tobytes()      # пока не используется
 
-        # ---------------------------------------------------------
-        # 2️⃣  Путь к пользовательским картам (загружаются «лениво»)
         # ---------------------------------------------------------
         self._texture_paths: dict[str, str] = {}
         if albedo_map:
@@ -96,76 +65,41 @@ class PBRMaterial:
         if emissive_map:
             self._texture_paths["emissive"] = emissive_map
 
-        # После загрузки в `self.textures` будет храниться реальная
-        # `DX12Texture`‑обёртка, возвращаемая `load_texture`.
-        self.textures: dict[str, any] = {}
+        self.textures: dict[str, DX12Texture] = {}
+        self._srv_index: int | None = None   # один SRV‑дескриптор для всех карт
 
-    # -------------------------------------------------------------
-    # Внутренний помощник – загрузка всех отложенных карт
     # -------------------------------------------------------------
     def _ensure_textures(self, backend: DX12Backend) -> None:
-        """
-        Если карта ещё не загружена – вызываем `load_texture`,
-        сохраняем полученный объект в `self.textures`.
-        """
+        """Загружаем отложенные текстуры и создаём один SRV‑дескриптор."""
         for name, path in self._texture_paths.items():
             if name in self.textures:
-                continue          # уже загружена
-
+                continue
             try:
                 tex = load_texture(path, backend)
                 logger.debug(f"[Material] Loaded texture '{name}' from {path}")
             except Exception as exc:
-                # При любой ошибке – создаём простую чёрную 1×1‑текстуру,
-                # чтобы шейдер не падал.
                 logger.error(f"[Material] Failed to load texture '{path}': {exc}")
                 tex = backend.create_texture(
                     data=b"\x00\x00\x00\x00", w=1, h=1, fmt="RGBA8"
                 )
             self.textures[name] = tex
 
-    # -------------------------------------------------------------
-    # Привязка материала к пайплайну
+        # Если SRV‑дескриптор ещё не создан – делаем его сейчас
+        if self._srv_index is None and self.textures:
+            self._srv_index = backend.cbv_srv_uav_heap.next_free()
+            cpu_handle = backend.cbv_srv_uav_heap.get_cpu_handle(self._srv_index)
+            first_tex = next(iter(self.textures.values()))
+            backend.create_shader_resource_view(first_tex, cpu_handle)
+
     # -------------------------------------------------------------
     def bind(self, backend: DX12Backend) -> None:
-        """
-        1️⃣  Гарантируем, что все карты загружены.
-        2️⃣  Выбираем *первую* из загруженных карт (обычно albedo)
-            и создаём SRV‑дескриптор в `cbv_srv_uav_heap`.
-        3️⃣  Привязываем SRV к slot 1 (в корневой подписи он идёт
-            сразу после CBV).
-        """
-        # -----------------------------------------------------------------
-        # 0️⃣  Убедимся, что карта(и) находятся в виде DX12‑texture‑объекта
-        # -----------------------------------------------------------------
+        """Привязать материал к пайплайну (устанавливаем SRV‑slot 1)."""
         self._ensure_textures(backend)
 
-        # -----------------------------------------------------------------
-        # 1️⃣  Если пользователь не указал ни одной карты – ничего не делаем.
-        #     В `ForwardRenderer` в момент инициализации уже создана
-        #     «белая placeholder‑текстура» и привязана к slot 1, так что
-        #     оставляем её.
-        # -----------------------------------------------------------------
-        if not self.textures:
+        if self._srv_index is None:
+            # Если вообще нет текстур – оставляем привязанным placeholder‑текстуру,
+            # которая обычно создаётся в ForwardRenderer.
             return
 
-        # -----------------------------------------------------------------
-        # 2️⃣  Берём первую (обычно albedo) текстуру.
-        # -----------------------------------------------------------------
-        tex = next(iter(self.textures.values()))
-
-        # -----------------------------------------------------------------
-        # 3️⃣  Выделяем дескриптор в heap‑е, создаём SRV и привязываем.
-        # -----------------------------------------------------------------
-        srv_idx = backend.cbv_srv_uav_heap.next_free()
-        cpu_handle = backend.cbv_srv_uav_heap.get_cpu_handle(srv_idx)
-        backend.create_shader_resource_view(tex, cpu_handle)
-
-        # GPU‑handle, который передаём в root‑signature (slot 1)
-        srv_gpu = backend.cbv_srv_uav_heap.get_gpu_handle(srv_idx)
-        backend.set_root_descriptor_table(1, srv_gpu)
-
-        # -------------------------------------------------------------
-        # (Если в будущем понадобится несколько текстур – просто
-        #  добавить их в `self.textures` и привязать к другим слотам.)
-        # -------------------------------------------------------------
+        gpu_handle = backend.cbv_srv_uav_heap.get_gpu_handle(self._srv_index)
+        backend.set_root_descriptor_table(1, gpu_handle)

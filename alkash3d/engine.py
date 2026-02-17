@@ -8,6 +8,7 @@
   пересоздаёт RTV‑дескрипторы (иначе получаем чёрный кадр).
 * Включён V‑Sync, FPS‑counter и система плагинов.
 """
+
 import time
 import glfw
 from alkash3d.core.timer import Timer
@@ -28,26 +29,16 @@ from alkash3d.renderer.pipelines.deferred import DeferredRenderer
 from alkash3d.renderer.pipelines.hybrid import HybridRenderer
 from alkash3d.renderer.pipelines.rtx_renderer import RTXRenderer
 from alkash3d.graphics import select_backend
-from alkash3d.graphics.gl_backend import GLBackend   # только для тип‑чеков
-from alkash3d.graphics.utils.descriptor_heap import DescriptorHeap   # NEW
+from alkash3d.graphics.utils.descriptor_heap import DescriptorHeap   # новый импорт
 
 
 class Engine:
-    """
-    Главный цикл движка.
-    """
-    # -----------------------------------------------------------------
-    def __init__(
-        self,
-        width: int = 1280,
-        height: int = 720,
-        title: str = "AlKAsH3D Engine",
-        renderer: str = "forward",          # forward | deferred | hybrid | rtx
-        backend_name: str = "dx12",        # dx12 | gl
-    ):
-        # ---------------------------------------------------------
-        # 0️⃣  Конфиг + окно
-        # ---------------------------------------------------------
+    # -------------------------------------------------------------
+    def __init__(self, width: int = 1280, height: int = 720,
+                 title: str = "AlKAsH3D Engine",
+                 renderer: str = "forward",
+                 backend_name: str = "dx12"):
+        # 0️⃣ Конфиг + окно
         self.cfg = Config()
         win_cfg = self.cfg["window"]
         self.window = self._create_window(
@@ -56,43 +47,43 @@ class Engine:
             win_cfg.get("title", title),
         )
 
-        # ---------------------------------------------------------
-        # 1️⃣  Выбор и инициализация графического бекенда
-        # ---------------------------------------------------------
+        # 1️⃣ Выбор и инициализация графического бэкенда
         self.backend = select_backend(backend_name)
-        self.backend.init_device(
-            self.window.hwnd,
-            self.window.width,
-            self.window.height,
-        )
-        self.backend.set_viewport(0, 0,
-                                 self.window.width, self.window.height)
-        self.backend.set_scissor_rect(0, 0,
-                                      self.window.width, self.window.height)
+        self.backend.init_device(self.window.hwnd,
+                                 self.window.width,
+                                 self.window.height)
 
-        # ---------------------------------------------------------
-        # 2️⃣  Увеличиваем RTV‑heap (по‑умолчанию 2 дескриптора) и
-        #     сразу пересоздаём RTV‑дескрипторы для swap‑chain.
-        # ---------------------------------------------------------
-        # +1 «свободный» дескриптор (нужен, если захотим ещё какой‑нибудь RTV)
+        # привязываем бекенд к окну – теперь `Window.swap_buffers` и `set_vsync`
+        # делегируют вызовы нужным функциям.
+        self.window.backend = self.backend      # <<< FIX
+
+        self.backend.set_viewport(0, 0, self.window.width, self.window.height)
+        self.backend.set_scissor_rect(0, 0, self.window.width, self.window.height)
+
+        # 2️⃣ Увеличиваем RTV‑heap (по‑умолчанию 2 дескриптора) и сразу
+        #    пересоздаём RTV‑дескрипторы для swap‑chain.
         new_rtv_cnt = self.backend.rtv_heap.num_descriptors + 1
         self.backend.rtv_heap = DescriptorHeap(
             device=self.backend.device,
             num_descriptors=new_rtv_cnt,
             heap_type="rtv",
         )
+        # Привязываем оба хипа (RTV + CBV/SRV/UAV) сразу
+        self.backend.set_descriptor_heaps([self.backend.rtv_heap,
+                                          self.backend.cbv_srv_uav_heap])
+
         # После замены heap создаём RTV‑дескрипторы заново
         self.backend.recreate_swapchain_rtv()
 
         # ---------------------------------------------------------
-        # 3️⃣  Сцена + камера
+        # 3️⃣ Сцена + камера
         # ---------------------------------------------------------
         self.scene = Scene()
         self.camera = Camera()
         self.scene.add_child(self.camera)
 
         # ---------------------------------------------------------
-        # 4️⃣  Выбор рендера
+        # 4️⃣ Выбор рендера
         # ---------------------------------------------------------
         if renderer == "forward":
             self.renderer = ForwardRenderer(self.window, self.backend)
@@ -106,22 +97,13 @@ class Engine:
             raise ValueError(f"Unknown renderer mode: {renderer}")
 
         # ---------------------------------------------------------
-        # 5️⃣  Пост‑процессинг (только для GL‑бэкенда)
+        # 5️⃣ Пост‑процессинг (только для GL‑бэкенда)
         # ---------------------------------------------------------
-        if isinstance(self.backend, GLBackend):
-            self.postprocess = PostProcessingPipeline(
-                self.window.width, self.window.height
-            )
-            self.postprocess.add_pass(BloomPass())
-            self.postprocess.add_pass(SSAOPass())
-            self.postprocess.add_pass(TemporalAAPass())
-            self.postprocess.add_pass(ColorGradingPass())
-            self.postprocess.add_pass(TonemapPass())
-        else:
-            self.postprocess = None
+        # (в текущей версии поддерживается только DX12, поэтому оставляем None)
+        self.postprocess = None
 
         # ---------------------------------------------------------
-        # 6️⃣  Плагины
+        # 6️⃣ Плагины
         # ---------------------------------------------------------
         self.plugin_manager = PluginManager()
         self.plugin_manager.discover()
@@ -136,7 +118,7 @@ class Engine:
             self.renderer.postproc = self.postprocess
 
         # ---------------------------------------------------------
-        # 7️⃣  V‑Sync, таймер, FPS‑counter
+        # 7️⃣ V‑Sync, таймер, FPS‑counter
         # ---------------------------------------------------------
         glfw.set_framebuffer_size_callback(
             self.window.handle,
@@ -180,7 +162,7 @@ class Engine:
             self.window.poll_events()
             self.camera.update_fly(dt, self.window.input)
 
-            # F9 – FPS‑display, F10 – V‑Sync
+            # F9 — FPS‑display, F10 — V‑Sync
             self._handle_toggle_key(glfw.KEY_F9, "show_fps", "FPS display")
             self._handle_toggle_key(glfw.KEY_F10, "v_sync", "V‑Sync")
 
@@ -195,7 +177,8 @@ class Engine:
             if not hasattr(self.renderer, "postproc") and self.postprocess:
                 self.postprocess.run(self.backend)
 
-            self.window.swap_buffers()
+            # *** НЕ вызываем double Present ***
+            # self.window.swap_buffers()   <-- отключено, Present уже в end_frame()
 
             if self.show_fps:
                 now = time.time()

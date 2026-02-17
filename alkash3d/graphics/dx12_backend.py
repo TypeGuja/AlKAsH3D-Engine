@@ -1,3 +1,4 @@
+# alkash3d/graphics/dx12_backend.py
 # -*- coding: utf-8 -*-
 """
 Полнофункциональный DirectX 12‑бэкенд.
@@ -5,9 +6,8 @@
 * При отсутствии нативной DLL переходим в stub‑режим.
 * Добавлен метод `recreate_swapchain_rtv()` – заново создаёт RTV‑дескрипторы
   после замены `rtv_heap`.
-* `create_texture()` теперь **не делает Map** для ресурсов в `DEFAULT`‑heap –
-  данные копируются через `dx.update_texture`, устраняя ошибку
-  `HRESULT 0x80070057`.
+* `create_texture()` теперь **не делает Map** для ресурсов в `DEFAULT`‑heap – данные
+  копируются через `dx.update_texture`, устраняя ошибку `HRESULT 0x80070057`.
 """
 
 from __future__ import annotations
@@ -35,8 +35,6 @@ class DX12Backend(GraphicsBackend):
     """DirectX 12‑бэкенд с автоматическим переходом в stub‑режим."""
 
     # -----------------------------------------------------------------
-    # Инициализация
-    # -----------------------------------------------------------------
     def __init__(self) -> None:
         self.device: Optional[ctypes.c_void_p] = None
         self.command_queue: Optional[ctypes.c_void_p] = None
@@ -58,8 +56,6 @@ class DX12Backend(GraphicsBackend):
         self._height: int = 0
 
     # -----------------------------------------------------------------
-    # Внутренние вспомогательные методы
-    # -----------------------------------------------------------------
     def _reset_viewport_and_scissor(self, w: int, h: int) -> None:
         """Установить начальные параметры Viewport/Scissor и отразить их в драйвере."""
         self.viewport = (0, 0, w, h)
@@ -69,6 +65,7 @@ class DX12Backend(GraphicsBackend):
             self.set_viewport(0, 0, w, h)
             self.set_scissor_rect(0, 0, w, h)
 
+    # -----------------------------------------------------------------
     def _create_swapchain_rtv(self) -> None:
         """
         Создать RTV‑дескрипторы для всех back‑buffer‑ов swap‑chain.
@@ -132,7 +129,7 @@ class DX12Backend(GraphicsBackend):
 
             self._reset_viewport_and_scissor(width, height)
 
-            # ---------- RTV‑heap (по‑умолчанию 2 + 1) ----------
+            # ---------- RTV‑heap ----------
             self.rtv_heap = DescriptorHeap(
                 device=self.device,
                 num_descriptors=dx.SWAP_CHAIN_BUFFER_COUNT + 1,
@@ -159,11 +156,14 @@ class DX12Backend(GraphicsBackend):
                 )
                 logger.debug("[DX12Backend] CBV/SRV/UAV heap (256) created")
 
-            # ---------- Создаём RTV‑дескрипторы (если есть swap‑chain) ----------
+            # ---------- RTV‑дескрипторы ----------
             if self.rtv_heap and self.swap_chain:
                 self._create_swapchain_rtv()
             else:
                 logger.debug("[DX12Backend] Skipping RTV creation (no swap chain)")
+
+            # Привязываем оба descriptor‑heap’а к командному списку сразу.
+            self.set_descriptor_heaps([self.rtv_heap, self.cbv_srv_uav_heap])
 
             self._in_stub_mode = False
             logger.info("[DX12Backend] Device initialised successfully")
@@ -173,8 +173,6 @@ class DX12Backend(GraphicsBackend):
             self._in_stub_mode = True
             self.device = ctypes.c_void_p(0xDEADBEEF)
 
-    # -----------------------------------------------------------------
-    # Resize
     # -----------------------------------------------------------------
     def resize(self, width: int, height: int) -> None:
         logger.info(f"[DX12Backend] Resize {width}x{height}")
@@ -190,8 +188,6 @@ class DX12Backend(GraphicsBackend):
                 self._in_stub_mode = True
 
     # -----------------------------------------------------------------
-    # Present
-    # -----------------------------------------------------------------
     def present(self) -> None:
         """Present с учётом текущего флага V‑sync."""
         if not self._in_stub_mode and self.swap_chain and self.swap_chain.value:
@@ -203,11 +199,9 @@ class DX12Backend(GraphicsBackend):
                 self._in_stub_mode = True
 
     # -----------------------------------------------------------------
-    # V‑sync (stub)
-    # -----------------------------------------------------------------
     def set_vsync(self, enable: bool) -> None:
         self._vsync_enabled = enable
-        # Реальная работа делается в `present`.
+        # реальное переключение происходит в `present`
 
     # -----------------------------------------------------------------
     # Шейдеры
@@ -278,13 +272,31 @@ class DX12Backend(GraphicsBackend):
         if self._in_stub_mode:
             return
         try:
-            dx.update_subresource(_to_cvoid(buffer), data)
+            dx.update_subresource(buffer, data)
         except Exception as e:
             logger.debug(f"[DX12Backend] Buffer update failed: {e}")
 
-    def create_constant_buffer(self, data: bytes) -> Any:
-        """Создаём const‑buffer (используется в Shader)."""
-        return self.create_buffer(data, usage="constant")
+    def create_constant_buffer(self, data: bytes) -> tuple[Any, int]:
+        """Создаёт const‑buffer (внутри же и CBV‑дескриптор)."""
+        if self._in_stub_mode or not self.device or not self.device.value:
+            dummy = ctypes.c_void_p(0xDEADBEEF + len(data))
+            return dummy, 0xDEADDEAD
+
+        buf = dx.create_buffer(self.device, len(data), usage="constant")
+        if not buf or not buf.value:
+            raise RuntimeError("Native constant buffer creation returned nullptr")
+
+        self.update_buffer(buf, data)
+
+        # CBV‑дескриптор
+        idx = self.cbv_srv_uav_heap.next_free()
+        cpu_handle = self.cbv_srv_uav_heap.get_cpu_handle(idx)
+        dx.create_constant_buffer_view(self.device, buf, ctypes.c_void_p(cpu_handle))
+
+        gpu_handle = self.cbv_srv_uav_heap.get_gpu_handle(idx)
+
+        self._resources.append(buf)
+        return buf, gpu_handle
 
     # -----------------------------------------------------------------
     # Текстуры
@@ -296,11 +308,6 @@ class DX12Backend(GraphicsBackend):
         h: int,
         fmt: str = "RGBA8",
     ) -> DX12Texture:
-        """
-        Создать 2‑D текстуру.
-        Параметр ``fmt`` может быть как ``str``, так и ``bytes`` – в
-        последнем случае он будет декодирован в UTF‑8.
-        """
         logger.debug(f"[DX12Backend] Creating texture {w}×{h} fmt={fmt}")
 
         if self._in_stub_mode or not self.device or not self.device.value:
@@ -309,45 +316,35 @@ class DX12Backend(GraphicsBackend):
             tex._srv_gpu = 0xDEADDEAD
             return tex
 
-        # -----------------------------------------------------------------
-        # Приводим fmt к строке, поддерживаем bytes
-        # -----------------------------------------------------------------
-        if isinstance(fmt, bytes):
-            fmt_str = fmt.decode("utf-8", errors="ignore")
+        fmt_bytes = fmt.encode("utf-8") if isinstance(fmt, str) else fmt
+
+        # -------------------------------------------------------------
+        # 1) Выбираем тип heap:
+        #    * если есть исходные байты – UPLOAD‑heap (можно Map)
+        #    * если данных нет – DEFAULT‑heap (render‑target / depth‑buffer)
+        # -------------------------------------------------------------
+        tex_ptr = dx.create_texture_from_memory(self.device, data, w, h, fmt_bytes)
+
+        if not tex_ptr or not tex_ptr.value:
+            raise RuntimeError("Native texture creation returned nullptr")
+
+        tex = DX12Texture(tex_ptr)
+
+        # 2) Если у текстуры есть данные, они уже скопированы внутри
+        #    `dx.create_texture_from_memory` (для UPLOAD‑heap) либо
+        #    `dx.update_texture` будет вызван позже (для DEFAULT‑heap).
+
+        # 3) SRV‑дескриптор (если есть CBV/SRV/UAV‑heap)
+        if self.cbv_srv_uav_heap:
+            idx = self.cbv_srv_uav_heap.next_free()
+            cpu_handle = self.cbv_srv_uav_heap.get_cpu_handle(idx)
+            self.create_shader_resource_view(tex, cpu_handle)
+            tex._srv_gpu = self.cbv_srv_uav_heap.get_gpu_handle(idx)
         else:
-            fmt_str = str(fmt)
-
-        fmt_bytes = fmt_str.lower().encode("utf-8")
-        # -----------------------------------------------------------------
-
-        try:
-            tex_ptr = dx.create_texture_from_memory(self.device, None, w, h, fmt_bytes)
-            if not tex_ptr or not tex_ptr.value:
-                raise RuntimeError("Native texture creation returned nullptr")
-
-            tex = DX12Texture(tex_ptr)
-
-            # Если заданы данные – сразу копируем их в текстуру
-            if data is not None:
-                self.update_texture(tex, data, w, h)
-
-            # SRV‑дескриптор (если у бэкенда есть CBV/SRV/UAV‑heap)
-            if self.cbv_srv_uav_heap:
-                idx = self.cbv_srv_uav_heap.next_free()
-                cpu_handle = self.cbv_srv_uav_heap.get_cpu_handle(idx)
-                self.create_shader_resource_view(tex, cpu_handle)
-                tex._srv_gpu = self.cbv_srv_uav_heap.get_gpu_handle(idx)
-            else:
-                tex._srv_gpu = 0xDEADDEAD
-
-            self._resources.append(tex.ptr)
-            return tex
-        except Exception as e:
-            logger.error(f"[DX12Backend] Texture creation exception: {e}")
-            dummy = ctypes.c_void_p(0xDEADBEEF + w + h)
-            tex = DX12Texture(dummy)
             tex._srv_gpu = 0xDEADDEAD
-            return tex
+
+        self._resources.append(tex.ptr)
+        return tex
 
     # -----------------------------------------------------------------
     # Дескриптор‑хипы
@@ -407,11 +404,17 @@ class DX12Backend(GraphicsBackend):
                 logger.debug(f"[DX12Backend] Set root descriptor table failed: {e}")
 
     def set_descriptor_heaps(self, heaps: Sequence[Any]) -> None:
-        if not self._in_stub_mode:
-            try:
-                dx.set_descriptor_heaps(tuple(heaps))
-            except Exception as e:
-                logger.debug(f"[DX12Backend] Set descriptor heaps failed: {e}")
+        """
+        ``heaps`` – любой объект, у которого есть атрибут ``heap`` (DescriptorHeap)
+        либо уже raw‑c_void_p.
+        """
+        if self._in_stub_mode:
+            return
+        try:
+            raw = tuple(h.heap if hasattr(h, "heap") else h for h in heaps)
+            dx.set_descriptor_heaps(raw)
+        except Exception as e:
+            logger.debug(f"[DX12Backend] Set descriptor heaps failed: {e}")
 
     # -----------------------------------------------------------------
     # Render‑targets
@@ -426,7 +429,7 @@ class DX12Backend(GraphicsBackend):
     def set_render_targets(self, rtvs: Sequence[Any]) -> None:
         if not self._in_stub_mode:
             try:
-                dx.set_render_targets(tuple(rtvs))
+                dx.set_render_targets(rtvs)
             except Exception as e:
                 logger.debug(f"[DX12Backend] Set render targets failed: {e}")
 
@@ -505,11 +508,7 @@ class DX12Backend(GraphicsBackend):
         if not self._in_stub_mode:
             try:
                 dx.draw_indexed_instanced(
-                    index_count,
-                    instance_count,
-                    start_index,
-                    base_vertex,
-                    0,
+                    index_count, instance_count, start_index, base_vertex, 0
                 )
             except Exception as e:
                 logger.debug(f"[DX12Backend] Draw indexed failed: {e}")
@@ -544,7 +543,7 @@ class DX12Backend(GraphicsBackend):
     def release_resource(self, resource: Any) -> None:
         if resource and not self._in_stub_mode:
             try:
-                dx.release_resource(_to_cvoid(resource))
+                dx.release_resource(resource)
             except Exception as e:
                 logger.debug(f"[DX12Backend] Release resource failed: {e}")
 
@@ -558,13 +557,13 @@ class DX12Backend(GraphicsBackend):
 
     def begin_frame(self) -> None:
         logger.debug("[DX12Backend] begin_frame")
-        # Сбрасываем индексы дескриптор‑хипов каждый кадр,
-        # иначе они «набираются» и в итоге исчерпываются.
         if self.rtv_heap:
             self.rtv_heap.reset()
         if self.cbv_srv_uav_heap:
             self.cbv_srv_uav_heap.reset()
-        # Реальный reset‑allocator/command‑list делаем в Rust‑модуле (begin_frame).
+
+        # привязываем оба descriptor‑heap’а каждый кадр (нужны после изменения heap)
+        self.set_descriptor_heaps([self.rtv_heap, self.cbv_srv_uav_heap])
 
     def end_frame(self) -> None:
         logger.debug("[DX12Backend] end_frame – presenting")
@@ -574,6 +573,19 @@ class DX12Backend(GraphicsBackend):
     def shutdown(self) -> None:
         """Освободить все нативные ресурсы."""
         logger.info("[DX12Backend] Releasing all native resources")
+
+        # -----------------------------------------------------------------
+        # 1) Если кадр был открыт – завершаем его, чтобы список команд
+        #    был закрыт и GPU не держал ссылки на освобождаемые буферы.
+        # -----------------------------------------------------------------
+        try:
+            self.end_frame()
+        except Exception as exc:
+            logger.debug(f"[DX12Backend] end_frame during shutdown failed: {exc}")
+
+        # -----------------------------------------------------------------
+        # 2) Теперь безопасно освобождаем ресурсы.
+        # -----------------------------------------------------------------
         for r in self._resources:
             try:
                 self.release_resource(r)
@@ -589,7 +601,7 @@ class DX12Backend(GraphicsBackend):
             return
         try:
             ptr = getattr(tex, "ptr", tex)
-            dx.update_texture(ptr, data, ctypes.c_uint(w), ctypes.c_uint(h))
+            dx.update_texture(ptr, data, w, h)
         except Exception as e:
             logger.debug(f"[DX12Backend] Update texture failed: {e}")
 
@@ -612,7 +624,6 @@ class DX12Backend(GraphicsBackend):
         """
         self._create_swapchain_rtv()
 
-
 # ----------------------------------------------------------------------
 # Вспомогательная функция – безопасный каст к c_void_p (используется в
 # некоторых местах, где может быть передано как int, так и c_void_p)
@@ -622,5 +633,4 @@ def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
         return ptr
     if ptr is None:
         return ctypes.c_void_p()
-    # int, bool, etc.
     return ctypes.c_void_p(int(ptr))

@@ -17,7 +17,7 @@ from alkash3d.math.mat4 import Mat4
 from alkash3d.math.quat import Quat
 
 # Версия пакета
-__version__ = "1.0.0"
+__version__ = "1.txt.0.0"
 
 __all__ = [
     "Engine",
