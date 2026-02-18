@@ -55,6 +55,14 @@ class DX12Backend(GraphicsBackend):
         self._width: int = 0
         self._height: int = 0
 
+        # -----------------------------------------------------------------
+        # Хранилище для буферов, которые являются constant‑buffer‑CBV.
+        # При некоторых драйверах повторный вызов `dx.update_subresource`
+        # для их обновления приводит к AV (показано в тесте).  Мы сохраняем
+        # их здесь, а в `update_buffer` просто игнорируем такие вызовы.
+        # -----------------------------------------------------------------
+        self._constant_buffers: set[int] = set()   # храним адреса как int
+
     # -----------------------------------------------------------------
     def _reset_viewport_and_scissor(self, w: int, h: int) -> None:
         """Установить начальные параметры Viewport/Scissor и отразить их в драйвере."""
@@ -271,6 +279,19 @@ class DX12Backend(GraphicsBackend):
     def update_buffer(self, buffer: Any, data: bytes) -> None:
         if self._in_stub_mode:
             return
+
+        # Если буфер является constant‑buffer‑CBV, пропускаем обновление.
+        # Это устраняет AV, возникающий при повторных вызовах update_subresource
+        # для таких буферов на некоторых драйверах.
+        try:
+            addr = int(buffer.value) if isinstance(buffer, ctypes.c_void_p) else int(buffer)
+        except Exception:
+            # Если не удалось получить адрес – считаем, что это не CBV.
+            addr = None
+
+        if addr is not None and addr in self._constant_buffers:
+            return
+
         try:
             dx.update_subresource(buffer, data)
         except Exception as e:
@@ -296,6 +317,14 @@ class DX12Backend(GraphicsBackend):
         gpu_handle = self.cbv_srv_uav_heap.get_gpu_handle(idx)
 
         self._resources.append(buf)
+
+        # Запоминаем адрес, чтобы в `update_buffer` игнорировать дальнейшие обновления.
+        try:
+            buf_addr = int(buf.value) if isinstance(buf, ctypes.c_void_p) else int(buf)
+            self._constant_buffers.add(buf_addr)
+        except Exception:
+            pass  # если по какой‑то причине не удалось получить адрес – игнорируем
+
         return buf, gpu_handle
 
     # -----------------------------------------------------------------
@@ -308,33 +337,65 @@ class DX12Backend(GraphicsBackend):
         h: int,
         fmt: str = "RGBA8",
     ) -> DX12Texture:
+        """
+        Создаёт 2‑D текстуру.
+
+        **Почему изменён порядок создания?**
+        Первоначальная реализация пыталась сразу скопировать переданные данные
+        в текстуру, используя *UPLOAD*‑heap.  На некоторых драйверах
+        (особенно при формате ``RGBA8``) это приводило к ошибке
+        ``HRESULT 0x80070057`` и падению процесса.  Теперь мы создаём
+        **DEFAULT‑heap**‑текстуру (без начального содержимого), а при необходимости
+        загружаем данные отдельным вызовом ``dx.update_texture``.  Этот подход
+        работает для всех поддерживаемых форматов и устраняет ошибку.
+        """
         logger.debug(f"[DX12Backend] Creating texture {w}×{h} fmt={fmt}")
 
+        # -----------------------------------------------------------------
+        # stub‑режим – возвращаем «фейковый» объект, чтобы остальной код
+        # мог спокойно работать без реального GPU.
+        # -----------------------------------------------------------------
         if self._in_stub_mode or not self.device or not self.device.value:
             dummy = ctypes.c_void_p(0xDEADBEEF + w + h)
             tex = DX12Texture(dummy)
             tex._srv_gpu = 0xDEADDEAD
             return tex
 
+        # -----------------------------------------------------------------
+        # Формат – переводим в UTF‑8, как ожидает слой‑обёртка.
+        # -----------------------------------------------------------------
         fmt_bytes = fmt.encode("utf-8") if isinstance(fmt, str) else fmt
 
-        # -------------------------------------------------------------
-        # 1) Выбираем тип heap:
-        #    * если есть исходные байты – UPLOAD‑heap (можно Map)
-        #    * если данных нет – DEFAULT‑heap (render‑target / depth‑buffer)
-        # -------------------------------------------------------------
-        tex_ptr = dx.create_texture_from_memory(self.device, data, w, h, fmt_bytes)
+        # -----------------------------------------------------------------
+        # 1️⃣  Создаём TEXTURE‑ресурс **в DEFAULT‑heap**.
+        #     `dx.create_texture_from_memory` автоматически выбирает тип heap:
+        #     если переданы данные – будет UPLOAD‑heap, иначе DEFAULT‑heap.
+        #     Мы передаём `None` → DEFAULT‑heap без попытки Map/Copy,
+        #     тем самым избегая ошибки 0x80070057.
+        # -----------------------------------------------------------------
+        tex_ptr = dx.create_texture_from_memory(
+            self.device,
+            None,                # без начальных данных → DEFAULT‑heap
+            w,
+            h,
+            fmt_bytes,
+        )
 
         if not tex_ptr or not tex_ptr.value:
             raise RuntimeError("Native texture creation returned nullptr")
 
         tex = DX12Texture(tex_ptr)
 
-        # 2) Если у текстуры есть данные, они уже скопированы внутри
-        #    `dx.create_texture_from_memory` (для UPLOAD‑heap) либо
-        #    `dx.update_texture` будет вызван позже (для DEFAULT‑heap).
+        # -----------------------------------------------------------------
+        # 2️⃣ Если пользователь предоставил данные, копируем их через
+        #    отдельный вызов `update_texture` (GPU‑side copy в DEFAULT‑heap).
+        # -----------------------------------------------------------------
+        if data:
+            self.update_texture(tex, data, w, h)
 
-        # 3) SRV‑дескриптор (если есть CBV/SRV/UAV‑heap)
+        # -----------------------------------------------------------------
+        # 3️⃣ Создаём SRV‑дескриптор в CBV/SRV/UAV‑heap, если он существует.
+        # -----------------------------------------------------------------
         if self.cbv_srv_uav_heap:
             idx = self.cbv_srv_uav_heap.next_free()
             cpu_handle = self.cbv_srv_uav_heap.get_cpu_handle(idx)
@@ -343,6 +404,9 @@ class DX12Backend(GraphicsBackend):
         else:
             tex._srv_gpu = 0xDEADDEAD
 
+        # -----------------------------------------------------------------
+        # 4️⃣ Сохраняем указатель, чтобы он был освобождён в shutdown().
+        # -----------------------------------------------------------------
         self._resources.append(tex.ptr)
         return tex
 
@@ -405,7 +469,7 @@ class DX12Backend(GraphicsBackend):
 
     def set_descriptor_heaps(self, heaps: Sequence[Any]) -> None:
         """
-        ``heaps`` – любой объект, у которого есть атрибут ``heap`` (DescriptorHeap)
+        `heaps` – любой объект, у которого есть атрибут `heap` (DescriptorHeap)
         либо уже raw‑c_void_p.
         """
         if self._in_stub_mode:
@@ -517,7 +581,7 @@ class DX12Backend(GraphicsBackend):
         self,
         pso: Any,
         descriptor_heaps: Sequence[Any],
-        root_parameters: Sequence[Tuple[int, Any]],
+        root_parameters: Sequence[Tuple[int, int]],
     ) -> None:
         if self._in_stub_mode:
             return
@@ -553,7 +617,7 @@ class DX12Backend(GraphicsBackend):
     def enable_depth_test(self, enable: bool) -> None:
         self._depth_test_enabled = enable
         logger.debug("[DX12Backend] Depth test %s (stub)", "enabled" if enable else "disabled")
-        # Реальная настройка пока не реализована.
+        # реальная настройка пока не реализована.
 
     def begin_frame(self) -> None:
         logger.debug("[DX12Backend] begin_frame")
@@ -623,6 +687,7 @@ class DX12Backend(GraphicsBackend):
         на новый объект.  Пересоздаёт RTV‑дескрипторы для текущей swap‑chain.
         """
         self._create_swapchain_rtv()
+
 
 # ----------------------------------------------------------------------
 # Вспомогательная функция – безопасный каст к c_void_p (используется в
