@@ -1465,7 +1465,6 @@ pub extern "C" fn create_texture_from_memory(
     width: u32,
     height: u32,
     fmt: *const u8,
-    upload: bool,                     // ← новый параметр
 ) -> *mut c_void {
     if device_ptr.is_null() || width == 0 || height == 0 {
         return ptr::null_mut();
@@ -1491,7 +1490,8 @@ pub extern "C" fn create_texture_from_memory(
             _ => DXGI_FORMAT_R8G8B8A8_UNORM,
         };
 
-        // 3️⃣ Создаём ресурс (heap‑type задаётся флагом `upload`)
+        // 3️⃣ Создаём ресурс. Если есть данные - используем UPLOAD heap
+        let upload = !data_ptr.is_null();
         let tex_opt = texture_mod::create_2d(&device, width, height, dxgi_format, upload);
         let tex = match tex_opt {
             Some(t) => t,
@@ -1507,12 +1507,20 @@ pub extern "C" fn create_texture_from_memory(
                 DXGI_FORMAT_R32G32B32A32_FLOAT => 16,
                 _ => 4,
             };
-            texture_mod::update(&tex, data_ptr, width, height, bpp);
+
+            if !texture_mod::update(&tex, data_ptr, width, height, bpp) {
+                debug_println!("[texture] Failed to update texture data");
+                // Продолжаем выполнение - текстура создана, но данные не загружены
+            }
         }
 
         // 5️⃣ Возврат «сырого» указателя COM‑объекта
         let raw = tex.as_raw();
         std::mem::forget(tex);
+        std::mem::forget(device);
+
+        debug_println!("[texture] Created successfully at {:p}, format={:?}, size={}x{}",
+                      raw, dxgi_format, width, height);
         raw as *mut c_void
     }
 }
