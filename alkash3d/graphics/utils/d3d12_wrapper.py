@@ -445,7 +445,7 @@ def create_texture_from_memory(
             ctypes.c_uint(width),
             ctypes.c_uint(height),
             ctypes.c_char_p(fmt_bytes),
-            ctypes.c_bool(upload),
+            ctypes.c_bool(upload),  # ← ВАЖНО: передаём параметр upload!
         )
     )
 
