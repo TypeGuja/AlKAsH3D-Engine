@@ -2308,3 +2308,86 @@ pub extern "C" fn get_last_error() -> *const std::os::raw::c_char {
         ERROR_BUFFER.as_ptr() as *const std::os::raw::c_char
     }
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn begin_frame() {
+    debug_println!("\n[API] begin_frame() called");
+
+    let (allocator, list) = {
+        let state = STATE.lock().unwrap();
+        (
+            state.command_allocator.clone(),
+            state.command_list.clone(),
+        )
+    };
+
+    if let (Some(allocator), Some(list)) = (allocator, list) {
+        let _ = allocator.Reset();
+        let _ = list.Reset(&allocator, None);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn set_render_target(rtv: usize) {
+    debug_println!("\n[API] set_render_target({:#x})", rtv);
+
+    let state = STATE.lock().unwrap();
+    if let Some(list) = &state.command_list {
+        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
+        list.OMSetRenderTargets(1, Some(&rtv_handle), false, None);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn clear_render_target(rtv: usize, color: *const f32) {
+    if color.is_null() {
+        return;
+    }
+
+    debug_println!("\n[API] clear_render_target({:#x})", rtv);
+
+    let state = STATE.lock().unwrap();
+    if let Some(list) = &state.command_list {
+        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
+        let clear_color = std::slice::from_raw_parts(color, 4);
+        list.ClearRenderTargetView(rtv_handle, clear_color, None);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn end_frame() -> bool {
+    debug_println!("\n[API] end_frame() called");
+
+    let (list, queue, swap_chain) = {
+        let state = STATE.lock().unwrap();
+        (
+            state.command_list.clone(),
+            state.command_queue.clone(),
+            state.swap_chain.clone(),
+        )
+    };
+
+    if let (Some(list), Some(queue), Some(swap_chain)) = (list, queue, swap_chain) {
+        // Закрываем командный список
+        if let Err(e) = list.Close() {
+            debug_println!("[API] Failed to close command list");
+            return false;
+        }
+
+        // Выполняем команды
+        let raw_ptr = list.as_raw() as *mut c_void;
+        let cmd_list = ID3D12CommandList::from_raw(raw_ptr);
+        let lists = [Some(cmd_list)];
+        queue.ExecuteCommandLists(&lists);
+
+        // Презентуем
+        if let Err(e) = swap_chain.Present(1, 0) {
+            debug_println!("[API] Present failed");
+            return false;
+        }
+
+        true
+    } else {
+        false
+    }
+}
