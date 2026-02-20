@@ -8,6 +8,7 @@
   после замены `rtv_heap`.
 * `create_texture()` теперь **не делает Map** для ресурсов в `DEFAULT`‑heap – данные
   копируются через `dx.update_texture`, устраняя ошибку `HRESULT 0x80070057`.
+* Добавлена защита от двойного освобождения ресурсов.
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ class DX12Backend(GraphicsBackend):
 
         self._rtv_cpu_handles: list[int] = []
         self._resources: list[Any] = []
+        self._released_resources = set()  # Множество освобожденных ресурсов
         self._depth_test_enabled: bool = False
         self._in_stub_mode: bool = False
 
@@ -88,6 +90,37 @@ class DX12Backend(GraphicsBackend):
                 debug_print("  viewport/scissor set")
             except Exception as e:
                 debug_print(f"  ERROR setting viewport/scissor: {e}")
+
+    # -----------------------------------------------------------------
+    # ИСПРАВЛЕНО: Защита от двойного освобождения
+    # -----------------------------------------------------------------
+    def release_resource(self, resource):
+        """Безопасное освобождение ресурса с защитой от двойного освобождения."""
+        if not resource:
+            return
+
+        # Получаем указатель
+        ptr = int(resource) if hasattr(resource, 'value') else int(resource)
+
+        # Проверяем stub-указатели
+        stub_pointers = [0xDEADBEEF, 0xDEADF00D, 0xFEEDC0DE, 0x12345678, 0x87654321]
+        if ptr in stub_pointers:
+            debug_print(f"  SKIPPED: stub pointer {ptr:#x}")
+            return
+
+        # Проверяем, не освобождали ли уже этот ресурс
+        if ptr in self._released_resources:
+            debug_print(f"  SKIPPED: already released recently {ptr:#x}")
+            return
+
+        try:
+            self._released_resources.add(ptr)
+            dx.release_resource(resource)
+            debug_print(f"  -> OK (released {ptr:#x})")
+        except Exception as e:
+            debug_print(f"  ERROR: {e}")
+            # Если ошибка, убираем из множества, чтобы можно было повторить
+            self._released_resources.discard(ptr)
 
     # -----------------------------------------------------------------
     def _create_swapchain_rtv(self) -> None:
@@ -733,15 +766,6 @@ class DX12Backend(GraphicsBackend):
             except Exception as e:
                 debug_print(f"  Wait for GPU failed: {e}")
 
-    def release_resource(self, resource: Any) -> None:
-        debug_print(f"release_resource(resource={hex(resource.value if resource else 0)})")
-        if resource and not self._in_stub_mode:
-            try:
-                dx.release_resource(resource)
-                debug_print("  -> OK")
-            except Exception as e:
-                debug_print(f"  Release resource failed: {e}")
-
     # -----------------------------------------------------------------
     # Frame‑management
     # -----------------------------------------------------------------
@@ -778,6 +802,9 @@ class DX12Backend(GraphicsBackend):
         except Exception as exc:
             debug_print(f"  end_frame during shutdown failed: {exc}")
 
+        # Очищаем множество освобожденных ресурсов перед освобождением
+        self._released_resources.clear()
+
         for i, r in enumerate(self._resources):
             debug_print(f"  releasing resource[{i}]: {hex(r.value if r else 0)}")
             try:
@@ -795,8 +822,17 @@ class DX12Backend(GraphicsBackend):
         if self._in_stub_mode:
             debug_print("  STUB mode - skipping")
             return
+
+        # Проверяем на stub-указатели
+        ptr = getattr(tex, "ptr", tex)
+        ptr_val = ptr.value if hasattr(ptr, 'value') else int(ptr) if ptr else 0
+        stub_pointers = [0xDEADBEEF, 0xDEADF00D, 0xFEEDC0DE, 0x12345678, 0x87654321]
+
+        if ptr_val in stub_pointers:
+            debug_print(f"  SKIPPED: stub pointer {ptr_val:#x}")
+            return
+
         try:
-            ptr = getattr(tex, "ptr", tex)
             dx.update_texture(ptr, data, w, h)
             debug_print("  -> OK")
         except Exception as e:
