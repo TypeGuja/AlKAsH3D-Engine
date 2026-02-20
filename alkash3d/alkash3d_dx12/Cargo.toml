@@ -18,3 +18,4 @@ windows = { version = "0.52", features = [
     "Win32_Security",  # Добавлено для CreateEventW
 ] }
 windows-core = "0.52"
+lazy_static = "1.5.0"

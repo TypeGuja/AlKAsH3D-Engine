@@ -577,9 +577,6 @@ mod buffer_mod {
         resource_opt
     }
 
-    // lib.rs – модуль buffer_mod
-    // src/lib.rs – модуль buffer_mod
-    // src/lib.rs – модуль buffer_mod
     pub unsafe fn update(
         resource: &ID3D12Resource,
         data: *const c_void,
@@ -1003,9 +1000,17 @@ mod release_mod {
             return;
         }
 
+        // Проверяем на слишком маленькие адреса (уже освобождены)
+        if ptr_val < 0x10000 {
+            debug_println!("[release] Suspiciously small pointer: {:#x}, skipping", ptr_val);
+            return;
+        }
+
         let _ = std::panic::catch_unwind(|| {
             let unknown = IUnknown::from_raw(ptr);
+            // Просто забываем - drop вызовет Release
             std::mem::drop(unknown);
+            debug_println!("[release] Resource released successfully");
         });
     }
 }
@@ -1028,8 +1033,42 @@ pub extern "C" fn release_resource(res_ptr: *mut c_void) {
         return;
     }
 
+    // Проверяем на слишком маленькие адреса (уже освобождены)
+    if ptr_val < 0x10000 {
+        debug_println!("[release] Suspiciously small pointer: {:#x}, skipping", ptr_val);
+        return;
+    }
+
     unsafe {
         release_mod::release_resource(res_ptr);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn force_cleanup() {
+    println!("\n[API] force_cleanup() called - ПРИНУДИТЕЛЬНАЯ ОЧИСТКА");
+
+    unsafe {
+        let mut state = STATE.lock().unwrap();
+
+        // Очищаем все ресурсы
+        state.command_list = None;
+        state.command_allocator = None;
+        state.swap_chain = None;
+        state.command_queue = None;
+        state.root_signature = None;
+        state.fence = None;
+        state.rtv_heap = None;
+        state.device = None;
+
+        // Сбрасываем значения
+        state.rtv_descriptor_size = 0;
+        state.dsv_descriptor_size = 0;
+        state.cbv_srv_uav_descriptor_size = 0;
+        state.frame_index = 0;
+        state.fence_value = 0;
+
+        println!("[API] force_cleanup() - завершено");
     }
 }
 
@@ -1458,6 +1497,7 @@ pub extern "C" fn update_subresource(
     }
 }
 
+// ИСПРАВЛЕНО: Убрал параметр upload, теперь функция принимает 5 параметров
 #[no_mangle]
 pub extern "C" fn create_texture_from_memory(
     device_ptr: *mut c_void,
@@ -1517,7 +1557,6 @@ pub extern "C" fn create_texture_from_memory(
         // 5️⃣ Возврат «сырого» указателя COM‑объекта
         let raw = tex.as_raw();
         std::mem::forget(tex);
-        std::mem::forget(device);
 
         debug_println!("[texture] Created successfully at {:p}, format={:?}, size={}x{}",
                       raw, dxgi_format, width, height);
@@ -2133,8 +2172,6 @@ pub extern "C" fn init_device(hwnd: usize, width: u32, height: u32) -> bool {
     }
 }
 
-// Функция render_frame УДАЛЕНА - используем begin_frame/end_frame
-
 #[no_mangle]
 pub unsafe extern "C" fn end_frame() -> bool {
     println!("\n[API] end_frame() called");
@@ -2306,88 +2343,5 @@ pub extern "C" fn get_last_error() -> *const std::os::raw::c_char {
             ERROR_BUFFER[i] = byte;
         }
         ERROR_BUFFER.as_ptr() as *const std::os::raw::c_char
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn begin_frame() {
-    debug_println!("\n[API] begin_frame() called");
-
-    let (allocator, list) = {
-        let state = STATE.lock().unwrap();
-        (
-            state.command_allocator.clone(),
-            state.command_list.clone(),
-        )
-    };
-
-    if let (Some(allocator), Some(list)) = (allocator, list) {
-        let _ = allocator.Reset();
-        let _ = list.Reset(&allocator, None);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn set_render_target(rtv: usize) {
-    debug_println!("\n[API] set_render_target({:#x})", rtv);
-
-    let state = STATE.lock().unwrap();
-    if let Some(list) = &state.command_list {
-        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
-        list.OMSetRenderTargets(1, Some(&rtv_handle), false, None);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn clear_render_target(rtv: usize, color: *const f32) {
-    if color.is_null() {
-        return;
-    }
-
-    debug_println!("\n[API] clear_render_target({:#x})", rtv);
-
-    let state = STATE.lock().unwrap();
-    if let Some(list) = &state.command_list {
-        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
-        let clear_color = std::slice::from_raw_parts(color, 4);
-        list.ClearRenderTargetView(rtv_handle, clear_color, None);
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn end_frame() -> bool {
-    debug_println!("\n[API] end_frame() called");
-
-    let (list, queue, swap_chain) = {
-        let state = STATE.lock().unwrap();
-        (
-            state.command_list.clone(),
-            state.command_queue.clone(),
-            state.swap_chain.clone(),
-        )
-    };
-
-    if let (Some(list), Some(queue), Some(swap_chain)) = (list, queue, swap_chain) {
-        // Закрываем командный список
-        if let Err(e) = list.Close() {
-            debug_println!("[API] Failed to close command list");
-            return false;
-        }
-
-        // Выполняем команды
-        let raw_ptr = list.as_raw() as *mut c_void;
-        let cmd_list = ID3D12CommandList::from_raw(raw_ptr);
-        let lists = [Some(cmd_list)];
-        queue.ExecuteCommandLists(&lists);
-
-        // Презентуем
-        if let Err(e) = swap_chain.Present(1, 0) {
-            debug_println!("[API] Present failed");
-            return false;
-        }
-
-        true
-    } else {
-        false
     }
 }
