@@ -65,12 +65,15 @@ class Camera(Node):
         x = np.cos(pitch) * np.sin(yaw)
         y = np.sin(pitch)
         z = np.cos(pitch) * np.cos(yaw)
-        return Vec3(x, y, -z).normalized()
+        # ИСПРАВЛЕНО: .normalized() -> .normalize()
+        return Vec3(x, y, -z).normalize()
 
     @property
     def right(self):
-        return self.forward.cross(Vec3(0.0, 1.0, 0.0)).normalized()
+        # ИСПРАВЛЕНО: .normalized() -> .normalize()
+        return self.forward.cross(Vec3(0.0, 1.0, 0.0)).normalize()
 
     @property
     def up(self):
-        return self.right.cross(self.forward).normalized()
+        # ИСПРАВЛЕНО: .normalized() -> .normalize()
+        return self.right.cross(self.forward).normalize()
