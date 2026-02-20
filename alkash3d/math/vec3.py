@@ -4,65 +4,80 @@
 
 import numpy as np
 
-class Vec3:
-    __slots__ = ("_v",)
 
-    def __init__(self, x=0.0, y=0.0, z=0.0):
-        self._v = np.array([x, y, z], dtype=np.float32)
+class Vec3:
+    """3D вектор"""
+
+    def __init__(self, x: float = 0.0, y: float = 0.0, z: float = 0.0):
+        self._data = np.array([x, y, z], dtype=np.float32)
 
     @property
     def x(self) -> float:
-        return float(self._v[0])
+        return self._data[0]
 
     @x.setter
     def x(self, value: float):
-        self._v[0] = float(value)
+        self._data[0] = value
 
     @property
     def y(self) -> float:
-        return float(self._v[1])
+        return self._data[1]
 
     @y.setter
     def y(self, value: float):
-        self._v[1] = float(value)
+        self._data[1] = value
 
     @property
     def z(self) -> float:
-        return float(self._v[2])
+        return self._data[2]
 
     @z.setter
     def z(self, value: float):
-        self._v[2] = float(value)
+        self._data[2] = value
 
-    def __add__(self, other):
-        return Vec3(*(self._v + other._v))
+    # Добавьте эти property для совместимости
+    @property
+    def data(self) -> np.ndarray:
+        return self._data
 
-    def __sub__(self, other):
-        return Vec3(*(self._v - other._v))
+    def __add__(self, other: 'Vec3') -> 'Vec3':
+        if hasattr(other, '_data'):
+            return Vec3(*(self._data + other._data))
+        return Vec3(*(self._data + other))
 
-    def __mul__(self, scalar):
-        return Vec3(*(self._v * scalar))
+    def __sub__(self, other: 'Vec3') -> 'Vec3':
+        if hasattr(other, '_data'):
+            return Vec3(*(self._data - other._data))
+        return Vec3(*(self._data - other))
 
-    __rmul__ = __mul__
+    def __mul__(self, scalar: float) -> 'Vec3':
+        return Vec3(*(self._data * scalar))
 
-    def dot(self, other):
-        return float(np.dot(self._v, other._v))
+    def __repr__(self) -> str:
+        return f"Vec3({self.x:.2f}, {self.y:.2f}, {self.z:.2f})"
 
-    def cross(self, other):
-        return Vec3(*np.cross(self._v, other._v))
+    def length(self) -> float:
+        return float(np.linalg.norm(self._data))
 
-    def length(self):
-        return float(np.linalg.norm(self._v))
+    def normalize(self) -> 'Vec3':
+        length = self.length()
+        if length > 0:
+            return Vec3(*(self._data / length))
+        return Vec3()
 
-    def normalized(self):
-        n = self.length()
-        if n == 0.0:
-            return Vec3()
-        return Vec3(*(self._v / n))
+    def dot(self, other: 'Vec3') -> float:
+        if hasattr(other, '_data'):
+            return float(np.dot(self._data, other._data))
+        return float(np.dot(self._data, other))
+
+    def cross(self, other: 'Vec3') -> 'Vec3':
+        if hasattr(other, '_data'):
+            return Vec3(*np.cross(self._data, other._data))
+        return Vec3(*np.cross(self._data, other))
+
+    def to_bytes(self) -> bytes:
+        return self._data.tobytes()
 
     def as_np(self) -> np.ndarray:
-        """Копия 3‑элементного массива float32."""
-        return self._v.copy()
-
-    def __repr__(self):
-        return f"Vec3({self.x:.3f}, {self.y:.3f}, {self.z:.3f})"
+        """Для совместимости с существующим кодом"""
+        return self._data
