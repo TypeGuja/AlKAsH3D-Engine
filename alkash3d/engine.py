@@ -162,7 +162,7 @@ class Engine:
             self.window.poll_events()
             self.camera.update_fly(dt, self.window.input)
 
-            # F9 — FPS‑display, F10 — V‑Sync
+            # F9 — FPS‑display, F10 — V‑Sync
             self._handle_toggle_key(glfw.KEY_F9, "show_fps", "FPS display")
             self._handle_toggle_key(glfw.KEY_F10, "v_sync", "V‑Sync")
 
@@ -171,14 +171,16 @@ class Engine:
 
             self.scene.update(dt)
 
-            # Render + (если у рендера нет собственного post‑proc)
+            # ✅ ИСПРАВЛЕНИЕ: Вызываем renderer.render()
             self.renderer.render(self.scene, self.camera)
 
+            # ✅ ИСПРАВЛЕНИЕ: Обязательно вызываем present/swap_buffers
+            # Это КРИТИЧНО для видеовывода!
+            self.window.swap_buffers()
+
+            # Пост-процессинг (если есть)
             if not hasattr(self.renderer, "postproc") and self.postprocess:
                 self.postprocess.run(self.backend)
-
-            # *** НЕ вызываем double Present ***
-            # self.window.swap_buffers()   <-- отключено, Present уже в end_frame()
 
             if self.show_fps:
                 now = time.time()
