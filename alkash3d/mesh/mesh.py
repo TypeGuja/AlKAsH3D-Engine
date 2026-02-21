@@ -1,139 +1,92 @@
-# alkash3d/mesh/mesh.py
+# alkash3d/scene/mesh.py
+# -*- coding: utf-8 -*-
+"""
+Меш - геометрия сцены.
+"""
+
+from __future__ import annotations
 import numpy as np
-from OpenGL import GL
-from alkash3d.scene.node import Node
-from alkash3d.utils import logger
-from alkash3d.math.vec3 import Vec3
+from alkash3d.scene.node import Node  # ✅ ВАЖНО: Импортируем Node
 
 
-class Mesh(Node):
-    """Примитивный объект – лениво создаёт VAO при первом draw()."""
+class Mesh(Node):  # ✅ КРИТИЧНО: Наследуемся от Node
+    """
+    Представляет геометрию в сцене.
+    Содержит вершины, индексы и может быть отрисован рендерером.
+
+    ✅ ИСПРАВЛЕНИЕ: Mesh теперь наследуется от Node и поддерживает traverse()
+    """
 
     def __init__(self,
                  vertices: np.ndarray,
-                 normals: np.ndarray = None,
-                 texcoords: np.ndarray = None,
-                 indices: np.ndarray = None,
-                 name="Mesh"):
-        super().__init__(name)
+                 indices: np.ndarray | None = None,
+                 normals: np.ndarray | None = None,
+                 texcoords: np.ndarray | None = None):
+        """
+        Инициализирует меш.
 
-        self.vertices = vertices.astype(np.float32)
-        self.normals = normals.astype(np.float32) if normals is not None else None
-        self.texcoords = texcoords.astype(np.float32) if texcoords is not None else None
-        self.indices = indices.astype(np.uint32) if indices is not None else None
+        Args:
+            vertices: Массив вершин (N, 3) в формате float32
+            indices: Индексы для индексированной отрисовки (N,) - опционально
+            normals: Нормали вершин (N, 3) - опционально
+            texcoords: Текстурные координаты (N, 2) - опционально
+        """
+        # ✅ КРИТИЧНО: Вызываем конструктор родителя Node
+        super().__init__()
 
-        self.vao = None
-        self.vbo = None
-        self.nbo = None
-        self.tbo = None
-        self.ebo = None
+        # Убеждаемся, что вершины - это numpy array
+        self.vertices = np.asarray(vertices, dtype=np.float32)
+        if self.vertices.ndim == 1:
+            self.vertices = self.vertices.reshape(-1, 3)
 
-        # количество индексов/вершин
-        self.index_count = len(self.indices) if self.indices is not None else len(self.vertices) // 3
+        # Индексы для рисования
+        self.indices = None
+        if indices is not None:
+            self.indices = np.asarray(indices, dtype=np.uint32)
 
-        # базовый цвет
-        self.color = Vec3(1.0, 1.0, 1.0)
+        # Нормали (опционально)
+        self.normals = None
+        if normals is not None:
+            self.normals = np.asarray(normals, dtype=np.float32)
+            if self.normals.ndim == 1:
+                self.normals = self.normals.reshape(-1, 3)
 
-        # Bounding‑sphere (для culling)
-        verts = self.vertices
-        if verts.ndim == 1:
-            verts = verts.reshape((-1, 3))
-        self._bounding_center = verts.mean(axis=0).astype(np.float32)
-        self._bounding_radius = np.linalg.norm(verts - self._bounding_center, axis=1).max()
+        # Текстурные координаты (опционально)
+        self.texcoords = None
+        if texcoords is not None:
+            self.texcoords = np.asarray(texcoords, dtype=np.float32)
+            if self.texcoords.ndim == 1:
+                self.texcoords = self.texcoords.reshape(-1, 2)
 
-    # -----------------------------------------------------------------
-    def _setup_vao(self):
-        self.vao = GL.glGenVertexArrays(1)
-        GL.glBindVertexArray(self.vao)
+        # Графические ресурсы (создаются рендерером)
+        self.vertex_buffer = None
+        self.index_buffer = None
+        self.vao = None  # Vertex Array Object
 
-        # позиции
-        self.vbo = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.vbo)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER,
-                        self.vertices.nbytes,
-                        self.vertices,
-                        GL.GL_STATIC_DRAW)
-        GL.glEnableVertexAttribArray(0)
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, False, 0, None)
+        # Материал/цвет
+        self.color = (1.0, 1.0, 1.0)  # RGB
 
-        # нормали
-        if self.normals is not None:
-            self.nbo = GL.glGenBuffers(1)
-            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.nbo)
-            GL.glBufferData(GL.GL_ARRAY_BUFFER,
-                            self.normals.nbytes,
-                            self.normals,
-                            GL.GL_STATIC_DRAW)
-            GL.glEnableVertexAttribArray(1)
-            GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, False, 0, None)
+        # Флаг видимости
+        self.visible = True
 
-        # texcoords
-        if self.texcoords is not None:
-            self.tbo = GL.glGenBuffers(1)
-            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self.tbo)
-            GL.glBufferData(GL.GL_ARRAY_BUFFER,
-                            self.texcoords.nbytes,
-                            self.texcoords,
-                            GL.GL_STATIC_DRAW)
-            GL.glEnableVertexAttribArray(2)
-            GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, False, 0, None)
+    def get_vertex_count(self) -> int:
+        """Возвращает количество вершин."""
+        return len(self.vertices)
 
-        # индексы
+    def get_index_count(self) -> int:
+        """Возвращает количество индексов (или вершин, если нет индексов)."""
         if self.indices is not None:
-            self.ebo = GL.glGenBuffers(1)
-            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
-            GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER,
-                            self.indices.nbytes,
-                            self.indices,
-                            GL.GL_STATIC_DRAW)
+            return len(self.indices)
+        return len(self.vertices)
 
-        GL.glBindVertexArray(0)
+    def has_indices(self) -> bool:
+        """Проверяет, есть ли индексы."""
+        return self.indices is not None
 
-    # -----------------------------------------------------------------
-    def _ensure_vao(self):
-        if self.vao is None:
-            self._setup_vao()
+    def has_normals(self) -> bool:
+        """Проверяет, есть ли нормали."""
+        return self.normals is not None
 
-    # -----------------------------------------------------------------
-    def draw(self):
-        """Отрисовка через чистый OpenGL."""
-        self._ensure_vao()
-        GL.glBindVertexArray(self.vao)
-
-        if self.indices is not None:
-            GL.glDrawElements(GL.GL_TRIANGLES, self.index_count,
-                              GL.GL_UNSIGNED_INT, None)
-        else:
-            GL.glDrawArrays(GL.GL_TRIANGLES, 0, self.index_count)
-
-        GL.glBindVertexArray(0)
-
-    # -----------------------------------------------------------------
-    @property
-    def bounding_sphere(self) -> tuple[np.ndarray, float]:
-        """(центр, радиус) в мировых координатах."""
-        world = self.get_world_matrix().to_np()
-        centre_h = np.append(self._bounding_center, 1.0).astype(np.float32)
-        centre_world = world @ centre_h
-        scale = np.linalg.norm(world[0:3, 0:3], axis=0).max()
-        return centre_world[:3], float(self._bounding_radius * scale)
-
-    # -----------------------------------------------------------------
-    def cleanup(self):
-        """Освободить GL‑ресурсы."""
-        try:
-            if self.vao:
-                GL.glDeleteVertexArrays(1, [self.vao])
-            if self.vbo:
-                GL.glDeleteBuffers(1, [self.vbo])
-            if self.nbo:
-                GL.glDeleteBuffers(1, [self.nbo])
-            if self.tbo:
-                GL.glDeleteBuffers(1, [self.tbo])
-            if self.ebo:
-                GL.glDeleteBuffers(1, [self.ebo])
-        except Exception as exc:
-            logger.debug(f"Mesh.cleanup(): {exc}")
-
-    def __del__(self):
-        self.cleanup()
+    def has_texcoords(self) -> bool:
+        """Проверяет, есть ли текстурные координаты."""
+        return self.texcoords is not None
