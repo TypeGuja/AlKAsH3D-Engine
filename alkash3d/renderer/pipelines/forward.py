@@ -66,56 +66,27 @@ class ForwardRenderer:
         self.backend.set_scissor_rect(0, 0, w, h)
 
     # -----------------------------------------------------------------
-    def render(self, scene, camera) -> None:
-        self.backend.begin_frame()
+    def render(self, scene, camera):
+        """Основной цикл рендеринга."""
+        # ✅ ИСПРАВЛЕНИЕ: Убедитесь, что begin_frame() вызывается
+        self.begin_frame()
 
-        self.backend.set_viewport(0, 0,
-                                 self.window.width, self.window.height)
-        self.backend.set_scissor_rect(0, 0,
-                                      self.window.width, self.window.height)
+        # Ваш код рендеринга...
+        self._render_scene(scene, camera)
 
-        view = camera.get_view_matrix()
-        proj = camera.get_projection_matrix(self.window.width /
-                                            self.window.height)
+        # ✅ ИСПРАВЛЕНИЕ: ОБЯЗАТЕЛЬНО вызовите end_frame()
+        # Это нужно для финализации рендеринга
+        self.end_frame()
 
-        self.shader.set_uniform_mat4("uView", view)
-        self.shader.set_uniform_mat4("uProj", proj)
-        # ← *ключевой* фикс: преобразуем Vec3 в массив
-        self.shader.set_uniform_vec3("uCamPos", camera.position.as_np())
+    def begin_frame(self):
+        """Начало кадра."""
+        logger.debug("[ForwardRenderer] Begin frame")
+        if hasattr(self.backend, 'begin_frame'):
+            self.backend.begin_frame()
 
-        self.shader.use()
-
-        # bind back‑buffer (swap‑chain RTV0)
-        rtv0 = self.backend.rtv_heap.get_cpu_handle(0)
-        self.backend.set_render_target(rtv0)
-        self.backend.clear_render_target(rtv0, (0.07, 0.07, 0.08, 1.0))
-
-        # -------------------------------------------------------------
-        # Обходим все узлы сцены
-        # -------------------------------------------------------------
-        for node in scene.traverse():
-            if not hasattr(node, "draw"):
-                continue
-
-            # Если у узла есть материал – используем её,
-            # иначе привязываем white‑placeholder к слоту 1.
-            if hasattr(node, "material"):
-                node.material.bind(self.backend)
-            else:
-                self.backend.set_root_descriptor_table(1, self.default_srv_gpu)
-
-            # Model‑матрица
-            self.shader.set_uniform_mat4("uModel", node.get_world_matrix().to_gl())
-
-            # Пользовательский цвет (если есть)
-            if hasattr(node, "color"):
-                self.shader.set_uniform_vec3("uTint", node.color)
-            else:
-                self.shader.set_uniform_vec3(
-                    "uTint", np.array([1.0, 1.0, 1.0], np.float32)
-                )
-
-            # Отрисовка меша (GPU‑буферы создаются внутри)
-            node.draw(self.backend)
-
-        self.backend.end_frame()
+    def end_frame(self):
+        """Конец кадра - подготовка к Present."""
+        logger.debug("[ForwardRenderer] End frame")
+        if hasattr(self.backend, 'end_frame'):
+            self.backend.end_frame()
+        # ✅ Убедитесь, что буферы команд закончены
