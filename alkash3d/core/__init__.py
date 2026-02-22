@@ -1,6 +1,2 @@
-"""
-Core‑подсистема (пока пустая).
-"""
-from alkash3d.core.timer import Timer
-
-__all__ = ["Timer"]
+# alkash3d/core/__init__.py
+"""Пакет ядра – в текущем наборе только заглушки."""
