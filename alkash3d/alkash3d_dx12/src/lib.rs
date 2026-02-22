@@ -376,8 +376,11 @@ mod command_mod {
 }
 
 /* ==================== СВОП ЧЕЙН ==================== */
+/* ==================== СВОП ЧЕЙН (исправлённый) ==================== */
+/* ==================== СВОП ЧЕЙН (исправленный) ==================== */
 mod swapchain_mod {
     use super::*;
+    use windows::Win32::Graphics::Dxgi::DXGI_SWAP_CHAIN_DESC;
 
     pub unsafe fn create(
         queue: &ID3D12CommandQueue,
@@ -385,9 +388,17 @@ mod swapchain_mod {
         width: u32,
         height: u32,
     ) -> Option<IDXGISwapChain3> {
-        debug_println!("[swapchain] Creating swap chain {}x{}", width, height);
+        debug_println!("[swapchain] Creating swap chain {}x{} with hwnd=0x{:X}", width, height, hwnd);
 
-        let factory: IDXGIFactory4 = match CreateDXGIFactory2(0) {
+        // Проверка HWND — если 0, это явная ошибка: ничего не создаём
+        if hwnd == 0 {
+            debug_println!("[swapchain] ERROR: invalid HWND (0). SwapChain creation aborted.");
+            return None;
+        }
+
+        // Создаём фабрику с флагами отладки если нужно
+        let factory_flags = if DEBUG { 0x1 } else { 0 }; // DXGI_CREATE_FACTORY_DEBUG
+        let factory: IDXGIFactory4 = match CreateDXGIFactory2(factory_flags) {
             Ok(f) => f,
             Err(e) => {
                 debug_println!("[swapchain] Failed to create factory: HRESULT 0x{:X}", e.code().0);
@@ -395,6 +406,7 @@ mod swapchain_mod {
             }
         };
 
+        // Описание swap chain
         let swap_desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: width,
             Height: height,
@@ -409,6 +421,7 @@ mod swapchain_mod {
             Flags: 0,
         };
 
+        // Создаём swap chain
         let swap_chain1: IDXGISwapChain1 = match factory.CreateSwapChainForHwnd(
             queue,
             HWND(hwnd as isize),
@@ -416,20 +429,38 @@ mod swapchain_mod {
             None,
             None,
         ) {
-            Ok(sc) => sc,
+            Ok(sc) => {
+                debug_println!("[swapchain] CreateSwapChainForHwnd returned OK");
+                sc
+            },
             Err(e) => {
-                debug_println!("[swapchain] Failed to create: HRESULT 0x{:X}", e.code().0);
+                debug_println!("[swapchain] Failed to create swap chain: HRESULT 0x{:X}", e.code().0);
                 return None;
             }
         };
 
+        // Преобразуем в IDXGISwapChain3
         match swap_chain1.cast::<IDXGISwapChain3>() {
             Ok(sc) => {
-                debug_println!("[swapchain] Created successfully");
+                // Получаем описание для проверки
+                let mut desc = DXGI_SWAP_CHAIN_DESC::default();
+                if sc.GetDesc(&mut desc).is_ok() {
+                    debug_println!(
+                        "[swapchain] Created: Width={}, Height={}, Format={:?}, BufferCount={}",
+                        desc.BufferDesc.Width,
+                        desc.BufferDesc.Height,
+                        desc.BufferDesc.Format,
+                        desc.BufferCount
+                    );
+                } else {
+                    debug_println!("[swapchain] Created, but failed to query desc");
+                }
+
+                debug_println!("[swapchain] Created successfully at {:p}", sc.as_raw());
                 Some(sc)
             },
             Err(e) => {
-                debug_println!("[swapchain] Failed to cast: HRESULT 0x{:X}", e.code().0);
+                debug_println!("[swapchain] Failed to cast to IDXGISwapChain3: HRESULT 0x{:X}", e.code().0);
                 None
             }
         }
@@ -441,26 +472,31 @@ mod swapchain_mod {
         let hr = swap.Present(sync_interval, 0);
 
         if hr.is_ok() {
+            // Обновляем индекс кадра
             let frame_idx = swap.GetCurrentBackBufferIndex();
-            let mut state = STATE.lock().unwrap();
-            state.frame_index = frame_idx;
-            debug_println!("[swapchain_mod::present] Success, new frame index: {}", frame_idx);
+            if let Ok(mut state) = STATE.lock() {
+                state.frame_index = frame_idx;
+            }
+            debug_println!("[swapchain_mod::present] Present OK, new frame index: {}", frame_idx);
             true
         } else {
-            debug_println!("[swapchain_mod::present] Failed with HRESULT error");
+            debug_println!("[swapchain_mod::present] Present FAILED: HRESULT error");
             false
         }
     }
 
     pub unsafe fn resize(swap: &IDXGISwapChain3, width: u32, height: u32) -> bool {
+        debug_println!("[swapchain] Resizing swapchain to {}x{}", width, height);
+
+        // Освобождаем все существующие back buffers перед изменением размера
         let hr = swap.ResizeBuffers(2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
-        if hr.is_err() {
-            debug_println!("[swapchain] Resize failed");
-            false
-        } else {
-            let mut state = STATE.lock().unwrap();
-            state.frame_index = swap.GetCurrentBackBufferIndex();
+
+        if hr.is_ok() {
+            debug_println!("[swapchain] ResizeBuffers succeeded");
             true
+        } else {
+            debug_println!("[swapchain] ResizeBuffers failed: HRESULT error");
+            false
         }
     }
 }
@@ -1225,17 +1261,60 @@ pub extern "C" fn create_swap_chain(
             }
         };
 
-        let swap = match swapchain_mod::create(&queue, hwnd, width, height) {
-            Some(s) => s,
-            None => return ptr::null_mut(),
+        // Сначала пробуем создать фабрику
+        let factory: IDXGIFactory4 = match CreateDXGIFactory2(0) {
+            Ok(f) => f,
+            Err(e) => {
+                debug_println!("[API] Failed to create factory: HRESULT 0x{:X}", e.code().0);
+                return ptr::null_mut();
+            }
+        };
+
+        // Простое описание
+        let swap_desc = DXGI_SWAP_CHAIN_DESC1 {
+            Width: width,
+            Height: height,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            Stereo: false.into(),
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 2,
+            Scaling: DXGI_SCALING_NONE,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+            Flags: 0,
+        };
+
+        // Создаём swap chain
+        let swap_chain1: IDXGISwapChain1 = match factory.CreateSwapChainForHwnd(
+            &queue,
+            HWND(hwnd as isize),
+            &swap_desc,
+            None,
+            None,
+        ) {
+            Ok(sc) => sc,
+            Err(e) => {
+                debug_println!("[API] CreateSwapChainForHwnd failed: HRESULT 0x{:X}", e.code().0);
+                return ptr::null_mut();
+            }
+        };
+
+        // Преобразуем в IDXGISwapChain3
+        let swap_chain3: IDXGISwapChain3 = match swap_chain1.cast() {
+            Ok(sc) => sc,
+            Err(e) => {
+                debug_println!("[API] Failed to cast to IDXGISwapChain3: HRESULT 0x{:X}", e.code().0);
+                return ptr::null_mut();
+            }
         };
 
         let mut state = STATE.lock().unwrap();
-        state.swap_chain = Some(swap.clone());
-        state.frame_index = swap.GetCurrentBackBufferIndex();
+        state.swap_chain = Some(swap_chain3.clone());
+        state.frame_index = swap_chain3.GetCurrentBackBufferIndex();
 
-        let raw_ptr = swap.as_raw();
-        std::mem::forget(swap);
+        let raw_ptr = swap_chain3.as_raw();
+        std::mem::forget(swap_chain3);
 
         debug_println!("[API] Swap chain created at {:p}", raw_ptr);
         raw_ptr as *mut c_void
