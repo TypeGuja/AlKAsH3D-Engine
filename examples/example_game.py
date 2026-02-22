@@ -1,227 +1,318 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-🎮 AlKAsH3D Engine - Simple Test Game
-ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ
+dx12_game_fixed.py - ИСПРАВЛЕННАЯ игра на чистом DX12 движке
 """
 
-import numpy as np
-import time
 import sys
-from alkash3d.engine import Engine
-from alkash3d.scene import Mesh
-from alkash3d.utils import logger
+import math
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import glfw
+import numpy as np
+
+from alkash3d import Engine, Scene, Node, Vec3
+from alkash3d.scene.light import DirectionalLight
+from alkash3d.assets.material import PBRMaterial
+from alkash3d.scene.mesh import Mesh
 
 
-def create_simple_cube():
-    """Создаёт простой куб."""
-    vertices = np.array([
-        # Front
-        -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
-        # Back
-        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
-        # Left
-        -0.5, -0.5, -0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5, -0.5,
-        # Right
-        0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, -0.5,
-        # Top
-        -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
-        # Bottom
-        -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, -0.5, 0.5, -0.5, -0.5, 0.5,
-    ], dtype=np.float32).reshape(-1, 3)
+# ============================================================================
+# Простой куб
+# ============================================================================
+class SimpleCube(Node):
+    def __init__(self, color=(1.0, 1.0, 1.0, 1.0), size=1.0):
+        super().__init__("Cube")
 
-    indices = np.array([
-        0, 1, 2, 0, 2, 3,  # Front
-        4, 6, 5, 4, 7, 6,  # Back
-        8, 9, 10, 8, 10, 11,  # Left
-        12, 14, 13, 12, 15, 14,  # Right
-        16, 18, 17, 16, 19, 18,  # Top
-        20, 21, 22, 20, 22, 23,  # Bottom
-    ], dtype=np.uint32)
+        # Вершины
+        s = size
+        vertices = np.array([
+            [-s, -s, s], [s, -s, s], [s, s, s], [-s, s, s],
+            [-s, -s, -s], [s, -s, -s], [s, s, -s], [-s, s, -s]
+        ], dtype=np.float32).reshape(-1, 3)
 
-    return Mesh(vertices, indices=indices)
+        # Индексы
+        indices = np.array([
+            0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 0, 4, 7, 0, 7, 3,
+            1, 5, 6, 1, 6, 2, 3, 2, 6, 3, 6, 7, 0, 1, 5, 0, 5, 4
+        ], dtype=np.uint32)
+
+        self.mesh = Mesh(vertices, indices=indices)
+        self.material = PBRMaterial(albedo=color)
+        self.mesh.material = self.material
+        self.add_child(self.mesh)
+
+    def draw(self, backend):
+        if self.mesh:
+            if self.material:
+                self.material.bind(backend)
+            self.mesh.draw(backend)
 
 
-def main():
-    """Точка входа."""
-    logger.info("=" * 70)
-    logger.info("🎮 AlKAsH3D Engine - Simple Test Game")
-    logger.info("=" * 70)
-    logger.info("Controls:")
-    logger.info("  W/A/S/D    - Move (forward/left/back/right)")
-    logger.info("  Space      - Move up")
-    logger.info("  Ctrl       - Move down")
-    logger.info("  Mouse      - Look around")
-    logger.info("  ESC        - Close window")
-    logger.info("=" * 70)
+# ============================================================================
+# ИСПРАВЛЕННЫЙ ForwardRenderer
+# ============================================================================
+class FixedForwardRenderer:
+    """Исправленная версия ForwardRenderer без ошибок с параметрами."""
 
-    engine = None
+    def __init__(self, window, backend):
+        self.window = window
+        self.backend = backend
+        self.width = window.width
+        self.height = window.height
 
-    try:
-        # Инициализируем движок
-        logger.info("Initializing engine...")
-        print("DEBUG: About to create Engine", flush=True)
-
-        engine = Engine(
-            width=1280,
-            height=720,
-            title="AlKAsH3D - Cube Test",
-            renderer="forward",
-            backend_name="dx12"
+        # Белая текстура-заглушка (исправленные параметры)
+        white_pixel = (255).to_bytes(1, "little") * 4
+        self.white_tex = backend.create_texture(
+            data=white_pixel,
+            width=1,  # было 'w', теперь 'width'
+            height=1,  # было 'h', теперь 'height'
+            fmt="RGBA8"
         )
 
-        print(f"DEBUG: Engine created: {engine}", flush=True)
+        # Шейдер (упрощенный)
+        from alkash3d.renderer.shader import Shader
+        self.shader = Shader(
+            vertex_path=str(window.resource_path("shaders/forward_vert.hlsl")),
+            fragment_path=str(window.resource_path("shaders/forward_frag.hlsl")),
+            backend=backend
+        )
 
-        # �� ПРОВЕРКА: Engine создан?
-        if engine is None:
-            logger.error("Failed to create engine (engine is None)")
-            return 1
+        # Дескрипторы
+        backend.set_descriptor_heaps([backend.rtv_heap, backend.cbv_srv_uav_heap])
+        backend.set_graphics_pipeline(self.shader.pso)
 
-        logger.info(f"✅ Engine created successfully!")
-        logger.info(f"   Window: {engine.window.width}x{engine.window.height}")
-        logger.info(f"   Backend: {engine.backend.__class__.__name__}")
-        logger.info(f"   Renderer: {engine.renderer.__class__.__name__}")
+    def resize(self, w, h):
+        self.backend.set_viewport(0, 0, w, h)
+        self.backend.set_scissor_rect(0, 0, w, h)
 
-        # Создаём куб
-        logger.info("Creating cube mesh...")
-        print("DEBUG: About to create cube", flush=True)
+    def render(self, scene, camera):
+        try:
+            self.backend.begin_frame()
 
-        cube = create_simple_cube()
-        cube.position = np.array([0, 0, 0], dtype=np.float32)
-        cube.color = (1, 0, 0)
+            # Очистка
+            back_rtv = self.backend.rtv_heap.get_cpu_handle(0)
+            self.backend.set_render_target(back_rtv)
+            self.backend.clear_render_target(back_rtv, (0.1, 0.1, 0.2, 1.0))
 
-        print("DEBUG: Cube created, adding to scene", flush=True)
+            # Рендеринг сцены
+            self.shader.use()
+            self.shader.set_uniform_mat4("uView", camera.get_view_matrix())
+            self.shader.set_uniform_mat4("uProj",
+                                         camera.get_projection_matrix(self.width / self.height))
 
-        # Добавляем куб в сцену
-        engine.scene.add_child(cube)
-        logger.info("✅ Cube added to scene")
+            # Проходим по всем объектам
+            for node in scene.traverse():
+                if hasattr(node, "draw") and getattr(node, "visible", True):
+                    model = node.get_world_matrix().to_gl()
+                    self.shader.set_uniform_mat4("uModel", model)
 
-        # Позиционируем камеру
-        engine.camera.position = np.array([0, 0, 3], dtype=np.float32)
-        logger.info(f"✅ Camera position set: {engine.camera.position}")
+                    if hasattr(node, "material") and node.material:
+                        node.material.bind(self.backend)
 
-        logger.info("✅ Scene ready!")
-        logger.info("=" * 70)
-        logger.info("Starting game loop...")
-        logger.info("=" * 70)
+                    node.draw(self.backend)
 
-        # ✅ ОТЛАДКА: Проверяем окно перед циклом
-        print("DEBUG: Before window checks", flush=True)
+            self.shader.flush()
+            self.backend.end_frame()
 
-        should_close = engine.window.should_close()
-        logger.info(f"Window should_close: {should_close}")
-        logger.info(f"Window handle: {engine.window.handle}")
-        logger.info(f"Window size: {engine.window.width}x{engine.window.height}")
+        except Exception as e:
+            print(f"Render error: {e}")
 
-        print(f"DEBUG: should_close = {should_close}", flush=True)
 
-        logger.info("=" * 70)
-        logger.info("🎮 ENTERING MAIN GAME LOOP 🎮")
-        logger.info("=" * 70)
+# ============================================================================
+# ИСПРАВЛЕННЫЙ Engine
+# ============================================================================
+class FixedEngine:
+    """Исправленная версия Engine."""
 
-        print("DEBUG: About to enter while loop", flush=True)
-        sys.stdout.flush()
+    def __init__(self, width=1024, height=768, title="Game"):
+        self.width = width
+        self.height = height
 
-        # ✅ ГЛАВНЫЙ ЦИКЛ
-        frame_count = 0
-        start_time = time.time()
-        rotation_angle = 0.0
-        last_log_time = time.time()
+        # Конфиг
+        from alkash3d.utils.config import Config
+        self.cfg = Config()
 
-        loop_iteration = 0
+        # Окно
+        from alkash3d.window import Window
+        self.window = Window(width, height, title)
 
-        while not engine.window.should_close():
-            loop_iteration += 1
-            if loop_iteration == 1:
-                print("DEBUG: FIRST ITERATION OF MAIN LOOP!", flush=True)
-                logger.info("✅ FIRST ITERATION OF MAIN LOOP!")
+        # Бэкенд
+        from alkash3d.graphics import select_backend
+        self.backend = select_backend("dx12")
+        self.backend.init_device(self.window.hwnd, width, height)
+        self.window.backend = self.backend
 
-            # Получаем delta time
-            dt = engine.timer.tick()
+        # Камера
+        from alkash3d.scene.camera import Camera
+        self.camera = Camera()
 
-            # Вращаем куб
-            rotation_angle += dt * 1.0
-            try:
-                if hasattr(cube, 'rotation'):
-                    cube.rotation.x = rotation_angle
-                    cube.rotation.y = rotation_angle * 0.7
-                    cube.rotation.z = rotation_angle * 0.5
-            except Exception as e:
-                pass
+        # Таймер
+        from alkash3d.utils.timer import Timer
+        self.timer = Timer()
 
-            # Обновляем события окна
-            try:
-                engine.window.poll_events()
-            except Exception as e:
-                logger.debug(f"poll_events error: {e}")
+        # Рендерер (исправленный)
+        self.renderer = FixedForwardRenderer(self.window, self.backend)
+
+    def shutdown(self):
+        self.backend.shutdown()
+        self.window.close()
+
+
+# ============================================================================
+# Игровая сцена
+# ============================================================================
+class GameScene(Scene):
+    def __init__(self):
+        super().__init__()
+
+        print("🟢 Создание сцены...")
+
+        # ПОЛ
+        self.floor = SimpleCube(color=(0.3, 0.3, 0.3, 1.0), size=20)
+        self.floor.position = Vec3(0, -1, 0)
+        self.add_child(self.floor)
+
+        # ИГРОК (красный)
+        self.player = SimpleCube(color=(1.0, 0.2, 0.2, 1.0))
+        self.player.position = Vec3(0, 1, 0)
+        self.add_child(self.player)
+
+        # ЦЕЛЬ (зеленый)
+        self.target = SimpleCube(color=(0.2, 1.0, 0.2, 1.0))
+        self.target.position = Vec3(5, 1, 5)
+        self.add_child(self.target)
+
+        # ОСВЕЩЕНИЕ
+        self.sun = DirectionalLight(
+            direction=Vec3(0.5, -1.0, 0.5),
+            intensity=1.5
+        )
+        self.add_child(self.sun)
+
+        self.game_won = False
+        self.target_hit = False
+        print("✅ Сцена готова!")
+
+    def update(self, dt, input_mgr):
+        if self.game_won:
+            return self.player.position
+
+        # Движение
+        speed = 5.0 * dt
+        if input_mgr.is_key_pressed(glfw.KEY_W):
+            self.player.position.z -= speed
+        if input_mgr.is_key_pressed(glfw.KEY_S):
+            self.player.position.z += speed
+        if input_mgr.is_key_pressed(glfw.KEY_A):
+            self.player.position.x -= speed
+        if input_mgr.is_key_pressed(glfw.KEY_D):
+            self.player.position.x += speed
+
+        # Вращение цели
+        self.target.rotation.y += 90 * dt
+
+        # Проверка победы
+        if not self.target_hit:
+            dx = self.player.position.x - self.target.position.x
+            dz = self.player.position.z - self.target.position.z
+            if math.sqrt(dx * dx + dz * dz) < 2.0:
+                self.target.visible = False
+                self.target_hit = True
+                self.game_won = True
+                print("\n🎉 ПОБЕДА!")
+
+        return self.player.position
+
+
+# ============================================================================
+# Главный класс игры
+# ============================================================================
+class DX12Game:
+    def __init__(self):
+        print("\n" + "=" * 60)
+        print("🎮 DX12 GAME - ИСПРАВЛЕННАЯ ВЕРСИЯ")
+        print("=" * 60)
+        print("Управление: WASD - движение")
+        print("           ESC - выход")
+        print("=" * 60 + "\n")
+
+        try:
+            # Исправленный движок
+            self.engine = FixedEngine(1024, 768, "DX12 Game")
+            self.scene = GameScene()
+            self.engine.scene = self.scene
+
+            # Камера от третьего лица
+            self.camera_offset = Vec3(15, 8, 15)
+
+            print("✅ ДВИЖОК ЗАПУЩЕН!")
+            print("🎮 ИГРА НАЧИНАЕТСЯ...\n")
+
+        except Exception as e:
+            print(f"\n❌ ОШИБКА: {e}")
+            raise
+
+    def run(self):
+        """Главный цикл."""
+        last_fps_time = time.time()
+        frames = 0
+
+        while not self.engine.window.should_close():
+            dt = self.engine.timer.tick()
+
+            # Обновление игры
+            player_pos = self.scene.update(dt, self.engine.window.input)
+
+            # Камера следует за игроком
+            self.engine.camera.position = Vec3(
+                player_pos.x + self.camera_offset.x,
+                player_pos.y + self.camera_offset.y,
+                player_pos.z + self.camera_offset.z
+            )
+
+            # РЕНДЕРИНГ
+            self.engine.renderer.render(self.engine.scene, self.engine.camera)
+
+            # События
+            self.engine.window.poll_events()
+
+            # FPS счетчик
+            frames += 1
+            now = time.time()
+            if now - last_fps_time >= 1.0:
+                fps = frames
+                frames = 0
+                last_fps_time = now
+
+                pos = self.scene.player.position
+                status = f"\rFPS: {fps} | Позиция: ({pos.x:.1f}, {pos.z:.1f})"
+                if self.scene.game_won:
+                    status += " | 🏆 ПОБЕДА!"
+                print(status, end="")
+
+            # Выход по ESC
+            if self.engine.window.input.is_key_pressed(glfw.KEY_ESCAPE):
                 break
 
-            # Обновляем камеру (WASD + мышь)
-            try:
-                engine.camera.update_fly(dt, engine.window.input)
-            except Exception as e:
-                logger.debug(f"Camera update error: {e}")
-
-            # Обновляем сцену
-            try:
-                engine.scene.update(dt)
-            except Exception as e:
-                logger.debug(f"Scene update error: {e}")
-
-            # ✅ РЕНДЕРИМ
-            try:
-                engine.renderer.render(engine.scene, engine.camera)
-            except Exception as e:
-                logger.debug(f"Render error: {e}")
-
-            # ✅ ОБНОВЛЯЕМ ЭКРАН (самое важное!)
-            try:
-                engine.window.swap_buffers()
-            except Exception as e:
-                logger.debug(f"swap_buffers error: {e}")
-
-            # Логирование FPS каждые 2 секунды
-            frame_count += 1
-            current_time = time.time()
-            elapsed = current_time - start_time
-
-            if current_time - last_log_time >= 2.0:
-                if elapsed > 0:
-                    fps = frame_count / elapsed
-                    logger.info(f"✅ FPS: {fps:.1f} | Frames: {frame_count} | Time: {elapsed:.1f}s")
-                last_log_time = current_time
-
-        logger.info("=" * 70)
-        logger.info("✅ Game loop ended")
-        logger.info(f"Total frames: {frame_count}")
-        logger.info(f"Total time: {time.time() - start_time:.2f}s")
-        logger.info("=" * 70)
-        return 0
-
-    except KeyboardInterrupt:
-        logger.info("Game interrupted by user (Ctrl+C)")
-        return 0
-    except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
-        print(f"DEBUG: Exception: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        return 1
-    finally:
-        # Очистка
-        if engine is not None:
-            try:
-                logger.info("Shutting down engine...")
-                engine.shutdown()
-                logger.info("✅ Engine shutdown complete")
-            except Exception as e:
-                logger.error(f"Shutdown error: {e}")
-
-        logger.info("Program finished")
+        self.engine.shutdown()
+        print("\n\n👋 Игра завершена!")
 
 
+# ============================================================================
+# Запуск
+# ============================================================================
 if __name__ == "__main__":
-    print("DEBUG: Script started", flush=True)
-    exit_code = main()
-    print(f"DEBUG: Script exiting with code {exit_code}", flush=True)
-    sys.exit(exit_code)
+    try:
+        game = DX12Game()
+        game.run()
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Прервано")
+    except Exception as e:
+        print(f"\n❌ Ошибка: {e}")
+        import traceback
+
+        traceback.print_exc()
