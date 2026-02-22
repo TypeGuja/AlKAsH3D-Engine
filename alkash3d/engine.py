@@ -2,34 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 Главный цикл движка.
-
-* Инициализирует окно, DX12‑бэкенд и нужный рендерер.
-* После создания бэкенда увеличивает размер RTV‑heap и сразу
-  пересоздаёт RTV‑дескрипторы (иначе получаем чёрный кадр).
-* Включён V‑Sync, FPS‑counter и система плагинов.
 """
 
 import time
 import glfw
-from alkash3d.core.timer import Timer
+from alkash3d.utils.timer import Timer
 from alkash3d.scene import Scene, Camera
-from alkash3d.utils import logger, Config, FPSCounter, Profiler
-from alkash3d.utils.logger import gl_check_error
-from alkash3d.postproc import (
-    PostProcessingPipeline,
-    BloomPass,
-    SSAOPass,
-    TemporalAAPass,
-    ColorGradingPass,
-    TonemapPass,
-)
+from alkash3d.utils import logger, Config, FPSCounter
 from alkash3d.plugins import PluginManager
 from alkash3d.renderer.pipelines.forward import ForwardRenderer
 from alkash3d.renderer.pipelines.deferred import DeferredRenderer
 from alkash3d.renderer.pipelines.hybrid import HybridRenderer
 from alkash3d.renderer.pipelines.rtx_renderer import RTXRenderer
 from alkash3d.graphics import select_backend
-from alkash3d.graphics.utils.descriptor_heap import DescriptorHeap   # новый импорт
 
 
 class Engine:
@@ -53,27 +38,15 @@ class Engine:
                                  self.window.width,
                                  self.window.height)
 
-        # привязываем бекенд к окну – теперь `Window.swap_buffers` и `set_vsync`
-        # делегируют вызовы нужным функциям.
-        self.window.backend = self.backend      # <<< FIX
+        # привязываем бекенд к окну
+        self.window.backend = self.backend
 
         self.backend.set_viewport(0, 0, self.window.width, self.window.height)
         self.backend.set_scissor_rect(0, 0, self.window.width, self.window.height)
 
-        # 2️⃣ Увеличиваем RTV‑heap (по‑умолчанию 2 дескриптора) и сразу
-        #    пересоздаём RTV‑дескрипторы для swap‑chain.
-        new_rtv_cnt = self.backend.rtv_heap.num_descriptors + 1
-        self.backend.rtv_heap = DescriptorHeap(
-            device=self.backend.device,
-            num_descriptors=new_rtv_cnt,
-            heap_type="rtv",
-        )
-        # Привязываем оба хипа (RTV + CBV/SRV/UAV) сразу
-        self.backend.set_descriptor_heaps([self.backend.rtv_heap,
-                                          self.backend.cbv_srv_uav_heap])
-
-        # После замены heap создаём RTV‑дескрипторы заново
-        self.backend.recreate_swapchain_rtv()
+        # 2️⃣ Создаем RTV для back buffer если есть swap chain
+        if self.backend.swap_chain and self.backend.swap_chain.value:
+            self.backend._create_swapchain_rtv()
 
         # ---------------------------------------------------------
         # 3️⃣ Сцена + камера
@@ -97,9 +70,8 @@ class Engine:
             raise ValueError(f"Unknown renderer mode: {renderer}")
 
         # ---------------------------------------------------------
-        # 5️⃣ Пост‑процессинг (только для GL‑бэкенда)
+        # 5️⃣ Пост‑процессинг
         # ---------------------------------------------------------
-        # (в текущей версии поддерживается только DX12, поэтому оставляем None)
         self.postprocess = None
 
         # ---------------------------------------------------------
@@ -107,15 +79,6 @@ class Engine:
         # ---------------------------------------------------------
         self.plugin_manager = PluginManager()
         self.plugin_manager.discover()
-
-        # Добавляем плагины только если есть post‑process pipeline
-        if self.postprocess:
-            for name, cls in self.plugin_manager.passes.items():
-                self.postprocess.add_pass(cls())
-
-        # Если у рендера есть атрибут postproc – связываем их
-        if hasattr(self.renderer, "postproc"):
-            self.renderer.postproc = self.postprocess
 
         # ---------------------------------------------------------
         # 7️⃣ V‑Sync, таймер, FPS‑counter
@@ -132,6 +95,8 @@ class Engine:
         self.show_fps = bool(self.cfg.get("show_fps", True))
         self._key_state = {}
         self._editor = None
+
+        logger.info(f"[Engine] Initialised with {renderer} renderer, {backend_name} backend")
 
     # -----------------------------------------------------------------
     def _create_window(self, w: int, h: int, title: str):
@@ -171,15 +136,16 @@ class Engine:
 
             self.scene.update(dt)
 
-            # ✅ ИСПРАВЛЕНИЕ: Вызываем renderer.render()
-            self.renderer.render(self.scene, self.camera)
-
-            # ✅ ИСПРАВЛЕНИЕ: Обязательно вызываем present/swap_buffers
-            # Это КРИТИЧНО для видеовывода!
-            self.window.swap_buffers()
+            # Рендеринг
+            try:
+                self.renderer.render(self.scene, self.camera)
+            except Exception as e:
+                logger.error(f"[Engine] Render error: {e}")
+                import traceback
+                traceback.print_exc()
 
             # Пост-процессинг (если есть)
-            if not hasattr(self.renderer, "postproc") and self.postprocess:
+            if self.postprocess:
                 self.postprocess.run(self.backend)
 
             if self.show_fps:
