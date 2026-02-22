@@ -7,6 +7,7 @@ from alkash3d.utils.config import Config
 from alkash3d.utils.fps_counter import FPSCounter
 from alkash3d.utils.texture_loader import load_texture
 from alkash3d.utils.profiler import Profiler
+from alkash3d.utils.timer import Timer
 
 __all__ = ["logger", "gl_check_error", "Config", "FPSCounter",
-           "load_texture", "Profiler"]
+           "load_texture", "Profiler", "Timer"]
