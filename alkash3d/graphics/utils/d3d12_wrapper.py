@@ -108,7 +108,7 @@ if not hasattr(ctypes, "c_uintptr"):
     ctypes.c_uintptr = ctypes.c_void_p
 
 # ----------------------------------------------------------------------
-# Загрузка всех функций
+# Загрузка всех функций - ИСПРАВЛЕНО: правильные сигнатуры
 # ----------------------------------------------------------------------
 # Основные функции устройства
 _create_device = _load_func("create_device", ctypes.c_void_p, [], required=False)
@@ -116,11 +116,11 @@ _create_command_queue = _load_func("create_command_queue", ctypes.c_void_p, [cty
 _release_resource = _load_func("release_resource", None, [ctypes.c_void_p], required=False)
 _force_cleanup = _load_func("force_cleanup", None, [], required=False)
 
-# Swap chain функции
+# Swap chain функции - ИСПРАВЛЕНО: 5 параметров
 _create_swap_chain = _load_func(
     "create_swap_chain",
     ctypes.c_void_p,
-    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint],
+    [ctypes.c_void_p, ctypes.c_uintptr, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint],  # 5 параметров: queue, hwnd, width, height, flags
     required=False
 )
 _swap_chain_get_buffer = _load_func(
@@ -222,7 +222,7 @@ _offset_descriptor_handle = _load_func(
     required=False
 )
 
-# Views
+# Views - ИСПРАВЛЕНО: cpu_handle как c_void_p
 _create_shader_resource_view = _load_func(
     "create_shader_resource_view",
     None,
@@ -246,7 +246,7 @@ _create_constant_buffer_view = _load_func(
 _set_root_descriptor_table = _load_func(
     "set_root_descriptor_table",
     None,
-    [ctypes.c_uint, ctypes.c_uintptr],
+    [ctypes.c_uint, ctypes.c_uint64],  # GPU handle как uint64
     required=False
 )
 _set_descriptor_heaps = _load_func(
@@ -355,16 +355,18 @@ def create_command_queue(device: ctypes.c_void_p) -> ctypes.c_void_p:
 
 
 def create_swap_chain(command_queue: ctypes.c_void_p, hwnd: int, width: int, height: int) -> ctypes.c_void_p:
-    """Создать swap chain."""
+    """Создать swap chain с правильной сигнатурой."""
     if _create_swap_chain is None:
         logger.debug("[d3d12_wrapper] create_swap_chain not available")
         return ctypes.c_void_p(0)
     try:
+        # ИСПРАВЛЕНО: правильная сигнатура - 5 параметров
         res = _create_swap_chain(
             _to_cvoid(command_queue),
-            ctypes.c_void_p(hwnd),
+            ctypes.c_uintptr(hwnd),  # HWND как uintptr
             ctypes.c_uint(width),
-            ctypes.c_uint(height)
+            ctypes.c_uint(height),
+            ctypes.c_uint(0)  # flags = 0
         )
         return _to_cvoid(res)
     except Exception as e:
@@ -484,11 +486,10 @@ def create_graphics_ps(device: ctypes.c_void_p, vs_blob: int, ps_blob: int) -> c
         logger.debug("[d3d12_wrapper] create_graphics_ps not available")
         return ctypes.c_void_p(0)
     try:
-        res = _create_graphics_ps(
-            _to_cvoid(device),
-            ctypes.c_void_p(vs_blob),
-            ctypes.c_void_p(ps_blob)
-        )
+        # ИСПРАВЛЕНИЕ: Передаем указатели как c_void_p, а не как int
+        vs_ptr = ctypes.c_void_p(vs_blob)
+        ps_ptr = ctypes.c_void_p(ps_blob)
+        res = _create_graphics_ps(_to_cvoid(device), vs_ptr, ps_ptr)
         return _to_cvoid(res)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_graphics_ps failed: {e}")
@@ -670,10 +671,11 @@ def create_shader_resource_view(
         logger.debug("[d3d12_wrapper] create_shader_resource_view not available")
         return
     try:
+        # ИСПРАВЛЕНО: cpu_handle как c_void_p
         _create_shader_resource_view(
             _to_cvoid(device),
             _to_cvoid(resource),
-            ctypes.c_void_p(cpu_handle)
+            ctypes.c_void_p(cpu_handle)  # Конвертируем int в void_p
         )
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_shader_resource_view failed: {e}")
@@ -689,6 +691,7 @@ def create_render_target_view(
         logger.debug("[d3d12_wrapper] create_render_target_view not available")
         return
     try:
+        # ИСПРАВЛЕНО: cpu_handle как c_void_p
         _create_render_target_view(
             _to_cvoid(device),
             _to_cvoid(resource),
@@ -701,14 +704,19 @@ def create_render_target_view(
 def create_constant_buffer_view(
         device: ctypes.c_void_p,
         resource: ctypes.c_void_p,
-        cpu_handle: ctypes.c_void_p,
+        cpu_handle: int,
 ) -> None:
     """Создать Constant Buffer View."""
     if _create_constant_buffer_view is None:
         logger.debug("[d3d12_wrapper] create_constant_buffer_view not available")
         return
     try:
-        _create_constant_buffer_view(_to_cvoid(device), _to_cvoid(resource), _to_cvoid(cpu_handle))
+        # ИСПРАВЛЕНО: cpu_handle как c_void_p
+        _create_constant_buffer_view(
+            _to_cvoid(device),
+            _to_cvoid(resource),
+            ctypes.c_void_p(cpu_handle)
+        )
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_constant_buffer_view failed: {e}")
 
@@ -719,7 +727,7 @@ def set_root_descriptor_table(root_index: int, gpu_handle: int) -> None:
         logger.debug("[d3d12_wrapper] set_root_descriptor_table not available")
         return
     try:
-        _set_root_descriptor_table(ctypes.c_uint(root_index), ctypes.c_uintptr(gpu_handle))
+        _set_root_descriptor_table(ctypes.c_uint(root_index), ctypes.c_uint64(gpu_handle))
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_root_descriptor_table failed: {e}")
 
