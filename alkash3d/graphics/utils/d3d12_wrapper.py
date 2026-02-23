@@ -108,7 +108,7 @@ if not hasattr(ctypes, "c_uintptr"):
     ctypes.c_uintptr = ctypes.c_void_p
 
 # ----------------------------------------------------------------------
-# Загрузка всех функций - ИСПРАВЛЕНО: правильные сигнатуры
+# Загрузка всех функций - ИСПРАВЛЕНО: правильные сигнатуры с возвращаемыми значениями
 # ----------------------------------------------------------------------
 # Основные функции устройства
 _create_device = _load_func("create_device", ctypes.c_void_p, [], required=False)
@@ -116,11 +116,11 @@ _create_command_queue = _load_func("create_command_queue", ctypes.c_void_p, [cty
 _release_resource = _load_func("release_resource", None, [ctypes.c_void_p], required=False)
 _force_cleanup = _load_func("force_cleanup", None, [], required=False)
 
-# Swap chain функции - ИСПРАВЛЕНО: 5 параметров
+# Swap chain функции
 _create_swap_chain = _load_func(
     "create_swap_chain",
     ctypes.c_void_p,
-    [ctypes.c_void_p, ctypes.c_uintptr, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint],  # 5 параметров: queue, hwnd, width, height, flags
+    [ctypes.c_void_p, ctypes.c_uintptr, ctypes.c_uint, ctypes.c_uint],
     required=False
 )
 _swap_chain_get_buffer = _load_func(
@@ -131,21 +131,21 @@ _swap_chain_get_buffer = _load_func(
 )
 _resize_swap_chain = _load_func(
     "resize_swap_chain",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint],
     required=False
 )
 _present_swap_chain = _load_func(
     "present_swap_chain",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p, ctypes.c_uint],
     required=False
 )
 
-# Функции кадра
-_begin_frame = _load_func("begin_frame", None, [], required=False)
+# Функции кадра - ИСПРАВЛЕНО: все возвращают bool
+_begin_frame = _load_func("begin_frame", ctypes.c_bool, [], required=False)
 _end_frame = _load_func("end_frame", ctypes.c_bool, [], required=False)
-_wait_for_gpu = _load_func("wait_for_gpu", None, [], required=False)
+_wait_for_gpu = _load_func("wait_for_gpu", ctypes.c_bool, [], required=False)
 _get_frame_index = _load_func("get_frame_index", ctypes.c_uint, [], required=False)
 
 # Шейдеры
@@ -163,7 +163,7 @@ _create_graphics_ps = _load_func(
 )
 _set_graphics_pipeline = _load_func(
     "set_graphics_pipeline",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p],
     required=False
 )
@@ -177,7 +177,7 @@ _create_buffer = _load_func(
 )
 _update_subresource = _load_func(
     "update_subresource",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t],
     required=False
 )
@@ -191,7 +191,7 @@ _create_texture_from_memory = _load_func(
 )
 _update_texture = _load_func(
     "update_texture",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint],
     required=False
 )
@@ -222,84 +222,84 @@ _offset_descriptor_handle = _load_func(
     required=False
 )
 
-# Views - ИСПРАВЛЕНО: cpu_handle как c_void_p
+# Views
 _create_shader_resource_view = _load_func(
     "create_shader_resource_view",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],
     required=False,
 )
 _create_render_target_view = _load_func(
     "create_render_target_view",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],
     required=False,
 )
 _create_constant_buffer_view = _load_func(
     "create_constant_buffer_view",
-    None,
+    ctypes.c_bool,  # ИСПРАВЛЕНО: возвращает bool
     [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],
     required=False,
 )
 
-# Команды рендеринга
+# Команды рендеринга - ИСПРАВЛЕНО: все возвращают bool
 _set_root_descriptor_table = _load_func(
     "set_root_descriptor_table",
-    None,
-    [ctypes.c_uint, ctypes.c_uint64],  # GPU handle как uint64
+    ctypes.c_bool,
+    [ctypes.c_uint, ctypes.c_uint64],
     required=False
 )
 _set_descriptor_heaps = _load_func(
     "set_descriptor_heaps",
-    None,
+    ctypes.c_bool,
     [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)],
     required=False,
 )
 _set_render_target = _load_func(
     "set_render_target",
-    None,
+    ctypes.c_bool,
     [ctypes.c_uintptr],
     required=False
 )
 _set_render_targets = _load_func(
     "set_render_targets",
-    None,
+    ctypes.c_bool,
     [ctypes.c_uint, ctypes.POINTER(ctypes.c_uintptr)],
     required=False,
 )
 _clear_render_target = _load_func(
     "clear_render_target",
-    None,
+    ctypes.c_bool,
     [ctypes.c_uintptr, ctypes.POINTER(ctypes.c_float)],
     required=False
 )
 _set_viewport = _load_func(
     "set_viewport",
-    None,
+    ctypes.c_bool,
     [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float],
     required=False,
 )
 _set_scissor_rect = _load_func(
     "set_scissor_rect",
-    None,
+    ctypes.c_bool,
     [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int],
     required=False
 )
 _set_vertex_buffers = _load_func(
     "set_vertex_buffers",
-    None,
+    ctypes.c_bool,
     [ctypes.c_void_p, ctypes.c_void_p],
     required=False
 )
 _draw_instanced = _load_func(
     "draw_instanced",
-    None,
+    ctypes.c_bool,
     [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint],
     required=False,
 )
 _draw_indexed_instanced = _load_func(
     "draw_indexed_instanced",
-    None,
+    ctypes.c_bool,
     [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_int, ctypes.c_uint],
     required=False,
 )
@@ -326,7 +326,7 @@ def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
 
 
 # ----------------------------------------------------------------------
-# Основные API функции
+# Основные API функции с правильными возвращаемыми значениями
 # ----------------------------------------------------------------------
 def create_device() -> ctypes.c_void_p:
     """Создать DirectX 12 устройство."""
@@ -355,18 +355,16 @@ def create_command_queue(device: ctypes.c_void_p) -> ctypes.c_void_p:
 
 
 def create_swap_chain(command_queue: ctypes.c_void_p, hwnd: int, width: int, height: int) -> ctypes.c_void_p:
-    """Создать swap chain с правильной сигнатурой."""
+    """Создать swap chain."""
     if _create_swap_chain is None:
         logger.debug("[d3d12_wrapper] create_swap_chain not available")
         return ctypes.c_void_p(0)
     try:
-        # ИСПРАВЛЕНО: правильная сигнатура - 5 параметров
         res = _create_swap_chain(
             _to_cvoid(command_queue),
-            ctypes.c_uintptr(hwnd),  # HWND как uintptr
+            ctypes.c_uintptr(hwnd),
             ctypes.c_uint(width),
-            ctypes.c_uint(height),
-            ctypes.c_uint(0)  # flags = 0
+            ctypes.c_uint(height)
         )
         return _to_cvoid(res)
     except Exception as e:
@@ -387,37 +385,46 @@ def swap_chain_get_buffer(swap_chain: ctypes.c_void_p, index: int) -> ctypes.c_v
         return ctypes.c_void_p(0)
 
 
-def resize_swap_chain(swap_chain: ctypes.c_void_p, width: int, height: int) -> None:
+def resize_swap_chain(swap_chain: ctypes.c_void_p, width: int, height: int) -> bool:
     """Изменить размер swap chain."""
     if _resize_swap_chain is None:
         logger.debug("[d3d12_wrapper] resize_swap_chain not available")
-        return
+        return False
     try:
-        _resize_swap_chain(_to_cvoid(swap_chain), ctypes.c_uint(width), ctypes.c_uint(height))
+        result = _resize_swap_chain(_to_cvoid(swap_chain), ctypes.c_uint(width), ctypes.c_uint(height))
+        debug_print(f"resize_swap_chain() returned {result}")
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] resize_swap_chain failed: {e}")
+        return False
 
 
-def present_swap_chain(swap_chain: ctypes.c_void_p, sync_interval: int = 1) -> None:
+def present_swap_chain(swap_chain: ctypes.c_void_p, sync_interval: int = 1) -> bool:
     """Показать кадр."""
     if _present_swap_chain is None:
         logger.debug("[d3d12_wrapper] present_swap_chain not available")
-        return
+        return False
     try:
-        _present_swap_chain(_to_cvoid(swap_chain), ctypes.c_uint(sync_interval))
+        result = _present_swap_chain(_to_cvoid(swap_chain), ctypes.c_uint(sync_interval))
+        debug_print(f"present_swap_chain() returned {result}")
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] present_swap_chain failed: {e}")
+        return False
 
 
-def begin_frame() -> None:
+def begin_frame() -> bool:
     """Начать новый кадр."""
     if _begin_frame is None:
         logger.debug("[d3d12_wrapper] begin_frame not available")
-        return
+        return False
     try:
-        _begin_frame()
+        result = _begin_frame()
+        debug_print(f"begin_frame() returned {result}")
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] begin_frame failed: {e}")
+        return False
 
 
 def end_frame() -> bool:
@@ -426,21 +433,25 @@ def end_frame() -> bool:
         logger.debug("[d3d12_wrapper] end_frame not available")
         return False
     try:
-        return bool(_end_frame())
+        result = _end_frame()
+        debug_print(f"end_frame() returned {result}")
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] end_frame failed: {e}")
         return False
 
 
-def wait_for_gpu() -> None:
+def wait_for_gpu() -> bool:
     """Ожидать завершения работы GPU."""
     if _wait_for_gpu is None:
         logger.debug("[d3d12_wrapper] wait_for_gpu not available")
-        return
+        return False
     try:
         _wait_for_gpu()
+        return True
     except Exception as e:
         logger.error(f"[d3d12_wrapper] wait_for_gpu failed: {e}")
+        return False
 
 
 def get_frame_index() -> int:
@@ -486,7 +497,6 @@ def create_graphics_ps(device: ctypes.c_void_p, vs_blob: int, ps_blob: int) -> c
         logger.debug("[d3d12_wrapper] create_graphics_ps not available")
         return ctypes.c_void_p(0)
     try:
-        # ИСПРАВЛЕНИЕ: Передаем указатели как c_void_p, а не как int
         vs_ptr = ctypes.c_void_p(vs_blob)
         ps_ptr = ctypes.c_void_p(ps_blob)
         res = _create_graphics_ps(_to_cvoid(device), vs_ptr, ps_ptr)
@@ -496,15 +506,17 @@ def create_graphics_ps(device: ctypes.c_void_p, vs_blob: int, ps_blob: int) -> c
         return ctypes.c_void_p(0)
 
 
-def set_graphics_pipeline(pso: ctypes.c_void_p) -> None:
+def set_graphics_pipeline(pso: ctypes.c_void_p) -> bool:
     """Установить PSO."""
     if _set_graphics_pipeline is None:
         logger.debug("[d3d12_wrapper] set_graphics_pipeline not available")
-        return
+        return False
     try:
-        _set_graphics_pipeline(_to_cvoid(pso))
+        result = _set_graphics_pipeline(_to_cvoid(pso))
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_graphics_pipeline failed: {e}")
+        return False
 
 
 def create_buffer(device: ctypes.c_void_p, size: int, usage: str = "default") -> ctypes.c_void_p:
@@ -517,7 +529,6 @@ def create_buffer(device: ctypes.c_void_p, size: int, usage: str = "default") ->
         return ctypes.c_void_p(0)
 
     try:
-        # Обрабатываем как строку, так и bytes
         if isinstance(usage, bytes):
             usage_bytes = usage
         else:
@@ -530,23 +541,25 @@ def create_buffer(device: ctypes.c_void_p, size: int, usage: str = "default") ->
         return ctypes.c_void_p(0)
 
 
-def update_subresource(buffer: Any, data: bytes, size: int = None) -> None:
+def update_subresource(buffer: Any, data: bytes, size: int = None) -> bool:
     """Обновить данные в буфере."""
     if _update_subresource is None:
         logger.debug("[d3d12_wrapper] update_subresource not available")
-        return
+        return False
 
     if not buffer or not data:
-        return
+        return False
 
     if size is None:
         size = len(data)
 
     try:
         raw = ctypes.create_string_buffer(data, size)
-        _update_subresource(_to_cvoid(buffer), ctypes.addressof(raw), ctypes.c_size_t(size))
+        result = _update_subresource(_to_cvoid(buffer), ctypes.addressof(raw), ctypes.c_size_t(size))
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] update_subresource failed: {e}")
+        return False
 
 
 def create_texture_from_memory(
@@ -585,20 +598,22 @@ def create_texture_from_memory(
         return ctypes.c_void_p(0)
 
 
-def update_texture(texture: ctypes.c_void_p, data: bytes, width: int, height: int) -> None:
+def update_texture(texture: ctypes.c_void_p, data: bytes, width: int, height: int) -> bool:
     """Обновить данные в текстуре."""
     if _update_texture is None:
         logger.debug("[d3d12_wrapper] update_texture not available")
-        return
+        return False
 
     if not texture or not data:
-        return
+        return False
 
     try:
         buf = ctypes.create_string_buffer(data, len(data))
-        _update_texture(_to_cvoid(texture), ctypes.addressof(buf), width, height)
+        result = _update_texture(_to_cvoid(texture), ctypes.addressof(buf), width, height)
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] update_texture failed: {e}")
+        return False
 
 
 def create_descriptor_heap(
@@ -653,7 +668,7 @@ def GetGPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
 def offset_descriptor_handle(base: int, index: int) -> int:
     """Сместить дескриптор на index позиций."""
     if _offset_descriptor_handle is None:
-        return base + (index * 32)  # fallback с размером по умолчанию
+        return base + (index * 32)
     try:
         return _offset_descriptor_handle(ctypes.c_uintptr(base), ctypes.c_uint(index))
     except Exception as e:
@@ -665,88 +680,89 @@ def create_shader_resource_view(
         device: ctypes.c_void_p,
         resource: ctypes.c_void_p,
         cpu_handle: int
-) -> None:
+) -> bool:
     """Создать Shader Resource View."""
     if _create_shader_resource_view is None:
         logger.debug("[d3d12_wrapper] create_shader_resource_view not available")
-        return
+        return False
     try:
-        # ИСПРАВЛЕНО: cpu_handle как c_void_p
-        _create_shader_resource_view(
+        result = _create_shader_resource_view(
             _to_cvoid(device),
             _to_cvoid(resource),
-            ctypes.c_void_p(cpu_handle)  # Конвертируем int в void_p
+            ctypes.c_void_p(cpu_handle)
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_shader_resource_view failed: {e}")
+        return False
 
 
 def create_render_target_view(
         device: ctypes.c_void_p,
         resource: ctypes.c_void_p,
         cpu_handle: int
-) -> None:
+) -> bool:
     """Создать Render Target View."""
     if _create_render_target_view is None:
         logger.debug("[d3d12_wrapper] create_render_target_view not available")
-        return
+        return False
     try:
-        # ИСПРАВЛЕНО: cpu_handle как c_void_p
-        _create_render_target_view(
+        result = _create_render_target_view(
             _to_cvoid(device),
             _to_cvoid(resource),
             ctypes.c_void_p(cpu_handle)
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_render_target_view failed: {e}")
+        return False
 
 
 def create_constant_buffer_view(
         device: ctypes.c_void_p,
         resource: ctypes.c_void_p,
         cpu_handle: int,
-) -> None:
+) -> bool:
     """Создать Constant Buffer View."""
     if _create_constant_buffer_view is None:
         logger.debug("[d3d12_wrapper] create_constant_buffer_view not available")
-        return
+        return False
     try:
-        # ИСПРАВЛЕНО: cpu_handle как c_void_p
-        _create_constant_buffer_view(
+        result = _create_constant_buffer_view(
             _to_cvoid(device),
             _to_cvoid(resource),
             ctypes.c_void_p(cpu_handle)
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_constant_buffer_view failed: {e}")
+        return False
 
 
-def set_root_descriptor_table(root_index: int, gpu_handle: int) -> None:
+def set_root_descriptor_table(root_index: int, gpu_handle: int) -> bool:
     """Установить root descriptor table."""
     if _set_root_descriptor_table is None:
         logger.debug("[d3d12_wrapper] set_root_descriptor_table not available")
-        return
+        return False
     try:
-        _set_root_descriptor_table(ctypes.c_uint(root_index), ctypes.c_uint64(gpu_handle))
+        result = _set_root_descriptor_table(ctypes.c_uint(root_index), ctypes.c_uint64(gpu_handle))
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_root_descriptor_table failed: {e}")
+        return False
 
 
-def set_descriptor_heaps(heaps: Sequence[Any]) -> None:
-    """
-    Установить массивы дескрипторных куч.
-    Формирует массив ctypes.c_void_p и вызывает нативную функцию.
-    """
+def set_descriptor_heaps(heaps: Sequence[Any]) -> bool:
+    """Установить массивы дескрипторных куч."""
     if _set_descriptor_heaps is None:
         logger.debug("[d3d12_wrapper] set_descriptor_heaps not loaded — skipping")
-        return
+        return False
 
     ptrs = []
     for h in heaps:
         if h is None:
             continue
 
-        # Получаем сырой указатель из разных типов объектов
         if isinstance(h, ctypes.c_void_p):
             val = h.value or 0
         elif isinstance(h, int):
@@ -764,105 +780,120 @@ def set_descriptor_heaps(heaps: Sequence[Any]) -> None:
 
     if not ptrs:
         logger.debug("[d3d12_wrapper] No heaps to set — skipping native call")
-        return
+        return False
 
     try:
         arr = (ctypes.c_void_p * len(ptrs))(*ptrs)
-        _set_descriptor_heaps(ctypes.c_uint(len(ptrs)), arr)
+        result = _set_descriptor_heaps(ctypes.c_uint(len(ptrs)), arr)
         logger.debug(f"[d3d12_wrapper] set_descriptor_heaps called with {len(ptrs)} heaps")
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_descriptor_heaps failed: {e}")
+        return False
 
 
-def set_render_target(rtv: int) -> None:
+def set_render_target(rtv: int) -> bool:
     """Установить один render target."""
     if _set_render_target is not None:
         try:
-            _set_render_target(ctypes.c_uintptr(rtv))
+            result = _set_render_target(ctypes.c_uintptr(rtv))
+            return bool(result)
         except Exception as e:
             logger.error(f"[d3d12_wrapper] set_render_target failed: {e}")
+            return False
     elif _set_render_targets is not None:
-        set_render_targets([rtv])
+        return set_render_targets([rtv])
     else:
         logger.debug("[d3d12_wrapper] set_render_target(s) not available")
+        return False
 
 
-def set_render_targets(rtvs: Sequence[int]) -> None:
+def set_render_targets(rtvs: Sequence[int]) -> bool:
     """Установить несколько render targets."""
     if _set_render_targets is None:
         logger.debug("[d3d12_wrapper] set_render_targets not available")
-        return
+        return False
 
     if not rtvs:
-        return
+        return False
 
     try:
         count = len(rtvs)
         array_type = ctypes.c_uintptr * count
-        _set_render_targets(
+        result = _set_render_targets(
             ctypes.c_uint(count),
             array_type(*[ctypes.c_uintptr(r) for r in rtvs])
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_render_targets failed: {e}")
+        return False
 
 
-def clear_render_target(rtv: int, color: tuple[float, float, float, float]) -> None:
+def clear_render_target(rtv: int, color: tuple[float, float, float, float]) -> bool:
     """Очистить render target."""
     if _clear_render_target is None:
         logger.debug("[d3d12_wrapper] clear_render_target not available")
-        return
+        return False
     try:
         rgba = (ctypes.c_float * 4)(*color)
-        _clear_render_target(ctypes.c_uintptr(rtv), rgba)
+        result = _clear_render_target(ctypes.c_uintptr(rtv), rgba)
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] clear_render_target failed: {e}")
+        return False
 
 
 def set_viewport(
         x: int, y: int, w: int, h: int,
         min_depth: float = 0.0, max_depth: float = 1.0
-) -> None:
+) -> bool:
     """Установить viewport."""
     if _set_viewport is None:
         logger.debug("[d3d12_wrapper] set_viewport not available")
-        return
+        return False
     try:
-        _set_viewport(
+        result = _set_viewport(
             ctypes.c_int(x), ctypes.c_int(y), ctypes.c_int(w), ctypes.c_int(h),
             ctypes.c_float(min_depth), ctypes.c_float(max_depth)
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_viewport failed: {e}")
+        return False
 
 
-def set_scissor_rect(left: int, top: int, right: int, bottom: int) -> None:
+def set_scissor_rect(left: int, top: int, right: int, bottom: int) -> bool:
     """Установить scissor rect."""
     if _set_scissor_rect is None:
         logger.debug("[d3d12_wrapper] set_scissor_rect not available")
-        return
+        return False
     try:
-        _set_scissor_rect(
+        result = _set_scissor_rect(
             ctypes.c_int(left), ctypes.c_int(top),
             ctypes.c_int(right), ctypes.c_int(bottom)
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_scissor_rect failed: {e}")
+        return False
 
 
 def set_vertex_buffers(
         vertex_buffer: ctypes.c_void_p,
         index_buffer: Optional[ctypes.c_void_p] = None
-) -> None:
+) -> bool:
     """Установить vertex/index буферы."""
     if _set_vertex_buffers is None:
         logger.debug("[d3d12_wrapper] set_vertex_buffers not available")
-        return
+        return False
     try:
         ib = index_buffer if index_buffer is not None else ctypes.c_void_p()
-        _set_vertex_buffers(_to_cvoid(vertex_buffer), _to_cvoid(ib))
+        result = _set_vertex_buffers(_to_cvoid(vertex_buffer), _to_cvoid(ib))
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_vertex_buffers failed: {e}")
+        return False
 
 
 def draw_instanced(
@@ -870,20 +901,22 @@ def draw_instanced(
         instance_count: int = 1,
         start_vertex: int = 0,
         start_instance: int = 0,
-) -> None:
+) -> bool:
     """Нарисовать инстансы."""
     if _draw_instanced is None:
         logger.debug("[d3d12_wrapper] draw_instanced not available")
-        return
+        return False
     try:
-        _draw_instanced(
+        result = _draw_instanced(
             ctypes.c_uint(vertex_count),
             ctypes.c_uint(instance_count),
             ctypes.c_uint(start_vertex),
             ctypes.c_uint(start_instance),
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] draw_instanced failed: {e}")
+        return False
 
 
 def draw_indexed_instanced(
@@ -892,21 +925,23 @@ def draw_indexed_instanced(
         start_index: int = 0,
         base_vertex: int = 0,
         start_instance: int = 0,
-) -> None:
+) -> bool:
     """Нарисовать инстансы с индексами."""
     if _draw_indexed_instanced is None:
         logger.debug("[d3d12_wrapper] draw_indexed_instanced not available")
-        return
+        return False
     try:
-        _draw_indexed_instanced(
+        result = _draw_indexed_instanced(
             ctypes.c_uint(index_count),
             ctypes.c_uint(instance_count),
             ctypes.c_uint(start_index),
             ctypes.c_int(base_vertex),
             ctypes.c_uint(start_instance),
         )
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] draw_indexed_instanced failed: {e}")
+        return False
 
 
 def release_resource(resource: Any) -> None:
@@ -936,7 +971,7 @@ def force_cleanup() -> None:
 def get_rtv_descriptor_size() -> int:
     """Получить размер RTV дескриптора."""
     if _get_rtv_descriptor_size is None:
-        return 32  # fallback
+        return 32
     try:
         return _get_rtv_descriptor_size()
     except Exception as e:
@@ -947,7 +982,7 @@ def get_rtv_descriptor_size() -> int:
 def get_dsv_descriptor_size() -> int:
     """Получить размер DSV дескриптора."""
     if _get_dsv_descriptor_size is None:
-        return 8  # fallback
+        return 8
     try:
         return _get_dsv_descriptor_size()
     except Exception as e:
