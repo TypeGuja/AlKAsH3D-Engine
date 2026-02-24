@@ -1,5 +1,5 @@
 //! alkash3d_dx12 – Полноценная рабочая обертка над DirectX 12 для Python
-//! ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ
+//! ИСПРАВЛЕННАЯ ВЕРСИЯ С ПРАВИЛЬНОЙ СИНХРОНИЗАЦИЕЙ
 
 #![allow(non_snake_case)]
 #![allow(dead_code)]
@@ -46,14 +46,15 @@ struct GlobalState {
     command_queue: Option<ID3D12CommandQueue>,
     swap_chain: Option<IDXGISwapChain3>,
     command_list: Option<ID3D12GraphicsCommandList>,
-    command_allocator: Option<ID3D12CommandAllocator>,
+    command_allocators: Vec<Option<ID3D12CommandAllocator>>,
+    current_allocator_index: usize,
     root_signature: Option<ID3D12RootSignature>,
     rtv_descriptor_size: u32,
     dsv_descriptor_size: u32,
     cbv_srv_uav_descriptor_size: u32,
     frame_index: u32,
     fence: Option<ID3D12Fence>,
-    fence_value: u64,
+    fence_values: Vec<u64>,
     rtv_heap: Option<ID3D12DescriptorHeap>,
     rtv_handle_size: u32,
 }
@@ -65,14 +66,15 @@ impl GlobalState {
             command_queue: None,
             swap_chain: None,
             command_list: None,
-            command_allocator: None,
+            command_allocators: Vec::new(),
+            current_allocator_index: 0,
             root_signature: None,
             rtv_descriptor_size: 0,
             dsv_descriptor_size: 0,
             cbv_srv_uav_descriptor_size: 0,
             frame_index: 0,
             fence: None,
-            fence_value: 0,
+            fence_values: vec![0; 4], // Для 4 кадров
             rtv_heap: None,
             rtv_handle_size: 0,
         }
@@ -315,7 +317,7 @@ mod queue_mod {
     }
 }
 
-/* ==================== КОМАНДНЫЙ АЛЛОКАТОР И СПИСОК ==================== */
+/* ==================== КОМАНДНЫЙ АЛЛОКАТОР ==================== */
 mod command_mod {
     use super::*;
 
@@ -351,10 +353,22 @@ mod command_mod {
         match result {
             Ok(list) => {
                 debug_println!("[command] create_command_list: SUCCESS");
+
+                // Закрываем сразу – это обязательное требование DirectX 12.
+                if let Err(e) = list.Close() {
+                    debug_println!(
+                        "[command] initial Close() failed: HRESULT 0x{:X}",
+                        e.code().0
+                    );
+                }
+
                 Some(list)
-            },
+            }
             Err(e) => {
-                debug_println!("[command] create_command_list: FAILED with HRESULT 0x{:X}", e.code().0);
+                debug_println!(
+                    "[command] create_command_list: FAILED with HRESULT 0x{:X}",
+                    e.code().0
+                );
                 None
             }
         }
@@ -378,7 +392,6 @@ mod swapchain_mod {
             return None;
         }
 
-        // Создаем factory без флага отладки для совместимости
         let factory: IDXGIFactory4 = match CreateDXGIFactory2(0) {
             Ok(f) => f,
             Err(e) => {
@@ -418,12 +431,10 @@ mod swapchain_mod {
             }
         };
 
-        // Кастуем в SwapChain3
         match swap_chain1.cast::<IDXGISwapChain3>() {
             Ok(sc) => {
                 debug_println!("[swapchain] Created successfully at {:p}", sc.as_raw());
 
-                // Запрещаем Alt+Enter для избежания проблем
                 let _ = factory.MakeWindowAssociation(HWND(hwnd as isize), DXGI_MWA_NO_ALT_ENTER);
 
                 Some(sc)
@@ -944,7 +955,7 @@ pub extern "C" fn force_cleanup() {
     unsafe {
         let mut state = STATE.lock().unwrap();
         state.command_list = None;
-        state.command_allocator = None;
+        state.command_allocators.clear();
         state.swap_chain = None;
         state.command_queue = None;
         state.root_signature = None;
@@ -970,12 +981,16 @@ pub extern "C" fn create_device() -> *mut c_void {
             None => return ptr::null_mut(),
         };
 
-        let allocator = match command_mod::create_allocator(&device) {
-            Some(a) => a,
-            None => return ptr::null_mut(),
-        };
+        let mut allocators = Vec::new();
+        for _ in 0..4 {
+            let allocator = match command_mod::create_allocator(&device) {
+                Some(a) => a,
+                None => return ptr::null_mut(),
+            };
+            allocators.push(Some(allocator));
+        }
 
-        let command_list = match command_mod::create_command_list(&device, &allocator, None) {
+        let command_list = match command_mod::create_command_list(&device, allocators[0].as_ref().unwrap(), None) {
             Some(l) => l,
             None => return ptr::null_mut(),
         };
@@ -988,10 +1003,11 @@ pub extern "C" fn create_device() -> *mut c_void {
         {
             let mut state = STATE.lock().unwrap();
             state.device = Some(device.clone());
-            state.command_allocator = Some(allocator.clone());
+            state.command_allocators = allocators.clone();
             state.command_list = Some(command_list.clone());
             state.fence = Some(fence.clone());
             state.root_signature = Some(root_sig.clone());
+            state.fence_values = vec![0; 4];
 
             let rtv_sz = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
             let dsv_sz = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -1005,7 +1021,9 @@ pub extern "C" fn create_device() -> *mut c_void {
         let raw_ptr = device.as_raw();
         std::mem::forget(device);
         std::mem::forget(root_sig);
-        std::mem::forget(allocator);
+        for a in allocators {
+            std::mem::forget(a);
+        }
         std::mem::forget(command_list);
         std::mem::forget(fence);
 
@@ -1434,41 +1452,54 @@ pub extern "C" fn create_graphics_ps(
         use ptr_utils::*;
 
         if device_ptr.is_null() || vs_blob_ptr.is_null() || ps_blob_ptr.is_null() {
+            eprintln!("[create_graphics_ps] Null pointer argument");
             return ptr::null_mut();
         }
 
         let device = match as_device(device_ptr) {
             Some(d) => d,
-            None => return ptr::null_mut(),
+            None => {
+                eprintln!("[create_graphics_ps] Failed to get device");
+                return ptr::null_mut();
+            }
         };
 
         let vs_blob = match as_blob(vs_blob_ptr) {
             Some(b) => b,
-            None => return ptr::null_mut(),
+            None => {
+                eprintln!("[create_graphics_ps] Failed to get VS blob");
+                return ptr::null_mut();
+            }
         };
 
         let ps_blob = match as_blob(ps_blob_ptr) {
             Some(b) => b,
-            None => return ptr::null_mut(),
+            None => {
+                eprintln!("[create_graphics_ps] Failed to get PS blob");
+                return ptr::null_mut();
+            }
         };
 
         let root_sig = match STATE.lock().unwrap().root_signature.clone() {
             Some(s) => s,
-            None => return ptr::null_mut(),
+            None => {
+                eprintln!("[create_graphics_ps] No root signature");
+                return ptr::null_mut();
+            }
         };
 
+        eprintln!("[create_graphics_ps] Creating PSO...");
         let pso = match pso_mod::create_graphics(&device, &root_sig, &vs_blob, &ps_blob) {
             Some(p) => p,
-            None => return ptr::null_mut(),
+            None => {
+                eprintln!("[create_graphics_ps] PSO creation failed");
+                return ptr::null_mut();
+            }
         };
 
         let raw_ptr = pso.as_raw();
+        eprintln!("[create_graphics_ps] PSO created at {:p}", raw_ptr);
         std::mem::forget(pso);
-        std::mem::forget(device);
-        std::mem::forget(vs_blob);
-        std::mem::forget(ps_blob);
-        std::mem::forget(root_sig);
-
         raw_ptr as *mut c_void
     }
 }
@@ -1479,93 +1510,106 @@ pub extern "C" fn create_graphics_ps(
 pub unsafe extern "C" fn begin_frame() -> bool {
     debug_println!("\n[API] begin_frame() called");
 
+    // Сначала ждем GPU, чтобы убедиться, что все команды выполнены
+    if !wait_for_gpu() {
+        debug_println!("[API] wait_for_gpu failed in begin_frame");
+        return false;
+    }
+
+    let _queue = {
+        let state = STATE.lock().unwrap();
+        state.command_queue.clone()
+    };
+
+    // Переключаемся на следующий аллокатор
+    let next_index = {
+        let mut state = STATE.lock().unwrap();
+        state.current_allocator_index = (state.current_allocator_index + 1) % state.command_allocators.len();
+        state.current_allocator_index
+    };
+
+    // Получаем аллокатор и список
     let (allocator, list) = {
         let state = STATE.lock().unwrap();
         (
-            state.command_allocator.clone(),
+            state.command_allocators[next_index].clone(),
             state.command_list.clone(),
         )
     };
 
     if let (Some(allocator), Some(list)) = (allocator, list) {
-        // Закрываем список если он открыт
-        let _ = list.Close();
-
         // Сбрасываем allocator
-        if let Err(e) = allocator.Reset() {
-            debug_println!("[API] Failed to reset allocator: {:?}", e);
-            return false;
+        match allocator.Reset() {
+            Ok(()) => debug_println!("[API] Allocator reset successfully"),
+            Err(e) => {
+                debug_println!("[API] Failed to reset allocator: {:?}", e);
+                return false;
+            }
         }
 
-        // Сбрасываем command list
-        if let Err(e) = list.Reset(&allocator, None) {
-            debug_println!("[API] Failed to reset command list: {:?}", e);
-            return false;
+        // Сбрасываем command list с этим аллокатором
+        match list.Reset(&allocator, None) {
+            Ok(()) => debug_println!("[API] Command list reset successfully"),
+            Err(e) => {
+                debug_println!("[API] Failed to reset command list: {:?}", e);
+                return false;
+            }
         }
 
-        debug_println!("[API] Command list reset");
-
+        debug_println!("[API] Command list ready for new frame");
         true
     } else {
-        debug_println!("[API] Missing allocator or list in begin_frame");
+        debug_println!("[API] Missing allocator or list");
         false
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn end_frame() -> bool {
-    println!("\n[API] end_frame() called");
+    debug_println!("\n[API] end_frame() called");
 
-    let (list, queue) = {
+    // Достаём объекты из глобального состояния
+    let (queue_opt, cmd_list_opt, fence_opt) = {
         let state = STATE.lock().unwrap();
         (
-            state.command_list.clone(),
             state.command_queue.clone(),
+            state.command_list.clone(),
+            state.fence.clone(),
         )
     };
 
-    if list.is_none() || queue.is_none() {
-        println!("[API] end_frame: missing resources");
-        return false;
-    }
-
-    let list = list.unwrap();
-    let queue = queue.unwrap();
-
-    // Закрываем командный список
-    if let Err(e) = list.Close() {
-        println!("[API] Failed to close command list: {:?}", e);
-        return false;
-    }
-
-    // Выполняем команды
-    let cmd_list: ID3D12CommandList = list.clone().cast().unwrap();
-    let cmd_lists = [Some(cmd_list)];
-    queue.ExecuteCommandLists(&cmd_lists);
-    println!("[API] Command list executed");
-
-    // Сохраняем список обратно в состояние
-    {
-        let mut state = STATE.lock().unwrap();
-        state.command_list = Some(list);
-    }
-
-    let new_frame_index = {
-        let state = STATE.lock().unwrap();
-        if let Some(swap_chain) = &state.swap_chain {
-            swap_chain.GetCurrentBackBufferIndex()
-        } else {
-            0
+    let (queue, cmd_list, fence) = match (queue_opt, cmd_list_opt, fence_opt) {
+        (Some(q), Some(cl), Some(f)) => (q, cl, f),
+        _ => {
+            debug_println!("[API] Missing queue, command list or fence");
+            return false;
         }
     };
 
-    println!("[API] New frame index: {}", new_frame_index);
+    // 1) Закрываем список (если он ещё открыт)
+    if let Err(e) = cmd_list.Close() {
+        debug_println!("[API] CommandList::Close() failed: {:?}", e);
+        // Не считаем фатальной ошибкой – продолжаем.
+    }
 
-    // Обновляем состояние
+    // 2) Выполняем список команд
+    let cmd_list_clone = cmd_list.clone();
+    let cmd_list_cast: ID3D12CommandList = cmd_list_clone.cast().unwrap();
+    queue.ExecuteCommandLists(&[Some(cmd_list_cast)]);
+
+    // 3) Обновляем fence‑значение для текущего кадра
     let mut state = STATE.lock().unwrap();
-    state.frame_index = new_frame_index;
+    let frame_idx = state.frame_index as usize;
+    state.fence_values[frame_idx] = state.fence_values[frame_idx].wrapping_add(1);
+    let fence_val = state.fence_values[frame_idx];
 
-    println!("[API] end_frame() - OK");
+    // 4) Сигналим fence, чтобы в следующем begin_frame() можно было ждать завершения
+    if let Err(e) = queue.Signal(&fence, fence_val) {
+        debug_println!("[API] Queue::Signal() failed: {:?}", e);
+        return false;
+    }
+
+    debug_println!("[API] end_frame completed – fence value {}", fence_val);
     true
 }
 
@@ -1766,48 +1810,48 @@ pub unsafe extern "C" fn draw_indexed_instanced(
 pub unsafe extern "C" fn wait_for_gpu() -> bool {
     debug_println!("\n[API] wait_for_gpu() called");
 
-    let (queue, fence, fence_value) = {
+    let (_queue, fence) = {
         let state = STATE.lock().unwrap();
         (
             state.command_queue.clone(),
             state.fence.clone(),
-            state.fence_value,
         )
     };
 
-    if let (Some(queue), Some(fence)) = (queue, fence) {
-        let new_fence_value = fence_value + 1;
-
-        {
-            let mut state = STATE.lock().unwrap();
-            state.fence_value = new_fence_value;
-        }
-
-        if let Err(e) = queue.Signal(&fence, new_fence_value) {
-            debug_println!("[API] Signal failed: {:?}", e);
-            return false;
-        }
-
-        if fence.GetCompletedValue() < new_fence_value {
-            let event = match CreateEventA(None, true, false, None) {
-                Ok(e) => e,
-                Err(_) => return false,
-            };
-
-            if let Err(e) = fence.SetEventOnCompletion(new_fence_value, event) {
-                debug_println!("[API] SetEventOnCompletion failed: {:?}", e);
-                CloseHandle(event);
-                return false;
+    if let Some(fence) = fence {
+        // Получаем текущее значение fence
+        let fence_value = {
+            let state = STATE.lock().unwrap();
+            if state.fence_values.is_empty() {
+                0
+            } else {
+                state.fence_values[state.fence_values.len() - 1]
             }
+        };
 
-            WaitForSingleObject(event, INFINITE);
-            CloseHandle(event);
+        if fence_value > 0 {
+            // Ждем если нужно
+            if fence.GetCompletedValue() < fence_value {
+                let event = match CreateEventA(None, true, false, None) {
+                    Ok(e) => e,
+                    Err(_) => return false,
+                };
+
+                if let Err(e) = fence.SetEventOnCompletion(fence_value, event) {
+                    debug_println!("[API] SetEventOnCompletion failed: {:?}", e);
+                    CloseHandle(event);
+                    return false;
+                }
+
+                WaitForSingleObject(event, INFINITE);
+                CloseHandle(event);
+            }
         }
 
         debug_println!("[API] wait_for_gpu completed");
         true
     } else {
-        debug_println!("[API] Missing queue or fence in wait_for_gpu");
+        debug_println!("[API] Missing fence");
         false
     }
 }
