@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Полнофункциональный DirectX 12‑бэкенд с гарантированным выводом изображения
+ИСПРАВЛЕННАЯ ВЕРСИЯ
 """
 
 from __future__ import annotations
@@ -61,15 +62,10 @@ class DX12Backend(GraphicsBackend):
         self._hwnd: int = 0
         self._width: int = 0
         self._height: int = 0
-        self._vsync_enabled: bool = True  # Включаем VSync для стабильности
+        self._vsync_enabled: bool = True
 
-        # Хранилище для constant buffers
         self._constant_buffers: set[int] = set()
-
-        # Текущий индекс кадра
         self._current_frame = 0
-
-        # Флаг инициализации
         self._initialized = False
 
     def _reset_viewport_and_scissor(self, w: int, h: int) -> bool:
@@ -116,6 +112,7 @@ class DX12Backend(GraphicsBackend):
             return False
 
         self._rtv_cpu_handles.clear()
+        self.rtv_heap.reset()
 
         for i in range(dx.SWAP_CHAIN_BUFFER_COUNT):
             debug_print(f"  Getting back buffer {i}")
@@ -130,7 +127,6 @@ class DX12Backend(GraphicsBackend):
                 debug_print(f"    GetBuffer({i}) failed: {e}")
                 continue
 
-            # Создаем RTV
             rtv_idx = self.rtv_heap.next_free()
             cpu_handle = self.rtv_heap.get_cpu_handle(rtv_idx)
             debug_print(f"    Creating RTV at index {rtv_idx}, cpu_handle={hex(cpu_handle)}")
@@ -152,13 +148,11 @@ class DX12Backend(GraphicsBackend):
         """Очистка всех ресурсов перед пересозданием."""
         debug_print("_cleanup_resources()")
 
-        # Ждем завершения GPU
         try:
             self.wait_for_gpu()
         except:
             pass
 
-        # Освобождаем все ресурсы
         for resource in self._resources:
             try:
                 self.release_resource(resource)
@@ -166,12 +160,10 @@ class DX12Backend(GraphicsBackend):
                 pass
         self._resources.clear()
 
-        # Очищаем хипы
         self.rtv_heap = None
         self.cbv_srv_uav_heap = None
         self._rtv_cpu_handles.clear()
 
-        # Освобождаем основные объекты
         if self.swap_chain:
             try:
                 self.release_resource(self.swap_chain)
@@ -193,14 +185,12 @@ class DX12Backend(GraphicsBackend):
                 pass
             self.device = None
 
-        # Принудительная очистка
         try:
             dx.force_cleanup()
         except:
             pass
 
-        time.sleep(0.1)  # Даем время системе на очистку
-
+        time.sleep(0.1)
         debug_print("  cleanup done")
 
     def init_device(self, hwnd: int, width: int, height: int) -> None:
@@ -212,11 +202,9 @@ class DX12Backend(GraphicsBackend):
         self._height = height
         self._initialized = False
 
-        # Очищаем предыдущие ресурсы если есть
         self._cleanup_resources()
 
         try:
-            # ---------- Device ----------
             debug_print("  Creating device...")
             device_ptr = dx.create_device()
             if not device_ptr or not device_ptr.value:
@@ -224,7 +212,6 @@ class DX12Backend(GraphicsBackend):
             self.device = device_ptr
             debug_print(f"  Device created: {hex(self.device.value)}")
 
-            # ---------- Command queue ----------
             debug_print("  Creating command queue...")
             queue_ptr = dx.create_command_queue(self.device)
             if not queue_ptr or not queue_ptr.value:
@@ -232,7 +219,6 @@ class DX12Backend(GraphicsBackend):
             self.command_queue = queue_ptr
             debug_print(f"  Command queue created: {hex(self.command_queue.value)}")
 
-            # ---------- Swap chain ----------
             if hwnd != 0:
                 debug_print(f"  Creating swap chain {width}x{height}...")
                 swap_ptr = dx.create_swap_chain(self.command_queue, hwnd, width, height)
@@ -249,7 +235,6 @@ class DX12Backend(GraphicsBackend):
             if not self._reset_viewport_and_scissor(width, height):
                 debug_print("  Warning: viewport/scissor reset failed")
 
-            # ---------- RTV‑heap ----------
             debug_print("  Creating RTV heap...")
             try:
                 self.rtv_heap = DescriptorHeap(
@@ -263,7 +248,6 @@ class DX12Backend(GraphicsBackend):
                 debug_print(f"  RTV heap creation failed: {e}")
                 raise
 
-            # ---------- CBV/SRV/UAV‑heap ----------
             debug_print("  Creating CBV/SRV/UAV heap...")
             try:
                 self.cbv_srv_uav_heap = DescriptorHeap(
@@ -275,9 +259,7 @@ class DX12Backend(GraphicsBackend):
                 debug_print("  CBV/SRV/UAV heap created")
             except Exception as e:
                 debug_print(f"  CBV/SRV/UAV heap creation failed: {e}")
-                # Продолжаем без него для простой очистки экрана
 
-            # ---------- RTV‑дескрипторы ----------
             if self.rtv_heap and self.swap_chain:
                 if not self._create_swapchain_rtv():
                     debug_print("  Failed to create RTVs")
@@ -341,7 +323,6 @@ class DX12Backend(GraphicsBackend):
 
             if result:
                 self._current_frame = (self._current_frame + 1) % dx.SWAP_CHAIN_BUFFER_COUNT
-                # Принудительно обновляем окно Windows
                 if self._hwnd:
                     ctypes.windll.user32.InvalidateRect(self._hwnd, None, True)
                     ctypes.windll.user32.UpdateWindow(self._hwnd)
@@ -379,40 +360,71 @@ class DX12Backend(GraphicsBackend):
             logger.error(f"[DX12Backend] Shader compilation error: {e}")
             return 0x12345678
 
-    def create_graphics_ps(self, vs_blob: int, ps_blob: int) -> Any:
-        debug_print(f"create_graphics_ps(vs={hex(vs_blob)}, ps={hex(ps_blob)})")
-        if vs_blob == 0x12345678 or ps_blob == 0x12345678:
-            debug_print("  Using stub shaders – returning stub PSO")
-            return 0x87654321
+    def create_graphics_ps(self, vs_blob: ctypes.c_void_p, ps_blob: ctypes.c_void_p) -> Any:
+        """Создать graphics pipeline state object."""
+        debug_print(
+            f"create_graphics_ps(vs={hex(vs_blob.value if vs_blob else 0)}, ps={hex(ps_blob.value if ps_blob else 0)})")
+
+        if self._in_stub_mode:
+            debug_print("  STUB mode - cannot create PSO")
+            return None
+
+        # Проверка на stub значения
+        vs_val = vs_blob.value if vs_blob else 0
+        ps_val = ps_blob.value if ps_blob else 0
+
+        if vs_val == 0x12345678 or ps_val == 0x12345678 or vs_val == 0 or ps_val == 0:
+            debug_print("  Using stub shaders – cannot create PSO")
+            return None
 
         try:
-            vs_ptr = ctypes.c_void_p(vs_blob)
-            ps_ptr = ctypes.c_void_p(ps_blob)
-            pso = dx.create_graphics_ps(self.device, vs_ptr, ps_ptr)
+            # ИСПРАВЛЕНИЕ: Убеждаемся что device валидный
+            if not self.device or not self.device.value:
+                debug_print("  Device is invalid")
+                return None
 
-            if pso and getattr(pso, "value", None):
-                debug_print(f"  PSO created: {hex(pso.value)}")
-                return pso.value
+            # ИСПРАВЛЕНИЕ: Передаем указатели как есть
+            pso_ptr = dx.create_graphics_ps(self.device, vs_blob, ps_blob)
+
+            if pso_ptr and hasattr(pso_ptr, 'value') and pso_ptr.value:
+                debug_print(f"  PSO created: {hex(pso_ptr.value)}")
+                # ИСПРАВЛЕНИЕ: Возвращаем значение указателя
+                return pso_ptr.value
             else:
                 debug_print("  PSO creation failed - null pointer")
-                return 0x87654321
+                return None
+
         except Exception as e:
             debug_print(f"  PSO creation exception: {e}")
+            import traceback
             traceback.print_exc()
             logger.error(f"[DX12Backend] PSO creation exception: {e}")
-            return 0x87654321
+            return None
 
     def set_graphics_pipeline(self, pso: Any) -> bool:
-        debug_print(f"set_graphics_pipeline(pso={hex(pso)})")
-        if not self._in_stub_mode and pso and pso != 0xFEEDC0DE:
-            try:
-                result = dx.set_graphics_pipeline(ctypes.c_void_p(pso))
-                debug_print(f"  -> {result}")
-                return result
-            except Exception as e:
-                debug_print(f"  Set pipeline failed: {e}")
-                return False
-        return False
+        """Установить PSO."""
+        debug_print(f"set_graphics_pipeline(pso={hex(pso) if isinstance(pso, int) else pso})")
+
+        if self._in_stub_mode:
+            debug_print("  STUB mode - skipping")
+            return False
+
+        if pso is None:
+            debug_print("  PSO is None")
+            return False
+
+        if isinstance(pso, int) and (pso == 0x87654321 or pso == 0xDEADBEEF or pso == 0):
+            debug_print(f"  PSO is stub value: {hex(pso)}")
+            return False
+
+        try:
+            pso_ptr = ctypes.c_void_p(pso) if isinstance(pso, int) else pso
+            result = dx.set_graphics_pipeline(pso_ptr)
+            debug_print(f"  -> {result}")
+            return result
+        except Exception as e:
+            debug_print(f"  Set pipeline failed: {e}")
+            return False
 
     def create_buffer(self, data: bytes, usage: str = "default") -> Any:
         debug_print(f"create_buffer(size={len(data)}, usage='{usage}')")
@@ -501,17 +513,18 @@ class DX12Backend(GraphicsBackend):
 
         if data:
             debug_print(f"  updating texture with {len(data)} bytes")
+            time.sleep(0.01)
             if not self.update_texture(tex, data, width, height):
-                debug_print("  texture update failed")
+                debug_print("  texture update failed, trying again...")
+                time.sleep(0.01)
+                self.update_texture(tex, data, width, height)
 
-        if self.cbv_srv_uav_heap:
+        if hasattr(self, 'cbv_srv_uav_heap') and self.cbv_srv_uav_heap:
             try:
                 idx = self.cbv_srv_uav_heap.next_free()
                 cpu_handle = self.cbv_srv_uav_heap.get_cpu_handle(idx)
                 debug_print(f"  Creating SRV at index {idx}, cpu_handle={hex(cpu_handle)}")
-                if not self.create_shader_resource_view(tex, cpu_handle):
-                    debug_print("  SRV creation failed")
-                else:
+                if self.create_shader_resource_view(tex, cpu_handle):
                     tex._srv_gpu = self.cbv_srv_uav_heap.get_gpu_handle(idx)
                     debug_print(f"  SRV GPU handle: {hex(tex._srv_gpu)}")
             except Exception as e:
@@ -564,17 +577,30 @@ class DX12Backend(GraphicsBackend):
             height: int
     ) -> bool:
         debug_print(f"update_texture(tex, data_size={len(data)}, w={width}, h={height})")
+
         if self._in_stub_mode:
             debug_print("  STUB mode - skipping")
             return False
 
         ptr = getattr(texture, "ptr", texture)
+        if ptr is None:
+            debug_print("  ERROR: texture pointer is None")
+            return False
+
         ptr_val = ptr.value if hasattr(ptr, 'value') else int(ptr) if ptr else 0
-        stub_pointers = [0xDEADBEEF, 0xDEADF00D, 0xFEEDC0DE, 0x12345678, 0x87654321]
+        stub_pointers = [0xDEADBEEF, 0xDEADF00D, 0xFEEDC0DE, 0x12345678, 0x87654321, 0]
 
         if ptr_val in stub_pointers:
-            debug_print(f"  SKIPPED: stub pointer {ptr_val:#x}")
+            debug_print(f"  SKIPPED: invalid pointer {ptr_val:#x}")
             return False
+
+        expected_size = width * height * 4
+        if len(data) != expected_size:
+            debug_print(f"  WARNING: data size mismatch: got {len(data)}, expected {expected_size}")
+            if len(data) < expected_size:
+                data = data + b'\x00' * (expected_size - len(data))
+            else:
+                data = data[:expected_size]
 
         try:
             result = dx.update_texture(ptr, data, width, height)
@@ -591,12 +617,10 @@ class DX12Backend(GraphicsBackend):
             heap_type: str = "cbv_srv_uav",
             shader_visible: bool = True
     ) -> Any:
-        """Создает дескрипторную кучу."""
         debug_print(
             f"create_descriptor_heap(num={num_descriptors}, type='{heap_type}', shader_visible={shader_visible})")
 
-        # Преобразуем тип кучи
-        heap_type_num = 2  # CBV_SRV_UAV по умолчанию
+        heap_type_num = 2
         if heap_type.lower() == "rtv":
             heap_type_num = 0
         elif heap_type.lower() == "dsv":
@@ -614,7 +638,6 @@ class DX12Backend(GraphicsBackend):
                 shader_visible
             )
 
-            # Создаем объект DescriptorHeap
             heap = DescriptorHeap(
                 device=self.device,
                 num_descriptors=num_descriptors,
@@ -629,14 +652,12 @@ class DX12Backend(GraphicsBackend):
             return None
 
     def get_cpu_handle(self, heap: Any, index: int) -> int:
-        """Получает CPU handle дескриптора."""
         debug_print(f"get_cpu_handle(heap, index={index})")
         if hasattr(heap, 'get_cpu_handle'):
             return heap.get_cpu_handle(index)
         return 0
 
     def get_gpu_handle(self, heap: Any, index: int) -> int:
-        """Получает GPU handle дескриптора."""
         debug_print(f"get_gpu_handle(heap, index={index})")
         if hasattr(heap, 'get_gpu_handle'):
             return heap.get_gpu_handle(index)
@@ -881,22 +902,33 @@ class DX12Backend(GraphicsBackend):
             return False
 
     def wait_for_gpu(self) -> bool:
+        """Ожидать завершения работы GPU."""
         debug_print("wait_for_gpu()")
-        if not self._in_stub_mode:
-            try:
+
+        if self._in_stub_mode:
+            debug_print("  STUB mode - skipping")
+            return False
+
+        try:
+            for attempt in range(5):
                 result = dx.wait_for_gpu()
-                debug_print(f"  -> {result}")
-                return result
-            except Exception as e:
-                debug_print(f"  Wait for GPU failed: {e}")
-                return False
-        return False
+                debug_print(f"  attempt {attempt + 1}: {result}")
+                if result:
+                    return True
+                time.sleep(0.02)
+
+            debug_print("  wait_for_gpu failed after 5 attempts")
+            return False
+        except Exception as e:
+            debug_print(f"  Wait for GPU failed: {e}")
+            return False
 
     def enable_depth_test(self, enable: bool) -> None:
         debug_print(f"enable_depth_test(enable={enable})")
         self._depth_test_enabled = enable
 
     def begin_frame(self) -> bool:
+        """Начать новый кадр."""
         debug_print("begin_frame()")
 
         if not self._initialized or self._in_stub_mode:
@@ -911,12 +943,20 @@ class DX12Backend(GraphicsBackend):
         try:
             result = dx.begin_frame()
             debug_print(f"  dx.begin_frame() returned {result}")
+
+            if not result:
+                debug_print("  begin_frame failed, attempting recovery...")
+                time.sleep(0.01)
+                result = dx.begin_frame()
+                debug_print(f"  retry returned {result}")
+
             return result
         except Exception as e:
             debug_print(f"  dx.begin_frame() failed: {e}")
             return False
 
     def end_frame(self) -> bool:
+        """Завершить кадр."""
         debug_print("end_frame()")
 
         if not self._initialized or self._in_stub_mode:
@@ -926,6 +966,11 @@ class DX12Backend(GraphicsBackend):
         try:
             result = dx.end_frame()
             debug_print(f"  dx.end_frame() returned {result}")
+
+            if result and self.swap_chain and self.swap_chain.value:
+                present_result = self.present(1 if self._vsync_enabled else 0)
+                debug_print(f"  present returned {present_result}")
+
             return result
         except Exception as e:
             debug_print(f"  dx.end_frame() failed: {e}")
@@ -974,7 +1019,6 @@ class DX12Backend(GraphicsBackend):
                 debug_print(f"  Failed to release resource {r}: {exc}")
         self._resources.clear()
 
-        # Принудительная очистка
         try:
             dx.force_cleanup()
         except:

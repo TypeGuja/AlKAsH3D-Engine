@@ -491,20 +491,48 @@ def compile_shader(file_path: str, entry_point: str, profile: str) -> int:
         return 0
 
 
-def create_graphics_ps(device: ctypes.c_void_p, vs_blob: int, ps_blob: int) -> ctypes.c_void_p:
+def create_graphics_ps(device: ctypes.c_void_p, vs_blob: ctypes.c_void_p, ps_blob: ctypes.c_void_p) -> ctypes.c_void_p:
     """Создать graphics pipeline state object."""
     if _create_graphics_ps is None:
         logger.debug("[d3d12_wrapper] create_graphics_ps not available")
         return ctypes.c_void_p(0)
+
     try:
-        vs_ptr = ctypes.c_void_p(vs_blob)
-        ps_ptr = ctypes.c_void_p(ps_blob)
-        res = _create_graphics_ps(_to_cvoid(device), vs_ptr, ps_ptr)
-        return _to_cvoid(res)
+        # ИСПРАВЛЕНИЕ: Проверяем указатели
+        if not device or not device.value:
+            logger.error("[d3d12_wrapper] Device pointer is null")
+            return ctypes.c_void_p(0)
+
+        if not vs_blob or not vs_blob.value:
+            logger.error("[d3d12_wrapper] VS blob pointer is null")
+            return ctypes.c_void_p(0)
+
+        if not ps_blob or not ps_blob.value:
+            logger.error("[d3d12_wrapper] PS blob pointer is null")
+            return ctypes.c_void_p(0)
+
+        # ИСПРАВЛЕНИЕ: Правильная конвертация указателей
+        device_ptr = ctypes.c_void_p(device.value)
+        vs_ptr = ctypes.c_void_p(vs_blob.value)
+        ps_ptr = ctypes.c_void_p(ps_blob.value)
+
+        logger.debug(
+            f"[d3d12_wrapper] Calling native create_graphics_ps with device={hex(device_ptr.value)}, vs={hex(vs_ptr.value)}, ps={hex(ps_ptr.value)}")
+
+        res = _create_graphics_ps(device_ptr, vs_ptr, ps_ptr)
+
+        if res and hasattr(res, 'value') and res.value:
+            logger.debug(f"[d3d12_wrapper] PSO created: {hex(res.value)}")
+            return ctypes.c_void_p(res.value)
+        else:
+            logger.error("[d3d12_wrapper] create_graphics_ps returned null")
+            return ctypes.c_void_p(0)
+
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_graphics_ps failed: {e}")
+        import traceback
+        traceback.print_exc()
         return ctypes.c_void_p(0)
-
 
 def set_graphics_pipeline(pso: ctypes.c_void_p) -> bool:
     """Установить PSO."""
