@@ -4,26 +4,42 @@
 """
 
 import importlib
-import pkgutil
+import os
 from pathlib import Path
+from typing import Dict, Any, Optional
+
 
 class PluginManager:
     """Сканирует подпапку `plugins/` и регистрирует найденные passes."""
-    def __init__(self, plugins_dir: Path = None):
+
+    def __init__(self, plugins_dir: Optional[Path] = None):
         if plugins_dir is None:
             plugins_dir = Path(__file__).parent
         self.dir = plugins_dir
-        self.passes = {}
+        self.passes: Dict[str, Any] = {}
 
-    def discover(self):
+    def discover(self) -> None:
         """Импортировать все модули и вызвать `register`."""
-        for modinfo in pkgutil.iter_modules([str(self.dir)]):
-            module = importlib.import_module(f"alkash3d.plugins.{modinfo.name}")
-            if hasattr(module, "register"):
-                module.register(self)
+        # ИСПРАВЛЕНИЕ: используем os.listdir вместо pkgutil.iter_modules
+        if not os.path.exists(self.dir):
+            print(f"[PluginManager] Directory not found: {self.dir}")
+            return
 
-    def register_pass(self, name: str, pass_cls):
+        for file in os.listdir(self.dir):
+            if file.endswith('.py') and not file.startswith('__'):
+                module_name = file[:-3]  # убираем .py
+                try:
+                    module = importlib.import_module(f"alkash3d.plugins.{module_name}")
+                    if hasattr(module, "register"):
+                        module.register(self)
+                        print(f"[PluginManager] Loaded plugin: {module_name}")
+                except Exception as e:
+                    print(f"[PluginManager] Failed to load {module_name}: {e}")
+
+    def register_pass(self, name: str, pass_cls: Any) -> None:
+        """Зарегистрировать проход рендеринга."""
         self.passes[name] = pass_cls
 
-    def get_pass(self, name: str):
+    def get_pass(self, name: str) -> Optional[Any]:
+        """Получить проход по имени."""
         return self.passes.get(name)
