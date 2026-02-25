@@ -1,225 +1,87 @@
-# test_minimal_shader.py
 """
-Минимальный тест с шейдерами
+AlKAsH3D - ФИНАЛЬНЫЙ ТЕСТ с OpenGL
+Сохраните как final_opengl_test.py
 """
 
-import sys
-import os
-import time
 import numpy as np
-import glfw
-import ctypes
+from alkash3d.engine import Engine
+from alkash3d.scene import Camera, Mesh
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from alkash3d.graphics import select_backend
-
-# ==================== МИНИМАЛЬНЫЕ ШЕЙДЕРЫ ====================
-
-VERTEX_SHADER_CODE = """
-struct VSInput {
-    float3 position : POSITION;
-};
-
-struct VSOutput {
-    float4 position : SV_POSITION;
-    float4 color : COLOR;
-};
-
-VSOutput main(VSInput input) {
-    VSOutput output;
-    output.position = float4(input.position, 1.0);
-    output.color = float4(1.0, 0.0, 0.0, 1.0); // Красный
-    return output;
-}
-"""
-
-PIXEL_SHADER_CODE = """
-struct PSInput {
-    float4 position : SV_POSITION;
-    float4 color : COLOR;
-};
-
-float4 main(PSInput input) : SV_TARGET {
-    return input.color;
-}
-"""
-
-
-class ShaderManager:
-    """Управление шейдерами"""
-
-    def __init__(self, backend):
-        self.backend = backend
-        self.vs_blob = 0
-        self.ps_blob = 0
-        self.pso = None
-
-        print("\n=== SHADER MANAGER ===")
-
-        # Создаем временные файлы
-        import tempfile
-
-        self.vs_path = os.path.join(tempfile.gettempdir(), "minimal_vs.hlsl")
-        with open(self.vs_path, "w") as f:
-            f.write(VERTEX_SHADER_CODE)
-        print(f"VS file: {self.vs_path}")
-
-        self.ps_path = os.path.join(tempfile.gettempdir(), "minimal_ps.hlsl")
-        with open(self.ps_path, "w") as f:
-            f.write(PIXEL_SHADER_CODE)
-        print(f"PS file: {self.ps_path}")
-
-        # Компилируем
-        self.compile()
-
-    def compile(self):
-        """Компиляция шейдеров"""
-        print("\nCompiling vertex shader...")
-        self.vs_blob = self.backend.compile_shader("vs", self.vs_path)
-        print(f"VS blob: {hex(self.vs_blob)}")
-
-        print("\nCompiling pixel shader...")
-        self.ps_blob = self.backend.compile_shader("ps", self.ps_path)
-        print(f"PS blob: {hex(self.ps_blob)}")
-
-        # Проверяем результат
-        if self.vs_blob and self.ps_blob and self.vs_blob != 0x12345678 and self.ps_blob != 0x12345678:
-            print("\nCreating PSO...")
-            vs_ptr = ctypes.c_void_p(self.vs_blob)
-            ps_ptr = ctypes.c_void_p(self.ps_blob)
-            self.pso = self.backend.create_graphics_ps(vs_ptr, ps_ptr)
-            print(f"PSO: {self.pso}")
-        else:
-            print("\nShader compilation failed!")
-            print("This usually means d3dcompiler_47.dll is missing")
-
-    def use(self):
-        """Активация шейдера"""
-        if self.pso:
-            return self.backend.set_graphics_pipeline(self.pso)
-        return False
-
-    def cleanup(self):
-        """Очистка временных файлов"""
-        try:
-            os.unlink(self.vs_path)
-            os.unlink(self.ps_path)
-        except:
-            pass
-
-
-def create_triangle():
-    """Создать треугольник"""
+def create_cube():
+    """Создание простого куба"""
     vertices = np.array([
-        # x     y     z
-        -0.5, -0.5, 0.0,
-        0.5, -0.5, 0.0,
-        0.0, 0.5, 0.0,
+        [-1, -1, -1], [ 1, -1, -1], [ 1,  1, -1], [-1,  1, -1],
+        [-1, -1,  1], [ 1, -1,  1], [ 1,  1,  1], [-1,  1,  1]
     ], dtype=np.float32)
-    return vertices
 
+    indices = np.array([
+        0,1,2, 0,2,3, 4,6,5, 4,7,6,
+        0,3,7, 0,7,4, 1,5,6, 1,6,2,
+        0,4,5, 0,5,1, 3,2,6, 3,6,7
+    ], dtype=np.uint32)
+
+    return vertices, None, None, indices
 
 def main():
-    print("=" * 60)
-    print("MINIMAL SHADER TEST")
-    print("=" * 60)
+    print("="*60)
+    print("AlKAsH3D - ФИНАЛЬНЫЙ ТЕСТ с OpenGL")
+    print("="*60)
 
-    # Инициализация GLFW
-    if not glfw.init():
-        print("Failed to init GLFW")
-        return
+    # Пробуем разные варианты создания Engine
+    try:
+        # Вариант 1: OpenGL бэкенд
+        print("\n🔵 Попытка 1: OpenGL бэкенд")
+        engine = Engine(
+            width=1024,
+            height=768,
+            title="OpenGL Test",
+            backend_name="opengl"  # или "gl"
+        )
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
 
-    glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
-    window = glfw.create_window(800, 600, "Minimal Shader Test", None, None)
-    if not window:
-        glfw.terminate()
-        return
+        try:
+            # Вариант 2: OpenGL без параметров
+            print("\n🔵 Попытка 2: OpenGL без параметров")
+            engine = Engine(backend_name="opengl")
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
 
-    # Захватываем курсор (необязательно)
-    glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_NORMAL)
+            try:
+                # Вариант 3: Простой Engine (пусть сам выбирает)
+                print("\n🔵 Попытка 3: Автовыбор")
+                engine = Engine()
+            except Exception as e:
+                print(f"❌ Все варианты провалились: {e}")
+                return
 
-    # Создаем бэкенд
-    print("\n[1] Creating backend...")
-    backend = select_backend("dx12")
+    # Получаем сцену
+    scene = engine.scene
 
-    # Инициализируем устройство
-    hwnd = glfw.get_win32_window(window)
-    print(f"  HWND: {hex(hwnd)}")
+    # Создаем камеру
+    camera = Camera()
+    camera.position = np.array([3, 2, 5], dtype=np.float32)
+    scene.add_child(camera)
+    engine.camera = camera
 
-    print("\n[2] Initializing device...")
-    backend.init_device(hwnd, 800, 600)
+    # Создаем куб
+    vertices, normals, texcoords, indices = create_cube()
+    cube = Mesh(vertices, normals, texcoords, indices)
+    cube.position = np.array([0, 0, 0], dtype=np.float32)
+    scene.add_child(cube)
 
-    # Создаем шейдеры
-    print("\n[3] Creating shaders...")
-    shader = ShaderManager(backend)
+    print("\n✅ Все готово! Запуск...")
+    print("   Если увидите куб - проблема в DirectX")
+    print("   Если нет - проблема в самом движке")
+    print("\n" + "="*60)
 
-    # Создаем треугольник
-    print("\n[4] Creating triangle...")
-    vertices = create_triangle()
-    vb = backend.create_buffer(vertices.tobytes(), usage="vertex")
-    print(f"  Vertex buffer: {hex(vb.value if vb else 0)}")
-
-    print("\n[5] Starting render loop...")
-    print("  Press ESC to exit")
-    print("-" * 60)
-
-    frame_count = 0
-    last_time = time.time()
-
-    while not glfw.window_should_close(window):
-        glfw.poll_events()
-
-        # Начинаем кадр
-        if not backend.begin_frame():
-            time.sleep(0.001)
-            continue
-
-        # Получаем back buffer
-        if backend.rtv_heap and backend.rtv_heap.num_descriptors > 0:
-            frame_idx = backend.get_frame_index() % 2
-            back_rtv = backend.rtv_heap.get_cpu_handle(frame_idx)
-            backend.set_render_target(back_rtv)
-
-            # Очищаем экран темно-синим
-            backend.clear_render_target(back_rtv, (0.2, 0.2, 0.3, 1.0))
-
-        # Устанавливаем вьюпорт
-        backend.set_viewport(0, 0, 800, 600)
-
-        # Пробуем рисовать треугольник
-        if shader.use():
-            backend.set_vertex_buffers(vb, None)
-            backend.draw(3)
-            if frame_count % 60 == 0:
-                print(f"  Drawing triangle at frame {frame_count}")
-        else:
-            if frame_count % 60 == 0:
-                print(f"  Frame {frame_count} - no shader")
-
-        # Завершаем кадр
-        backend.end_frame()
-
-        frame_count += 1
-
-        # Проверяем ESC
-        if glfw.get_key(window, 256) == glfw.PRESS:
-            break
-
-    print("\n[6] Shutting down...")
-    shader.cleanup()
-    backend.shutdown()
-    glfw.terminate()
-    print("Done")
-
+    # Запуск
+    try:
+        engine.run()
+    except Exception as e:
+        print(f"❌ Ошибка при запуске: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nInterrupted")
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-
-        traceback.print_exc()
+    main()
