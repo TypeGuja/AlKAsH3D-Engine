@@ -1,28 +1,45 @@
-cbuffer FrameCB : register(b0)
+struct VSInput
 {
-    float4x4 uView;   // 0‑й 4×4‑массив
-    float4x4 uProj;   // 1‑й
-    float4x4 uModel;  // 2‑й
+    float3 position : POSITION;
+    float3 normal : NORMAL;
+    float2 texcoord : TEXCOORD;
 };
 
-struct VS_IN
+struct VSOutput
 {
-    float3 pos : POSITION;   // vertex position
-    float2 uv  : TEXCOORD0;  // texture coords
+    float4 position : SV_POSITION;
+    float3 normal : NORMAL;
+    float2 texcoord : TEXCOORD;
+    float3 worldPos : WORLDPOS;
 };
 
-struct VS_OUT
+cbuffer PerFrame : register(b0)
 {
-    float4 pos : SV_POSITION; // позиция в экранных координатах
-    float2 uv  : TEXCOORD0;    // передаём дальше
+    float4x4 view;
+    float4x4 projection;
+    float4x4 viewProjection;
+    float4 cameraPos;
+    float4 lightDir;
+    float4 lightColor;
+    float4 ambientColor;
 };
 
-VS_OUT VSMain(VS_IN i)
+cbuffer PerObject : register(b1)
 {
-    VS_OUT o;
-    float4 world = mul(uModel, float4(i.pos, 1.0));
-    float4 view  = mul(uView,  world);
-    o.pos = mul(uProj, view);
-    o.uv  = i.uv;
-    return o;
+    float4x4 model;
+    float4x4 modelInverseTranspose;
+};
+
+VSOutput main(VSInput input)
+{
+    VSOutput output;
+    
+    float4 worldPos = mul(float4(input.position, 1.0), model);
+    output.position = mul(worldPos, viewProjection);
+    output.worldPos = worldPos.xyz;
+    
+    output.normal = mul(input.normal, (float3x3)modelInverseTranspose);
+    output.texcoord = input.texcoord;
+    
+    return output;
 }
