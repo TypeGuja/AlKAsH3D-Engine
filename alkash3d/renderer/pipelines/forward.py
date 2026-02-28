@@ -49,10 +49,16 @@ class ForwardRenderer:
                 logger.error(f"[ForwardRenderer] Failed to set PSO: {e}")
 
     def _create_white_placeholder(self):
-        """Создать 1×1‑белую текстуру и SRV."""
+        """
+        Создаёт 1×1‑белую текстуру и SRV.
+        Текстура сразу заполняется данными, поэтому
+        вызов update_texture не нужен (он падал на default‑heap).
+        """
         try:
+            # 4 байта = RGBA(255,255,255,255)
             white_pixel = (255).to_bytes(1, "little") * 4
 
+            # Передаём данные сразу – backend создаст upload‑heap
             self.white_tex = self.backend.create_texture(
                 data=white_pixel,
                 width=1,
@@ -60,6 +66,7 @@ class ForwardRenderer:
                 fmt="RGBA8",
             )
 
+            # Создаём SRV в heap‑а
             if hasattr(self.backend, 'cbv_srv_uav_heap') and self.backend.cbv_srv_uav_heap:
                 srv_idx = self.backend.cbv_srv_uav_heap.next_free()
                 cpu_handle = self.backend.cbv_srv_uav_heap.get_cpu_handle(srv_idx)
