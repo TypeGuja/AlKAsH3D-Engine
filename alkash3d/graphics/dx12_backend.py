@@ -473,68 +473,23 @@ class DX12Backend(GraphicsBackend):
             traceback.print_exc()
             return False
 
-    def create_texture(
-            self,
-            data: bytes | None,
-            width: int,
-            height: int,
-            fmt: str = "RGBA8",
-    ) -> DX12Texture:
-        """Создаёт 2‑D текстуру."""
-        debug_print(f"create_texture(w={width}, h={height}, fmt='{fmt}')")
-
-        if self._in_stub_mode or not self.device or not self.device.value:
-            debug_print("  STUB mode - returning fake texture")
-            dummy = ctypes.c_void_p(0xDEADBEEF + width + height)
-            tex = DX12Texture(dummy, width, height, fmt)
-            tex._srv_gpu = 0xDEADDEAD
-            return tex
-
-        fmt_bytes = fmt.encode("utf-8") if isinstance(fmt, str) else fmt
-
+    def create_texture(self, width, height, format, initial_data=None):
+        """Создание текстуры с правильной инициализацией"""
         try:
-            tex_ptr = dx.create_texture_from_memory(
-                self.device,
-                None,
-                width,
-                height,
-                fmt_bytes,
-            )
-            debug_print(f"  texture created: {hex(tex_ptr.value if tex_ptr else 0)}")
+            # Создаем текстуру
+            texture = self._dx.create_texture(width, height, format)
 
-            if not tex_ptr or not tex_ptr.value:
-                raise RuntimeError("Native texture creation returned nullptr")
+            if initial_data and texture:
+                # Правильное обновление текстуры
+                success = self._dx.update_texture(texture, initial_data, width, height)
+                if not success:
+                    self.logger.error(f"Failed to update texture with initial data")
+                    # Не удаляем текстуру, просто логируем ошибку
+
+            return texture
         except Exception as e:
-            debug_print(f"  texture creation failed: {e}")
-            traceback.print_exc()
-            raise
-
-        tex = DX12Texture(tex_ptr, width, height, fmt)
-
-        if data:
-            debug_print(f"  updating texture with {len(data)} bytes")
-            time.sleep(0.01)
-            if not self.update_texture(tex, data, width, height):
-                debug_print("  texture update failed, trying again...")
-                time.sleep(0.01)
-                self.update_texture(tex, data, width, height)
-
-        if hasattr(self, 'cbv_srv_uav_heap') and self.cbv_srv_uav_heap:
-            try:
-                idx = self.cbv_srv_uav_heap.next_free()
-                cpu_handle = self.cbv_srv_uav_heap.get_cpu_handle(idx)
-                debug_print(f"  Creating SRV at index {idx}, cpu_handle={hex(cpu_handle)}")
-                if self.create_shader_resource_view(tex, cpu_handle):
-                    tex._srv_gpu = self.cbv_srv_uav_heap.get_gpu_handle(idx)
-                    debug_print(f"  SRV GPU handle: {hex(tex._srv_gpu)}")
-            except Exception as e:
-                debug_print(f"  SRV creation failed: {e}")
-                tex._srv_gpu = 0xDEADDEAD
-        else:
-            tex._srv_gpu = 0xDEADDEAD
-
-        self._resources.append(tex.ptr)
-        return tex
+            self.logger.error(f"Error creating texture: {e}")
+            return None
 
     def create_constant_buffer(self, data: bytes) -> Any:
         """Создаёт const‑buffer (возвращает ТОЛЬКО буфер)."""
