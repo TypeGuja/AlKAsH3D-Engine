@@ -1480,6 +1480,12 @@ pub extern "C" fn create_graphics_ps(
             }
         };
 
+        // Проверяем размеры шейдеров
+        if vs_blob.GetBufferSize() == 0 || ps_blob.GetBufferSize() == 0 {
+            eprintln!("[create_graphics_ps] Shader blob size is zero");
+            return ptr::null_mut();
+        }
+
         let root_sig = match STATE.lock().unwrap().root_signature.clone() {
             Some(s) => s,
             None => {
@@ -1489,6 +1495,9 @@ pub extern "C" fn create_graphics_ps(
         };
 
         eprintln!("[create_graphics_ps] Creating PSO...");
+        eprintln!("  VS size: {}", vs_blob.GetBufferSize());
+        eprintln!("  PS size: {}", ps_blob.GetBufferSize());
+
         let pso = match pso_mod::create_graphics(&device, &root_sig, &vs_blob, &ps_blob) {
             Some(p) => p,
             None => {
@@ -1510,54 +1519,79 @@ pub extern "C" fn create_graphics_ps(
 pub unsafe extern "C" fn begin_frame() -> bool {
     debug_println!("\n[API] begin_frame() called");
 
-    // Сначала ждем GPU, чтобы убедиться, что все команды выполнены
+    // Получаем текущий индекс кадра
+    let frame_index = {
+        let state = STATE.lock().unwrap();
+        state.frame_index as usize
+    };
+
+    // Ждем GPU для текущего кадра
     if !wait_for_gpu() {
         debug_println!("[API] wait_for_gpu failed in begin_frame");
         return false;
     }
 
-    let _queue = {
-        let state = STATE.lock().unwrap();
-        state.command_queue.clone()
-    };
-
-    // Переключаемся на следующий аллокатор
-    let next_index = {
-        let mut state = STATE.lock().unwrap();
-        state.current_allocator_index = (state.current_allocator_index + 1) % state.command_allocators.len();
-        state.current_allocator_index
-    };
-
-    // Получаем аллокатор и список
+    // Получаем аллокатор для текущего кадра
     let (allocator, list) = {
-        let state = STATE.lock().unwrap();
-        (
-            state.command_allocators[next_index].clone(),
-            state.command_list.clone(),
-        )
+        let mut state = STATE.lock().unwrap();
+
+        // Убеждаемся, что у нас есть аллокаторы
+        if state.command_allocators.is_empty() {
+            debug_println!("[API] No command allocators");
+            return false;
+        }
+
+        // Используем аллокатор для текущего кадра
+        let alloc_index = frame_index % state.command_allocators.len();
+        let allocator = state.command_allocators[alloc_index].clone();
+        let list = state.command_list.clone();
+
+        (allocator, list)
     };
 
     if let (Some(allocator), Some(list)) = (allocator, list) {
-        // Сбрасываем allocator
+        // Сначала пробуем сбросить allocator
         match allocator.Reset() {
             Ok(()) => debug_println!("[API] Allocator reset successfully"),
             Err(e) => {
                 debug_println!("[API] Failed to reset allocator: {:?}", e);
+                // Пробуем создать новый аллокатор
+                if let Some(device) = STATE.lock().unwrap().device.clone() {
+                    // Явно указываем тип для CreateCommandAllocator
+                    let new_allocator: Option<ID3D12CommandAllocator> = device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT).ok();
+
+                    if let Some(new_allocator) = new_allocator {
+                        let mut state = STATE.lock().unwrap();
+                        let index = frame_index % state.command_allocators.len();
+                        state.command_allocators[index] = Some(new_allocator.clone());
+
+                        // Пробуем сбросить список с новым аллокатором
+                        if let Err(e) = list.Reset(&new_allocator, None) {
+                            debug_println!("[API] Failed to reset command list with new allocator: {:?}", e);
+                            return false;
+                        }
+                        debug_println!("[API] Created new allocator and reset command list");
+                        return true;
+                    } else {
+                        debug_println!("[API] Failed to create new allocator");
+                        return false;
+                    }
+                }
                 return false;
             }
         }
 
         // Сбрасываем command list с этим аллокатором
         match list.Reset(&allocator, None) {
-            Ok(()) => debug_println!("[API] Command list reset successfully"),
+            Ok(()) => {
+                debug_println!("[API] Command list reset successfully");
+                true
+            }
             Err(e) => {
                 debug_println!("[API] Failed to reset command list: {:?}", e);
-                return false;
+                false
             }
         }
-
-        debug_println!("[API] Command list ready for new frame");
-        true
     } else {
         debug_println!("[API] Missing allocator or list");
         false
@@ -1568,7 +1602,6 @@ pub unsafe extern "C" fn begin_frame() -> bool {
 pub unsafe extern "C" fn end_frame() -> bool {
     debug_println!("\n[API] end_frame() called");
 
-    // Достаём объекты из глобального состояния
     let (queue_opt, cmd_list_opt, fence_opt) = {
         let state = STATE.lock().unwrap();
         (
@@ -1586,31 +1619,115 @@ pub unsafe extern "C" fn end_frame() -> bool {
         }
     };
 
-    // 1) Закрываем список (если он ещё открыт)
+    // Закрываем список
     if let Err(e) = cmd_list.Close() {
         debug_println!("[API] CommandList::Close() failed: {:?}", e);
-        // Не считаем фатальной ошибкой – продолжаем.
-    }
-
-    // 2) Выполняем список команд
-    let cmd_list_clone = cmd_list.clone();
-    let cmd_list_cast: ID3D12CommandList = cmd_list_clone.cast().unwrap();
-    queue.ExecuteCommandLists(&[Some(cmd_list_cast)]);
-
-    // 3) Обновляем fence‑значение для текущего кадра
-    let mut state = STATE.lock().unwrap();
-    let frame_idx = state.frame_index as usize;
-    state.fence_values[frame_idx] = state.fence_values[frame_idx].wrapping_add(1);
-    let fence_val = state.fence_values[frame_idx];
-
-    // 4) Сигналим fence, чтобы в следующем begin_frame() можно было ждать завершения
-    if let Err(e) = queue.Signal(&fence, fence_val) {
-        debug_println!("[API] Queue::Signal() failed: {:?}", e);
         return false;
     }
 
-    debug_println!("[API] end_frame completed – fence value {}", fence_val);
+    // Выполняем список команд
+    let cmd_list_clone = cmd_list.clone();
+    let cmd_list_cast: ID3D12CommandList = match cmd_list_clone.cast() {
+        Ok(list) => list,
+        Err(e) => {
+            debug_println!("[API] Failed to cast command list: {:?}", e);
+            return false;
+        }
+    };
+
+    queue.ExecuteCommandLists(&[Some(cmd_list_cast)]);
+
+    // Обновляем fence значение
+    let frame_idx = {
+        let state = STATE.lock().unwrap();
+        state.frame_index as usize
+    };
+
+    let mut state = STATE.lock().unwrap();
+    if frame_idx < state.fence_values.len() {
+        state.fence_values[frame_idx] = state.fence_values[frame_idx].wrapping_add(1);
+        let fence_val = state.fence_values[frame_idx];
+
+        // Сигналим fence
+        if let Err(e) = queue.Signal(&fence, fence_val) {
+            debug_println!("[API] Queue::Signal() failed: {:?}", e);
+            return false;
+        }
+
+        debug_println!("[API] end_frame completed – fence value {}", fence_val);
+    } else {
+        debug_println!("[API] Invalid frame index: {}", frame_idx);
+        return false;
+    }
+
     true
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn wait_for_gpu() -> bool {
+    debug_println!("\n[API] wait_for_gpu() called");
+
+    let (queue, fence) = {
+        let state = STATE.lock().unwrap();
+        (
+            state.command_queue.clone(),
+            state.fence.clone(),
+        )
+    };
+
+    if let (Some(queue), Some(fence)) = (queue, fence) {
+        // Получаем текущий кадр
+        let frame_idx = {
+            let state = STATE.lock().unwrap();
+            state.frame_index as usize
+        };
+
+        // Получаем значение fence для этого кадра
+        let fence_value = {
+            let state = STATE.lock().unwrap();
+            if frame_idx < state.fence_values.len() {
+                state.fence_values[frame_idx]
+            } else {
+                0
+            }
+        };
+
+        if fence_value > 0 {
+            // Проверяем текущее значение
+            let completed_value = fence.GetCompletedValue();
+
+            if completed_value < fence_value {
+                debug_println!("[API] Waiting for fence: {} < {}", completed_value, fence_value);
+
+                let event = match CreateEventA(None, true, false, None) {
+                    Ok(e) => e,
+                    Err(_) => {
+                        debug_println!("[API] Failed to create event");
+                        return false;
+                    }
+                };
+
+                if let Err(e) = fence.SetEventOnCompletion(fence_value, event) {
+                    debug_println!("[API] SetEventOnCompletion failed: {:?}", e);
+                    CloseHandle(event);
+                    return false;
+                }
+
+                WaitForSingleObject(event, INFINITE);
+                CloseHandle(event);
+
+                debug_println!("[API] Fence wait completed");
+            } else {
+                debug_println!("[API] Fence already completed: {} >= {}", completed_value, fence_value);
+            }
+        }
+
+        debug_println!("[API] wait_for_gpu completed");
+        true
+    } else {
+        debug_println!("[API] Missing queue or fence");
+        false
+    }
 }
 
 #[no_mangle]
@@ -1804,56 +1921,6 @@ pub unsafe extern "C" fn draw_indexed_instanced(
         return true;
     }
     false
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wait_for_gpu() -> bool {
-    debug_println!("\n[API] wait_for_gpu() called");
-
-    let (_queue, fence) = {
-        let state = STATE.lock().unwrap();
-        (
-            state.command_queue.clone(),
-            state.fence.clone(),
-        )
-    };
-
-    if let Some(fence) = fence {
-        // Получаем текущее значение fence
-        let fence_value = {
-            let state = STATE.lock().unwrap();
-            if state.fence_values.is_empty() {
-                0
-            } else {
-                state.fence_values[state.fence_values.len() - 1]
-            }
-        };
-
-        if fence_value > 0 {
-            // Ждем если нужно
-            if fence.GetCompletedValue() < fence_value {
-                let event = match CreateEventA(None, true, false, None) {
-                    Ok(e) => e,
-                    Err(_) => return false,
-                };
-
-                if let Err(e) = fence.SetEventOnCompletion(fence_value, event) {
-                    debug_println!("[API] SetEventOnCompletion failed: {:?}", e);
-                    CloseHandle(event);
-                    return false;
-                }
-
-                WaitForSingleObject(event, INFINITE);
-                CloseHandle(event);
-            }
-        }
-
-        debug_println!("[API] wait_for_gpu completed");
-        true
-    } else {
-        debug_println!("[API] Missing fence");
-        false
-    }
 }
 
 #[no_mangle]
