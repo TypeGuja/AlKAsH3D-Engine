@@ -55,26 +55,34 @@ class HybridRenderer(BaseRenderer):
         self.postproc = None  # будет заполнен в Engine
 
     # -----------------------------------------------------------------
-    def _setup_gbuffer(self):
-        # Переиспользуем ту же логику, что в DeferredRenderer
-        fmt_map = {
-            "position": "RGBA32F",
-            "normal": "RGBA16F",
-            "albedo": "RGBA8",
-            "material": "RGBA8",
-        }
-        self.gbuffer_textures = {}
-        self.rtv_handles = []
+        # alkash3d/renderer/pipelines/hybrid.py
+        # ... (начало без изменений) ...
 
-        for i, (name, fmt) in enumerate(fmt_map.items()):
-            tex = self.backend.create_texture(
-                data=b"", w=self.width, h=self.height, fmt=fmt
+        def _setup_gbuffer(self):
+            """Создаёт G‑buffer (аналогично DeferredRenderer, но через исправленный create_texture)."""
+            fmt_map = {
+                "position": "RGBA32_FLOAT",
+                "normal": "RGBA16_FLOAT",
+                "albedo": "RGBA8",
+                "material": "RGBA8",
+            }
+            self.gbuffer_textures = {}
+            self.rtv_handles = []
+
+            for name, fmt in fmt_map.items():
+                tex = self.backend.create_texture(
+                    data=None, w=self.width, h=self.height, fmt=fmt
+                )
+                self.gbuffer_textures[name] = tex
+                rtv_idx = self.backend.cbv_srv_uav_heap.next_free()
+                cpu_handle = self.backend.cbv_srv_uav_heap.get_cpu_handle(rtv_idx)
+                self.backend.create_render_target_view(tex, cpu_handle)
+                self.rtv_handles.append(cpu_handle)
+
+            # depth‑buffer (необязательно)
+            self.depth_tex = self.backend.create_texture(
+                data=None, w=self.width, h=self.height, fmt="D24_UNORM_S8_UINT"
             )
-            self.gbuffer_textures[name] = tex
-            rtv_idx = self.backend.rtv_heap.next_free()
-            rtv_handle = self.backend.rtv_heap.get_cpu_handle(rtv_idx)
-            self.backend.create_render_target_view(tex, rtv_handle)
-            self.rtv_handles.append(rtv_handle)
 
     # -----------------------------------------------------------------
     def _setup_quad(self):
