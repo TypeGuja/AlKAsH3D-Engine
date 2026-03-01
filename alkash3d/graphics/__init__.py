@@ -1,14 +1,18 @@
+# alkash3d/graphics/__init__.py
+# -*- coding: utf-8 -*-
 """
-Графический слой – выбирает нужный бэкенд (OpenGL или DirectX 12).
+Graphics package – DX12 wrapper and descriptor‑heap helper.
 """
 
-from alkash3d.graphics.backend import GraphicsBackend, select_backend
-from alkash3d.graphics.gl_backend import GLBackend
-from alkash3d.graphics.dx12_backend import DX12Backend
+from .utils import d3d12_wrapper as dx
+from .utils.descriptor_heap import DescriptorHeap
+
+# ❗ FIX: экспортируем функцию select_backend, чтобы
+#     `from alkash3d.graphics import select_backend` работало.
+from .backend import select_backend
 
 __all__ = [
-    "GraphicsBackend",
-    "GLBackend",
-    "DX12Backend",
+    "dx",
+    "DescriptorHeap",
     "select_backend",
 ]
