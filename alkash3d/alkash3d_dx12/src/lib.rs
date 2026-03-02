@@ -819,6 +819,7 @@ mod pso_mod {
 
         let mut pso_desc = std::mem::zeroed::<D3D12_GRAPHICS_PIPELINE_STATE_DESC>();
 
+        // Правильно: передаем живой указатель, а не Option.
         pso_desc.pRootSignature = ManuallyDrop::new(Some(root_sig.clone()));
         pso_desc.VS = vs_bc;
         pso_desc.PS = ps_bc;
