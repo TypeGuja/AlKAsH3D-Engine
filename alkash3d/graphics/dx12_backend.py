@@ -11,7 +11,7 @@ import ctypes
 import os
 import time
 import traceback
-from typing import Any, Sequence, Tuple, Optional
+from typing import Any, Sequence, Tuple, Optional  # <-- Optional нужен
 
 from alkash3d.graphics.backend import GraphicsBackend
 from alkash3d.graphics.utils import d3d12_wrapper as dx
@@ -27,7 +27,7 @@ def debug_print(*args, **kwargs):
 
 
 class DX12Texture:
-    """Обертка над ID3D12Resource*."""
+    """Обёртка над ID3D12Resource*."""
     __slots__ = ("ptr", "_srv_gpu", "width", "height", "format")
 
     def __init__(self, ptr: ctypes.c_void_p, width: int = 0, height: int = 0, fmt: str = ""):
@@ -75,7 +75,7 @@ class DX12Backend(GraphicsBackend):
     # Внутренние вспомогательные функции
     # ------------------------------------------------------------------
     def _reset_viewport_and_scissor(self, w: int, h: int) -> bool:
-        """Устанавливает Viewport/Scissor (или просто отдает True в stub‑режиме)."""
+        """Устанавливает Viewport/Scissor (или просто True в stub‑режиме)."""
         debug_print(f"_reset_viewport_and_scissor({w}x{h})")
         self.viewport = (0, 0, w, h)
         self.scissor = (0, 0, w, h)
@@ -204,10 +204,10 @@ class DX12Backend(GraphicsBackend):
             else:
                 debug_print("  No HWND supplied → headless mode")
 
-            # 4️⃣ Viewport / scissor
+            # 4️⃣ Viewport / Scissor
             self._reset_viewport_and_scissor(width, height)
 
-            # 5️⃣ Дескриптор‑хипы
+            # 5️⃣ Descriptor‑heaps
             self.rtv_heap = DescriptorHeap(
                 device=self.device,
                 num_descriptors=dx.SWAP_CHAIN_BUFFER_COUNT + 4,
@@ -278,26 +278,54 @@ class DX12Backend(GraphicsBackend):
     # ------------------------------------------------------------------
     # Шейдеры
     # ------------------------------------------------------------------
-    def compile_shader(self, shader_type: str, source_path: str) -> int:
-        """shader_type = 'vs' | 'ps'."""
+    def compile_shader(
+        self,
+        shader_type: str,
+        source_path: str,
+        entry_point: Optional[str] = None,
+    ) -> int:
+        """
+        Compile a HLSL shader.
+
+        Parameters
+        ----------
+        shader_type : "vs" | "ps"
+            Тип шейдера.
+        source_path : str
+            Полный путь к *.hlsl* файлу.
+        entry_point : str, optional
+            Имя функции‑входа. Если не передано, используется историческое
+            имя: ``VSMain`` для вершинного шейдера и ``PSMain`` для пиксельного.
+        """
         if self._in_stub_mode:
             return 0x12345678
-        entry = "VSMain" if shader_type == "vs" else "PSMain"
+
+        # Если пользователь не указал entry_point, берём «старый» fallback.
+        if entry_point is None:
+            entry_point = "VSMain" if shader_type == "vs" else "PSMain"
+
         profile = "vs_5_0" if shader_type == "vs" else "ps_5_0"
 
         if not os.path.isfile(source_path):
             logger.error(f"Shader file not found: {source_path}")
             return 0x12345678
 
-        return dx.compile_shader(source_path, entry, profile)
+        return dx.compile_shader(source_path, entry_point, profile)
 
     # ------------------------------------------------------------------
     # PSO
     # ------------------------------------------------------------------
     def create_graphics_ps(self, vs_blob: int, ps_blob: int) -> Optional[int]:
+        """Создаёт PSO из двух скомпилированных шейдер‑blob‑ов.
+
+        `vs_blob` и `ps_blob` – уже‑целочисленные дескрипторы,
+        `dx.create_graphics_ps` их сам преобразует.
+        """
         if self._in_stub_mode or not vs_blob or not ps_blob:
             return None
-        return dx.create_graphics_ps(self.device, ctypes.c_void_p(vs_blob), ctypes.c_void_p(ps_blob))
+
+        # Передаём int‑значения напрямую – обёртка уже делает `_to_cvoid`.
+        return dx.create_graphics_ps(self.device, vs_blob, ps_blob)
 
     def set_graphics_pipeline(self, pso: int) -> bool:
         if self._in_stub_mode or not pso:
@@ -323,7 +351,7 @@ class DX12Backend(GraphicsBackend):
         return dx.update_subresource(buffer, data)
 
     def create_constant_buffer(self, data: bytes) -> Any:
-        """Метод, требуемый абстрактным классом – просто переадресует в `create_buffer`."""
+        """Утилита‑обёртка – просто переадресует в `create_buffer`."""
         return self.create_buffer(data, usage="constant")
 
     # ------------------------------------------------------------------
@@ -420,7 +448,8 @@ class DX12Backend(GraphicsBackend):
             return False
         return dx.clear_render_target(rtv, color)
 
-    def set_viewport(self, x: int, y: int, w: int, h: int, min_depth: float = 0.0, max_depth: float = 1.0) -> bool:
+    def set_viewport(self, x: int, y: int, w: int, h: int,
+                     min_depth: float = 0.0, max_depth: float = 1.0) -> bool:
         if self._in_stub_mode:
             return False
         self.viewport = (x, y, w, h)
@@ -432,40 +461,38 @@ class DX12Backend(GraphicsBackend):
         self.scissor = (left, top, right, bottom)
         return dx.set_scissor_rect(left, top, right, bottom)
 
-    def set_vertex_buffers(self, vertex_buffer: ctypes.c_void_p, index_buffer: Optional[ctypes.c_void_p] = None) -> bool:
+    def set_vertex_buffers(self,
+                          vertex_buffer: ctypes.c_void_p,
+                          index_buffer: Optional[ctypes.c_void_p] = None) -> bool:
         if self._in_stub_mode:
             return False
         return dx.set_vertex_buffers(vertex_buffer, index_buffer)
 
-    def draw(self, vertex_count: int, start_vertex: int = 0, instance_count: int = 1) -> bool:
+    def draw(self, vertex_count: int, start_vertex: int = 0,
+             instance_count: int = 1) -> bool:
         if self._in_stub_mode:
             return False
-        return dx.draw_instanced(vertex_count, instance_count, start_vertex, 0)
+        return dx.draw_instanced(vertex_count, instance_count,
+                                 start_vertex, 0)
 
-    def draw_indexed(
-        self,
-        index_count: int,
-        start_index: int = 0,
-        base_vertex: int = 0,
-        instance_count: int = 1,
-    ) -> bool:
+    def draw_indexed(self,
+                     index_count: int,
+                     start_index: int = 0,
+                     base_vertex: int = 0,
+                     instance_count: int = 1) -> bool:
         if self._in_stub_mode:
             return False
-        return dx.draw_indexed_instanced(index_count, instance_count, start_index, base_vertex, 0)
+        return dx.draw_indexed_instanced(index_count,
+                                        instance_count,
+                                        start_index,
+                                        base_vertex,
+                                        0)
 
-    def draw_fullscreen_quad(
-        self,
-        pso: Any,
-        descriptor_heaps: Sequence[Any],
-        root_parameters: Sequence[Tuple[int, int]],
-    ) -> None:
-        """
-        Утилита‑обёртка: рисует один fullscreen‑треугольник.
-        Параметры:
-            * pso – готовый пайплайн‑объект.
-            * descriptor_heaps – список heap‑ов (RTV‑heap + CBV/SRV‑heap).
-            * root_parameters – список кортежей (slot, gpu_handle).
-        """
+    def draw_fullscreen_quad(self,
+                             pso: Any,
+                             descriptor_heaps: Sequence[Any],
+                             root_parameters: Sequence[Tuple[int, int]]) -> None:
+        """Рисует один fullscreen‑треугольник."""
         if self._in_stub_mode:
             return
 
