@@ -338,16 +338,47 @@ class DX12Backend(GraphicsBackend):
     def create_buffer(self, data: bytes, usage: str = "default") -> Optional[ctypes.c_void_p]:
         if self._in_stub_mode or not self.device:
             return ctypes.c_void_p(0xDEADBEEF)
+
+        if not self.device.value:
+            logger.error("[DX12Backend] Device is null")
+            return None
+
+        # Create buffer
         buf = dx.create_buffer(self.device, len(data), usage)
         if not buf or not buf.value:
-            return ctypes.c_void_p(0xDEADBEEF)
-        self.update_buffer(buf, data)
+            logger.error("[DX12Backend] Failed to create buffer")
+            return None
+
+        # Update buffer data
+        if data and len(data) > 0:
+            if not self.update_buffer(buf, data):
+                logger.error("[DX12Backend] Failed to update buffer data")
+                # Still return the buffer, but log error
+
         self._resources.append(buf)
         return buf
 
     def update_buffer(self, buffer: ctypes.c_void_p, data: bytes) -> bool:
         if self._in_stub_mode:
             return False
+
+        if not buffer or not buffer.value:
+            logger.error("[DX12Backend] update_buffer: buffer is null")
+            return False
+
+        if not data:
+            logger.error("[DX12Backend] update_buffer: data is empty")
+            return False
+
+        # Verify data is valid
+        try:
+            # Just check we can access the data
+            _ = len(data)
+            _ = data[0] if data else None
+        except Exception as e:
+            logger.error(f"[DX12Backend] update_buffer: invalid data: {e}")
+            return False
+
         return dx.update_subresource(buffer, data)
 
     def create_constant_buffer(self, data: bytes) -> Any:
