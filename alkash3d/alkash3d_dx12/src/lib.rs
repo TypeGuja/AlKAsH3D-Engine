@@ -1214,13 +1214,26 @@ pub unsafe extern "C" fn create_constant_buffer_view(
         return false;
     }
 
-    // Проверяем выравнивание CPU handle
-    if cpu_handle % 32 != 0 {
-        eprintln!("WARNING: cpu_handle не выровнен по 32 байта: 0x{:X}", cpu_handle);
-    }
+    // Получаем device правильным способом
+    let device: ID3D12Device = match std::panic::catch_unwind(|| {
+        std::mem::transmute_copy::<_, ID3D12Device>(&device_ptr)
+    }) {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("ERROR: Failed to get device");
+            return false;
+        }
+    };
 
-    let device: ID3D12Device = std::mem::transmute_copy(&device_ptr);
-    let resource: ID3D12Resource = std::mem::transmute_copy(&resource_ptr);
+    let resource: ID3D12Resource = match std::panic::catch_unwind(|| {
+        std::mem::transmute_copy::<_, ID3D12Resource>(&resource_ptr)
+    }) {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("ERROR: Failed to get resource");
+            return false;
+        }
+    };
 
     if device.as_raw().is_null() {
         eprintln!("ERROR: устройство недействительно");
@@ -1247,6 +1260,12 @@ pub unsafe extern "C" fn create_constant_buffer_view(
     let size = ((desc.Width + 255) & !255) as u32;
     eprintln!("Выровненный размер: {}", size);
 
+    // Проверяем выравнивание CPU handle
+    let increment = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    if (cpu_handle as u32) % increment != 0 {
+        eprintln!("WARNING: CPU handle not aligned to {} bytes", increment);
+    }
+
     let cbv_desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
         BufferLocation: gpu_va,
         SizeInBytes: size,
@@ -1254,7 +1273,7 @@ pub unsafe extern "C" fn create_constant_buffer_view(
 
     let handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle };
 
-    // Добавляем проверку
+    // Добавляем проверку через catch_unwind
     let result = std::panic::catch_unwind(|| {
         device.CreateConstantBufferView(Some(&cbv_desc), handle);
     });
@@ -1289,26 +1308,62 @@ pub extern "C" fn create_descriptor_heap(
         eprintln!("num_descriptors={}, heap_type={}, shader_visible={}",
                   num_descriptors, heap_type, shader_visible);
 
-        let heap = match heap_mod::create(&device, num_descriptors, heap_type, shader_visible) {
-            Some(h) => h,
-            None => return ptr::null_mut(),
-        };
-
-        // Для CBV/SRV/UAV heap, если он должен быть shader_visible,
-        // проверяем флаги
-        if heap_type == 2 && shader_visible {
-            let desc = heap.GetDesc();
-            if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
-                eprintln!("ERROR: Heap created without SHADER_VISIBLE flag!");
+        let heap_ty = match heap_type {
+            0 => D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+            1 => D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+            2 => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            _ => {
+                eprintln!("[heap] Invalid type: {}", heap_type);
                 return ptr::null_mut();
             }
+        };
+
+        // ВАЖНО: Для CBV/SRV/UAV хипов, которые будут использоваться в шейдерах,
+        // флаг SHADER_VISIBLE ОБЯЗАТЕЛЕН
+        let flags = if heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && shader_visible {
+            D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
+        } else {
+            D3D12_DESCRIPTOR_HEAP_FLAG_NONE
+        };
+
+        eprintln!("Creating heap with flags: {:?}", flags);
+
+        let desc = D3D12_DESCRIPTOR_HEAP_DESC {
+            Type: heap_ty,
+            NumDescriptors: num_descriptors,
+            Flags: flags,
+            NodeMask: 0,
+        };
+
+        match device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&desc) {
+            Ok(heap) => {
+                eprintln!("[heap] Created at {:p}", heap.as_raw());
+
+                // Проверяем, что хил создан с правильными флагами
+                let created_desc = heap.GetDesc();
+                eprintln!("Created heap desc: Type={:?}, Flags={:?}, NumDescriptors={}",
+                          created_desc.Type, created_desc.Flags, created_desc.NumDescriptors);
+
+                // Для шейдер-видимых хипов проверяем GPU handle сразу после создания
+                if flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+                    let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
+                    eprintln!("GPU handle after creation: 0x{:X}", gpu_handle.ptr);
+
+                    // Проверяем, что GPU handle валидный
+                    if gpu_handle.ptr == 0 || gpu_handle.ptr > 0x7FFFFFFFFFFF {
+                        eprintln!("WARNING: GPU handle looks invalid!");
+                    }
+                }
+
+                let raw_ptr = heap.as_raw();
+                std::mem::forget(heap);
+                raw_ptr as *mut c_void
+            },
+            Err(e) => {
+                eprintln!("[heap] Failed: HRESULT 0x{:X}", e.code().0);
+                ptr::null_mut()
+            }
         }
-
-        let raw_ptr = heap.as_raw();
-        eprintln!("Heap created at {:p}", raw_ptr);
-
-        std::mem::forget(heap);
-        raw_ptr as *mut c_void
     }
 }
 
@@ -1338,43 +1393,52 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
     }
 
     unsafe {
-        // Получаем heap
-        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
-
-        if heap.as_raw().is_null() {
-            eprintln!("ERROR: heap is invalid");
+        // Проверяем на специфические битые указатели
+        let ptr_val = heap_ptr as usize;
+        if ptr_val == 0xDEADBEEF || ptr_val == 0xDEADF00D {
+            eprintln!("ERROR: heap_ptr appears to be corrupted: 0x{:X}", ptr_val);
             return 0;
         }
 
-        // Проверяем тип heap
+        // Получаем дескрипторный хил
+        let heap: ID3D12DescriptorHeap = match std::mem::transmute_copy(&heap_ptr) {
+            h => h,
+        };
+
         let desc = heap.GetDesc();
         eprintln!("Heap desc: Type={:?}, Flags={:?}, NumDescriptors={}",
                   desc.Type, desc.Flags, desc.NumDescriptors);
 
-        // Проверяем, что heap shader-visible
-        if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
-            eprintln!("WARNING: Heap is NOT shader visible!");
+        // Получаем CPU handle для проверки
+        let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
+        eprintln!("CPU handle = 0x{:X}", cpu_handle.ptr);
+
+        // Всегда получаем GPU handle (даже если хил не шейдер-видимый)
+        let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
+        eprintln!("GPU handle raw = 0x{:X}", gpu_handle.ptr);
+
+        // Проверяем, валидный ли GPU handle
+        if desc.Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+            // Для шейдер-видимых хилов GPU handle должен отличаться от CPU
+            if gpu_handle.ptr == cpu_handle.ptr as u64 {
+                eprintln!("WARNING: GPU handle equals CPU handle");
+                // Всё равно возвращаем его
+                let result = gpu_handle.ptr as usize;
+                std::mem::forget(heap);
+                return result;
+            } else {
+                eprintln!("Valid GPU handle: 0x{:X}", gpu_handle.ptr);
+                let result = gpu_handle.ptr as usize;
+                std::mem::forget(heap);
+                return result;
+            }
+        } else {
+            // Для не шейдер-видимых хилов возвращаем CPU handle
+            eprintln!("Heap is not shader visible, returning CPU handle: 0x{:X}", cpu_handle.ptr);
+            let result = cpu_handle.ptr as usize;
+            std::mem::forget(heap);
+            return result;
         }
-
-        let handle = heap.GetGPUDescriptorHandleForHeapStart();
-        let result = handle.ptr as usize;
-
-        eprintln!("GPU handle = 0x{:X}", result);
-
-        // Проверяем валидность handle
-        if result == 0 || result == 0xFFFFFFFFFFFFFFFF {
-            eprintln!("ERROR: Invalid GPU handle!");
-            return 0;
-        }
-
-        // Проверяем выравнивание
-        let increment = STATE.lock().unwrap().cbv_srv_uav_descriptor_size as usize;
-        if result % increment != 0 {
-            eprintln!("WARNING: GPU handle not aligned to {}", increment);
-        }
-
-        std::mem::forget(heap);
-        result
     }
 }
 #[no_mangle]
@@ -1998,49 +2062,53 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
         return false;
     }
 
-    // Проверяем, что handle не указывает на мусор
-    if gpu_handle < 0x10000 {
-        eprintln!("ERROR: gpu_handle слишком мал (вероятно, ошибка): 0x{:X}", gpu_handle);
+    // Проверяем на специфические битые значения
+    if gpu_handle == 0x15678A00110000 {
+        eprintln!("ERROR: Detected broken GPU handle 0x15678A00110000");
+        eprintln!("This handle is from a non-shader-visible heap!");
+        eprintln!("Please use shader-visible heap (heap_type=2, shader_visible=true)");
         return false;
     }
 
-    // Проверяем выравнивание (дескрипторы обычно выровнены по 32 или 64 байта)
-    if gpu_handle % 32 != 0 {
-        eprintln!("WARNING: gpu_handle не выровнен по 32 байта: 0x{:X}", gpu_handle);
+    // Validate handle range
+    if gpu_handle < 0x10000 {
+        eprintln!("ERROR: gpu_handle too small: 0x{:X}", gpu_handle);
+        return false;
+    }
+
+    if gpu_handle > 0x7FFFFFFFFFFF {
+        eprintln!("ERROR: gpu_handle too large: 0x{:X}", gpu_handle);
+        return false;
     }
 
     let state = match STATE.lock() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("ERROR: Не удалось заблокировать состояние: {:?}", e);
+            eprintln!("ERROR: Failed to lock state: {:?}", e);
             return false;
         }
     };
 
     if let Some(list) = &state.command_list {
         if list.as_raw().is_null() {
-            eprintln!("ERROR: список команд пуст");
+            eprintln!("ERROR: command list is null");
             return false;
         }
 
         let handle = D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu_handle };
+        eprintln!("  Calling SetGraphicsRootDescriptorTable with handle=0x{:X}", handle.ptr);
 
-        eprintln!("  Вызов SetGraphicsRootDescriptorTable с handle=0x{:X}", handle.ptr);
-
-        // Добавляем обработку паники
-        let result = std::panic::catch_unwind(|| {
-            list.SetGraphicsRootDescriptorTable(root_index, handle);
-        });
-
-        if result.is_ok() {
-            eprintln!("  УСПЕШНО");
-            true
-        } else {
-            eprintln!("  ERROR: паника в SetGraphicsRootDescriptorTable");
-            false
+        // Проверяем выравнивание
+        let increment = state.cbv_srv_uav_descriptor_size as u64;
+        if increment > 0 && (handle.ptr % increment) != 0 {
+            eprintln!("WARNING: Handle not aligned to {} bytes", increment);
         }
+
+        list.SetGraphicsRootDescriptorTable(root_index, handle);
+        eprintln!("  SUCCESS");
+        true
     } else {
-        eprintln!("ERROR: нет списка команд");
+        eprintln!("ERROR: No command list available");
         false
     }
 }
