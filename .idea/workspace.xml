@@ -49,38 +49,27 @@
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.exe" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.pdb" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99brsutv-06s4uxl-c0j323jdvu6q9sf345el6ypus/dep-graph.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99brsutv-06s4uxl-c0j323jdvu6q9sf345el6ypus/query-cache.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99brsutv-06s4uxl-c0j323jdvu6q9sf345el6ypus/work-products.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99brsutv-06s4uxl.lock" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99bsq2n2-17i3kzi-6tuelmhtub37bjrqgro0agyqz/dep-graph.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99bsq2n2-17i3kzi-6tuelmhtub37bjrqgro0agyqz/query-cache.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99bsq2n2-17i3kzi-6tuelmhtub37bjrqgro0agyqz/work-products.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hg99bsq2n2-17i3kzi.lock" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99brsvd4-1rfpnpn-eonilxs9tcpf79y20cj82ac03/dep-graph.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99brsvd4-1rfpnpn-eonilxs9tcpf79y20cj82ac03/query-cache.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99brsvd4-1rfpnpn-eonilxs9tcpf79y20cj82ac03/work-products.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99brsvd4-1rfpnpn.lock" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99bspvu6-0lhm5df-bg9jucc5z4fjdrez8nheemdj6/dep-graph.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99bspvu6-0lhm5df-bg9jucc5z4fjdrez8nheemdj6/query-cache.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99bspvu6-0lhm5df-bg9jucc5z4fjdrez8nheemdj6/work-products.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hg99bspvu6-0lhm5df.lock" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/.fingerprint/alkash3d_dx12-0cbab424e1dbd7ce/output-lib-alkash3d_dx12" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll.exp" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.pdb" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgd5fdwnd0-1s1g346-4b8dy9ikqaayv5ja455nsq1ja/dep-graph.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgd5fdwnd0-1s1g346-4b8dy9ikqaayv5ja455nsq1ja/query-cache.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgd5fdwnd0-1s1g346-4b8dy9ikqaayv5ja455nsq1ja/work-products.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgd5fdwnd0-1s1g346.lock" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgd5fdwmak-1p6v1t9-cpbgp5dhu7kvkhysibgjsuymi/dep-graph.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgd5fdwmak-1p6v1t9-cpbgp5dhu7kvkhysibgjsuymi/query-cache.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgd5fdwmak-1p6v1t9-cpbgp5dhu7kvkhysibgjsuymi/work-products.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgd5fdwmak-1p6v1t9.lock" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/.fingerprint/alkash3d_dx12-0cbab424e1dbd7ce/output-lib-alkash3d_dx12" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/.fingerprint/alkash3d_dx12-0cbab424e1dbd7ce/output-lib-alkash3d_dx12" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.pdb" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build-script-build.exe" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.exe" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.pdb" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll.exp" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.pdb" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/graphics/dx12_backend.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/graphics/dx12_backend.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.pdb" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/graphics/utils/alkash3d_dx12.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/graphics/utils/alkash3d_dx12.dll" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/graphics/utils/d3d12_wrapper.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/graphics/utils/d3d12_wrapper.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/shader.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/shader.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/examples/basic_example.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/basic_example.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -452,7 +441,8 @@
       <workItem from="1772382338840" duration="1088000" />
       <workItem from="1772635808535" duration="3703000" />
       <workItem from="1772641640345" duration="2594000" />
-      <workItem from="1772685519792" duration="1222000" />
+      <workItem from="1772685519792" duration="1995000" />
+      <workItem from="1772726617855" duration="4370000" />
     </task>
     <servers />
   </component>
