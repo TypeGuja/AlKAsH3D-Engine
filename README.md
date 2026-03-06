@@ -3,7 +3,7 @@
 
 ## !WARNING!
 
-<img width="1654" height="798" alt="image" src="https://github.com/user-attachments/assets/2fc9f0b7-0950-46e2-a5a3-ad92a1d270c3" />
+<img width="1360" height="834" alt="image" src="https://github.com/user-attachments/assets/b0998c73-d4bc-4c19-b01d-45c4608fbd8c" />
 ( _for an unknown reason, there is no image when running any of the example games_ ) 
 a broken part of the engine was found, the problem is in the dx12_backend, d3d12_wrapper, and lib.rs (alkash3d_dx12.dll) files
 
