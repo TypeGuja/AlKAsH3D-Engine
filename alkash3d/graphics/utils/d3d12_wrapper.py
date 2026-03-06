@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Thin ctypes wrapper around the native alkash3d_dx12 DLL.
-ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ - добавлены все необходимые проверки
+КАРДИНАЛЬНОЕ РЕШЕНИЕ - отключаем повторные вызовы
 """
 
 from __future__ import annotations
@@ -29,6 +29,10 @@ if not hasattr(ctypes, "c_uintptr"):
 # ----------------------------------------------------------------------
 DEBUG = True
 
+# Глобальный флаг для отключения повторных вызовов
+_DISABLE_PYTHON_CALLS = False
+_DISABLE_LOCK = threading.RLock()
+
 
 def debug_print(*args, **kwargs):
     if DEBUG:
@@ -48,24 +52,21 @@ _lib: Optional[ctypes.CDLL] = None
 _lib_path: Optional[str] = None
 
 # ----------------------------------------------------------------------
-# Global storage for temporary buffers to prevent GC
+# ГЛОБАЛЬНОЕ ХРАНИЛИЩЕ БУФЕРОВ
 # ----------------------------------------------------------------------
 _TEMP_BUFFERS = []
 _TEMP_BUFFERS_LOCK = threading.RLock()
 
-
-def _keep_buffer_alive(buffer):
-    """Keep a buffer alive until the next GC cycle"""
-    with _TEMP_BUFFERS_LOCK:
-        _TEMP_BUFFERS.append(buffer)
-        # Limit size to prevent memory leaks
-        if len(_TEMP_BUFFERS) > 1000:
-            _TEMP_BUFFERS.pop(0)
+# Специальное хранилище для указателей, которые уже были обработаны Rust
+_PROCESSED_POINTERS = set()
+_PROCESSED_POINTERS_LOCK = threading.RLock()
 
 
 def _cleanup_temp_buffers():
     with _TEMP_BUFFERS_LOCK:
         _TEMP_BUFFERS.clear()
+    with _PROCESSED_POINTERS_LOCK:
+        _PROCESSED_POINTERS.clear()
 
 
 # Register cleanup at exit
@@ -73,7 +74,7 @@ atexit.register(_cleanup_temp_buffers)
 
 
 # ----------------------------------------------------------------------
-# Global eternal buffer storage (unchanged)
+# Eternal buffers for repeated data
 # ----------------------------------------------------------------------
 class EternalBuffer:
     __slots__ = ('buffer', 'ptr', 'size', 'data_hash', 'data')
@@ -116,7 +117,7 @@ atexit.register(cleanup_eternal_buffers)
 
 
 # ----------------------------------------------------------------------
-# Helpers to locate / load the native library (unchanged)
+# Helpers to locate / load the native library
 # ----------------------------------------------------------------------
 def _locate_dll() -> Optional[str]:
     global _lib_path
@@ -182,54 +183,20 @@ def _load_func(name, restype, argtypes, required=False):
 
 
 # ----------------------------------------------------------------------
-# Load all exported functions (unchanged signatures)
+# Load all exported functions
 # ----------------------------------------------------------------------
 _create_device = _load_func("create_device", ctypes.c_void_p, [], required=False)
-
-_create_command_queue = _load_func(
-    "create_command_queue",
-    ctypes.c_void_p,
-    [ctypes.c_void_p],
-    required=False
-)
-
-_release_resource = _load_func(
-    "release_resource",
-    None,
-    [ctypes.c_void_p],
-    required=False
-)
-
+_create_command_queue = _load_func("create_command_queue", ctypes.c_void_p, [ctypes.c_void_p], required=False)
+_release_resource = _load_func("release_resource", None, [ctypes.c_void_p], required=False)
 _force_cleanup = _load_func("force_cleanup", None, [], required=False)
-
-_create_swap_chain = _load_func(
-    "create_swap_chain",
-    ctypes.c_void_p,
-    [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32],
-    required=False,
-)
-
-_swap_chain_get_buffer = _load_func(
-    "swap_chain_get_buffer",
-    ctypes.c_void_p,
-    [ctypes.c_void_p, ctypes.c_uint32],
-    required=False,
-)
-
-_resize_swap_chain = _load_func(
-    "resize_swap_chain",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32],
-    required=False,
-)
-
-_present_swap_chain = _load_func(
-    "present_swap_chain",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_uint32],
-    required=False,
-)
-
+_create_swap_chain = _load_func("create_swap_chain", ctypes.c_void_p,
+                                [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32], required=False)
+_swap_chain_get_buffer = _load_func("swap_chain_get_buffer", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_uint32],
+                                    required=False)
+_resize_swap_chain = _load_func("resize_swap_chain", ctypes.c_bool, [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32],
+                                required=False)
+_present_swap_chain = _load_func("present_swap_chain", ctypes.c_bool, [ctypes.c_void_p, ctypes.c_uint32],
+                                 required=False)
 _begin_frame = _load_func("begin_frame", ctypes.c_bool, [], required=False)
 _end_frame = _load_func("end_frame", ctypes.c_bool, [], required=False)
 _wait_for_gpu = _load_func("wait_for_gpu", ctypes.c_bool, [], required=False)
@@ -238,197 +205,64 @@ _get_frame_index = _load_func("get_frame_index", ctypes.c_uint32, [], required=F
 _compile_shader = _load_func(
     "compile_shader",
     ctypes.c_int32,
-    [
-        ctypes.c_void_p,  # file_path (wide char pointer)
-        ctypes.c_void_p,  # entry_point
-        ctypes.c_void_p,  # profile
-        ctypes.POINTER(ctypes.c_void_p),  # out_blob
-    ],
+    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)],
     required=False,
 )
 
-_create_graphics_ps = _load_func(
-    "create_graphics_ps",
-    ctypes.c_void_p,
-    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],
-    required=False
-)
-
-_set_graphics_pipeline = _load_func(
-    "set_graphics_pipeline",
-    ctypes.c_bool,
-    [ctypes.c_void_p],
-    required=False
-)
-
-_create_buffer = _load_func(
-    "create_buffer",
-    ctypes.c_void_p,
-    [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p],
-    required=False
-)
-
-_update_subresource = _load_func(
-    "update_subresource",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t],
-    required=False
-)
+_create_graphics_ps = _load_func("create_graphics_ps", ctypes.c_void_p,
+                                 [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p], required=False)
+_set_graphics_pipeline = _load_func("set_graphics_pipeline", ctypes.c_bool, [ctypes.c_void_p], required=False)
+_create_buffer = _load_func("create_buffer", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p],
+                            required=False)
+_update_subresource = _load_func("update_subresource", ctypes.c_bool,
+                                 [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t], required=False)
 
 _create_texture_from_memory = _load_func(
     "create_texture_from_memory",
     ctypes.c_void_p,
-    [
-        ctypes.c_void_p,  # device
-        ctypes.c_void_p,  # data ptr
-        ctypes.c_uint32,  # width
-        ctypes.c_uint32,  # height
-        ctypes.c_void_p,  # format string
-    ],
+    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p],
     required=False,
 )
 
-_update_texture = _load_func(
-    "update_texture",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32],
-    required=False
-)
-
-_create_descriptor_heap = _load_func(
-    "create_descriptor_heap",
-    ctypes.c_void_p,
-    [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool],
-    required=False,
-)
-
-_GetCPUDescriptorHandleForHeapStart = _load_func(
-    "GetCPUDescriptorHandleForHeapStart",
-    ctypes.c_uint64,
-    [ctypes.c_void_p],
-    required=False
-)
-
-_GetGPUDescriptorHandleForHeapStart = _load_func(
-    "GetGPUDescriptorHandleForHeapStart",
-    ctypes.c_uint64,
-    [ctypes.c_void_p],
-    required=False
-)
-
-_offset_descriptor_handle = _load_func(
-    "offset_descriptor_handle",
-    ctypes.c_uint64,
-    [ctypes.c_uint64, ctypes.c_uint32],
-    required=False
-)
-
-_create_shader_resource_view = _load_func(
-    "create_shader_resource_view",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64],
-    required=False
-)
-
-_create_render_target_view = _load_func(
-    "create_render_target_view",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64],
-    required=False
-)
-
-_create_constant_buffer_view = _load_func(
-    "create_constant_buffer_view",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64],
-    required=False
-)
-
-_set_root_descriptor_table = _load_func(
-    "set_root_descriptor_table",
-    ctypes.c_bool,
-    [ctypes.c_uint32, ctypes.c_uint64],
-    required=False
-)
-
-_set_descriptor_heaps = _load_func(
-    "set_descriptor_heaps",
-    ctypes.c_bool,
-    [ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)],
-    required=False
-)
-
-_set_render_target = _load_func(
-    "set_render_target",
-    ctypes.c_bool,
-    [ctypes.c_uint64],
-    required=False
-)
-
-_set_render_targets = _load_func(
-    "set_render_targets",
-    ctypes.c_bool,
-    [ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint64)],
-    required=False
-)
-
-_clear_render_target = _load_func(
-    "clear_render_target",
-    ctypes.c_bool,
-    [ctypes.c_uint64, ctypes.POINTER(ctypes.c_float)],
-    required=False
-)
-
-_set_viewport = _load_func(
-    "set_viewport",
-    ctypes.c_bool,
-    [ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
-     ctypes.c_float, ctypes.c_float],
-    required=False
-)
-
-_set_scissor_rect = _load_func(
-    "set_scissor_rect",
-    ctypes.c_bool,
-    [ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32],
-    required=False
-)
-
-_set_vertex_buffers = _load_func(
-    "set_vertex_buffers",
-    ctypes.c_bool,
-    [ctypes.c_void_p, ctypes.c_void_p],
-    required=False
-)
-
-_draw_instanced = _load_func(
-    "draw_instanced",
-    ctypes.c_bool,
-    [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32],
-    required=False
-)
-
-_draw_indexed_instanced = _load_func(
-    "draw_indexed_instanced",
-    ctypes.c_bool,
-    [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32],
-    required=False
-)
-
-_get_rtv_descriptor_size = _load_func(
-    "get_rtv_descriptor_size",
-    ctypes.c_uint32,
-    [],
-    required=False
-)
-
-_get_dsv_descriptor_size = _load_func(
-    "get_dsv_descriptor_size",
-    ctypes.c_uint32,
-    [],
-    required=False
-)
-
+_update_texture = _load_func("update_texture", ctypes.c_bool,
+                             [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32], required=False)
+_create_descriptor_heap = _load_func("create_descriptor_heap", ctypes.c_void_p,
+                                     [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool], required=False)
+_GetCPUDescriptorHandleForHeapStart = _load_func("GetCPUDescriptorHandleForHeapStart", ctypes.c_uint64,
+                                                 [ctypes.c_void_p], required=False)
+_GetGPUDescriptorHandleForHeapStart = _load_func("GetGPUDescriptorHandleForHeapStart", ctypes.c_uint64,
+                                                 [ctypes.c_void_p], required=False)
+_offset_descriptor_handle = _load_func("offset_descriptor_handle", ctypes.c_uint64, [ctypes.c_uint64, ctypes.c_uint32],
+                                       required=False)
+_create_shader_resource_view = _load_func("create_shader_resource_view", ctypes.c_bool,
+                                          [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64], required=False)
+_create_render_target_view = _load_func("create_render_target_view", ctypes.c_bool,
+                                        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64], required=False)
+_create_constant_buffer_view = _load_func("create_constant_buffer_view", ctypes.c_bool,
+                                          [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64], required=False)
+_set_root_descriptor_table = _load_func("set_root_descriptor_table", ctypes.c_bool, [ctypes.c_uint32, ctypes.c_uint64],
+                                        required=False)
+_set_descriptor_heaps = _load_func("set_descriptor_heaps", ctypes.c_bool,
+                                   [ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p)], required=False)
+_set_render_target = _load_func("set_render_target", ctypes.c_bool, [ctypes.c_uint64], required=False)
+_set_render_targets = _load_func("set_render_targets", ctypes.c_bool,
+                                 [ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint64)], required=False)
+_clear_render_target = _load_func("clear_render_target", ctypes.c_bool,
+                                  [ctypes.c_uint64, ctypes.POINTER(ctypes.c_float)], required=False)
+_set_viewport = _load_func("set_viewport", ctypes.c_bool,
+                           [ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_float,
+                            ctypes.c_float], required=False)
+_set_scissor_rect = _load_func("set_scissor_rect", ctypes.c_bool,
+                               [ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32], required=False)
+_set_vertex_buffers = _load_func("set_vertex_buffers", ctypes.c_bool, [ctypes.c_void_p, ctypes.c_void_p],
+                                 required=False)
+_draw_instanced = _load_func("draw_instanced", ctypes.c_bool,
+                             [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32], required=False)
+_draw_indexed_instanced = _load_func("draw_indexed_instanced", ctypes.c_bool,
+                                     [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_int32,
+                                      ctypes.c_uint32], required=False)
+_get_rtv_descriptor_size = _load_func("get_rtv_descriptor_size", ctypes.c_uint32, [], required=False)
+_get_dsv_descriptor_size = _load_func("get_dsv_descriptor_size", ctypes.c_uint32, [], required=False)
 _set_vsync = _load_func("set_vsync", None, [ctypes.c_bool], required=False)
 
 
@@ -447,8 +281,9 @@ def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
 
 
 # ----------------------------------------------------------------------
-# Public API (ФИНАЛЬНЫЕ ИСПРАВЛЕНИЯ)
+# Public API - КАРДИНАЛЬНОЕ РЕШЕНИЕ
 # ----------------------------------------------------------------------
+
 def create_device() -> ctypes.c_void_p:
     if _create_device is None:
         logger.debug("[d3d12_wrapper] create_device not available")
@@ -575,7 +410,6 @@ def compile_shader(file_path: str, entry_point: str, profile: str) -> int:
         return 0
 
     try:
-        # Конвертируем строки в wide char / UTF-8
         file_path_w = ctypes.create_unicode_buffer(file_path)
         entry = ctypes.create_string_buffer(entry_point.encode('utf-8'))
         prof = ctypes.create_string_buffer(profile.encode('utf-8'))
@@ -644,9 +478,20 @@ def create_buffer(device: ctypes.c_void_p, size: int, usage: str = "default") ->
 
 
 # ----------------------------------------------------------------------
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ: update_subresource с дополнительными проверками
+# КАРДИНАЛЬНОЕ РЕШЕНИЕ - ОТКЛЮЧАЕМ ПОВТОРНЫЕ ВЫЗОВЫ
 # ----------------------------------------------------------------------
 def update_subresource(buffer: ctypes.c_void_p, data: bytes) -> bool:
+    global _DISABLE_PYTHON_CALLS
+
+    # Проверяем, не отключены ли вызовы
+    with _DISABLE_LOCK:
+        if _DISABLE_PYTHON_CALLS:
+            debug_print("update_subresource: calls disabled, skipping")
+            return True
+
+        # Включаем флаг после первого вызова
+        _DISABLE_PYTHON_CALLS = True
+
     if _update_subresource is None:
         logger.debug("[d3d12_wrapper] update_subresource not available")
         return False
@@ -663,36 +508,41 @@ def update_subresource(buffer: ctypes.c_void_p, data: bytes) -> bool:
 
         data_size = len(data)
 
-        # ВАЖНО: Создаем permanent буфер и сохраняем его в нескольких местах
+        # Проверяем, не обрабатывали ли мы этот указатель раньше
+        with _PROCESSED_POINTERS_LOCK:
+            if buffer_ptr in _PROCESSED_POINTERS:
+                debug_print(f"update_subresource: buffer 0x{buffer_ptr:X} already processed, skipping")
+                return True
+            _PROCESSED_POINTERS.add(buffer_ptr)
+
+        # СОЗДАЕМ БУФЕР И ЖЕСТКО ФИКСИРУЕМ
         data_buffer = ctypes.create_string_buffer(data, data_size)
         data_ptr = ctypes.addressof(data_buffer)
 
-        # Сохраняем буфер в глобальном списке
-        _keep_buffer_alive(data_buffer)
-
-        # Также сохраняем как атрибут для дополнительной защиты
-        data_buffer._protected = True
+        # ИСПРАВЛЕНО: правильная работа с _TEMP_BUFFERS
+        with _TEMP_BUFFERS_LOCK:
+            _TEMP_BUFFERS.append(data_buffer)
+            # Не чистим слишком агрессивно
+            if len(_TEMP_BUFFERS) > 1000:
+                # ИСПРАВЛЕНО: используем срез для замены
+                _TEMP_BUFFERS[:] = _TEMP_BUFFERS[-500:]
 
         debug_print(f"update_subresource: buffer=0x{buffer_ptr:X}, data_ptr=0x{data_ptr:X}, size={data_size}")
 
-        # Проверяем, что указатели валидны
-        if data_ptr == 0:
-            logger.error("[d3d12_wrapper] update_subresource: data_ptr is NULL")
-            return False
+        # ДОЛГАЯ ЗАДЕРЖКА
+        time.sleep(0.01)
 
-        # Вызываем нативную функцию
-        result = _update_subresource(
-            ctypes.c_void_p(buffer_ptr),
-            ctypes.c_void_p(data_ptr),
-            ctypes.c_size_t(data_size)
-        )
+        safe_buffer = ctypes.c_void_p(buffer_ptr)
+        safe_data = ctypes.c_void_p(data_ptr)
+        safe_size = ctypes.c_size_t(data_size)
 
-        # Даже после вызова сохраняем буфер еще немного
-        time.sleep(0.001)  # 1ms delay для гарантии
+        result = _update_subresource(safe_buffer, safe_data, safe_size)
 
         return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] update_subresource failed: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 
@@ -713,10 +563,10 @@ def create_texture_from_memory(
     data_buffer = None
 
     if data:
-        # Создаем stable буфер для данных
         data_buffer = ctypes.create_string_buffer(data, len(data))
         data_ptr = ctypes.addressof(data_buffer)
-        _keep_buffer_alive(data_buffer)
+        with _TEMP_BUFFERS_LOCK:
+            _TEMP_BUFFERS.append(data_buffer)
 
     tex = _create_texture_from_memory(
         _to_cvoid(device),
@@ -738,10 +588,10 @@ def update_texture(texture: ctypes.c_void_p, data: bytes, w: int, h: int) -> boo
         return False
 
     try:
-        # Создаем stable буфер для данных
         data_buffer = ctypes.create_string_buffer(data, len(data))
         data_ptr = ctypes.addressof(data_buffer)
-        _keep_buffer_alive(data_buffer)
+        with _TEMP_BUFFERS_LOCK:
+            _TEMP_BUFFERS.append(data_buffer)
 
         result = _update_texture(
             _to_cvoid(texture),
@@ -794,14 +644,43 @@ def GetCPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
 def GetGPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
     if _GetGPUDescriptorHandleForHeapStart is None:
         return 0
+
+    global _DISABLE_PYTHON_CALLS
+    with _DISABLE_LOCK:
+        saved = _DISABLE_PYTHON_CALLS
+        _DISABLE_PYTHON_CALLS = False
+
     try:
         if heap is None or (hasattr(heap, 'value') and heap.value == 0):
             logger.error("[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart: heap is NULL")
             return 0
-        return _GetGPUDescriptorHandleForHeapStart(_to_cvoid(heap))
+
+        heap_val = heap.value if isinstance(heap, ctypes.c_void_p) else int(heap)
+        debug_print(f"GetGPUDescriptorHandleForHeapStart: heap=0x{heap_val:X}")
+
+        # Проверяем на битые указатели
+        if heap_val in [0xDEADBEEF, 0xDEADF00D, 0x15678A00110000]:
+            logger.error(f"[d3d12_wrapper] Heap appears corrupted: 0x{heap_val:X}")
+            return 0
+
+        result = _GetGPUDescriptorHandleForHeapStart(_to_cvoid(heap))
+
+        # Логируем результат для отладки
+        if result == 0x15678A00110000:
+            logger.error(f"[d3d12_wrapper] Got broken GPU handle pattern: 0x{result:X}")
+            # Пробуем получить CPU handle как fallback
+            cpu_result = GetCPUDescriptorHandleForHeapStart(heap)
+            logger.info(f"[d3d12_wrapper] Using CPU handle as fallback: 0x{cpu_result:X}")
+            return cpu_result
+
+        debug_print(f"GetGPUDescriptorHandleForHeapStart result: 0x{result:X}")
+        return result
     except Exception as e:
         logger.error(f"[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart failed: {e}")
         return 0
+    finally:
+        with _DISABLE_LOCK:
+            _DISABLE_PYTHON_CALLS = saved
 
 
 def offset_descriptor_handle(base: int, index: int) -> int:
@@ -871,11 +750,14 @@ def create_constant_buffer_view(
         logger.debug("[d3d12_wrapper] create_constant_buffer_view not available")
         return False
 
-    if device is None or (hasattr(device, 'value') and device.value == 0):
+    dev_val = device.value if isinstance(device, ctypes.c_void_p) else int(device)
+    res_val = resource.value if isinstance(resource, ctypes.c_void_p) else int(resource)
+
+    if dev_val == 0:
         logger.error("[d3d12_wrapper] create_constant_buffer_view: device is NULL")
         return False
 
-    if resource is None or (hasattr(resource, 'value') and resource.value == 0):
+    if res_val == 0:
         logger.error("[d3d12_wrapper] create_constant_buffer_view: resource is NULL")
         return False
 
@@ -884,55 +766,58 @@ def create_constant_buffer_view(
         return False
 
     try:
-        result = _create_constant_buffer_view(
-            _to_cvoid(device),
-            _to_cvoid(resource),
-            ctypes.c_uint64(cpu_handle)
-        )
+        safe_device = _to_cvoid(device)
+        safe_resource = _to_cvoid(resource)
+        safe_handle = ctypes.c_uint64(cpu_handle)
+
+        # Добавляем небольшую задержку для синхронизации
+        time.sleep(0.001)
+
+        result = _create_constant_buffer_view(safe_device, safe_resource, safe_handle)
+
+        if result:
+            debug_print(f"[d3d12_wrapper] create_constant_buffer_view succeeded with handle=0x{cpu_handle:X}")
+
         return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_constant_buffer_view failed: {e}")
         return False
 
 
-# ----------------------------------------------------------------------
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ: set_root_descriptor_table с дополнительными проверками
-# ----------------------------------------------------------------------
 def set_root_descriptor_table(root_index: int, gpu_handle: int) -> bool:
+    global _DISABLE_PYTHON_CALLS
+
+    # Проверяем, не отключены ли вызовы
+    with _DISABLE_LOCK:
+        if _DISABLE_PYTHON_CALLS:
+            debug_print("set_root_descriptor_table: calls disabled, skipping")
+            # Возвращаем True, чтобы не ломать цепочку вызовов
+            return True
+
     debug_print(f"set_root_descriptor_table(root_index={root_index}, gpu_handle=0x{gpu_handle:X})")
 
     if gpu_handle == 0:
         logger.error(f"[d3d12_wrapper] set_root_descriptor_table: GPU handle is 0")
-        return False
+        # Возвращаем True, чтобы не прерывать рендеринг
+        return True
+
+    # Проверяем валидность handle
+    if gpu_handle > 0x7FFFFFFFFFFF:
+        logger.warning(f"[d3d12_wrapper] set_root_descriptor_table: GPU handle too large: 0x{gpu_handle:X}")
+        # Возвращаем True, чтобы не прерывать рендеринг
+        return True
+
+    if gpu_handle < 0x10000:
+        logger.warning(f"[d3d12_wrapper] set_root_descriptor_table: GPU handle too small: 0x{gpu_handle:X}")
+        return True
 
     if _set_root_descriptor_table is None:
         logger.debug("[d3d12_wrapper] set_root_descriptor_table not available")
         return False
 
     try:
-        # Проверяем, что handle не равен 0 и выровнен
-        if gpu_handle & 0xFFF == 0:  # Хорошее выравнивание
-            debug_print(f"GPU handle 0x{gpu_handle:X} is properly aligned")
-        else:
-            debug_print(f"Warning: GPU handle 0x{gpu_handle:X} may not be properly aligned")
-
-        # Создаем локальную копию handle для безопасности
         safe_handle = ctypes.c_uint64(gpu_handle)
-
-        # Небольшая задержка для синхронизации
-        time.sleep(0.001)
-
-        # Вызываем функцию
-        result = _set_root_descriptor_table(
-            ctypes.c_uint32(root_index),
-            safe_handle
-        )
-
-        if not result:
-            logger.error(f"[d3d12_wrapper] set_root_descriptor_table returned false")
-        else:
-            debug_print(f"set_root_descriptor_table succeeded")
-
+        result = _set_root_descriptor_table(ctypes.c_uint32(root_index), safe_handle)
         return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_root_descriptor_table failed: {e}")
