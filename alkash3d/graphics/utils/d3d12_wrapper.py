@@ -201,6 +201,7 @@ _begin_frame = _load_func("begin_frame", ctypes.c_bool, [], required=False)
 _end_frame = _load_func("end_frame", ctypes.c_bool, [], required=False)
 _wait_for_gpu = _load_func("wait_for_gpu", ctypes.c_bool, [], required=False)
 _get_frame_index = _load_func("get_frame_index", ctypes.c_uint32, [], required=False)
+_cleanup_descriptor_handles = _load_func("cleanup_descriptor_handles", None, [], required=False)
 
 _compile_shader = _load_func(
     "compile_shader",
@@ -645,11 +646,6 @@ def GetGPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
     if _GetGPUDescriptorHandleForHeapStart is None:
         return 0
 
-    global _DISABLE_PYTHON_CALLS
-    with _DISABLE_LOCK:
-        saved = _DISABLE_PYTHON_CALLS
-        _DISABLE_PYTHON_CALLS = False
-
     try:
         if heap is None or (hasattr(heap, 'value') and heap.value == 0):
             logger.error("[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart: heap is NULL")
@@ -658,30 +654,30 @@ def GetGPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
         heap_val = heap.value if isinstance(heap, ctypes.c_void_p) else int(heap)
         debug_print(f"GetGPUDescriptorHandleForHeapStart: heap=0x{heap_val:X}")
 
-        # Проверяем на битые указатели
-        if heap_val in [0xDEADBEEF, 0xDEADF00D, 0x15678A00110000]:
-            logger.error(f"[d3d12_wrapper] Heap appears corrupted: 0x{heap_val:X}")
-            return 0
-
         result = _GetGPUDescriptorHandleForHeapStart(_to_cvoid(heap))
 
-        # Логируем результат для отладки
+        # Дополнительная проверка на Python уровне
         if result == 0x15678A00110000:
-            logger.error(f"[d3d12_wrapper] Got broken GPU handle pattern: 0x{result:X}")
-            # Пробуем получить CPU handle как fallback
+            logger.error(f"[d3d12_wrapper] CRITICAL: Got broken GPU handle 0x{result:X} even after fix!")
+            # Пробуем получить CPU handle напрямую
             cpu_result = GetCPUDescriptorHandleForHeapStart(heap)
-            logger.info(f"[d3d12_wrapper] Using CPU handle as fallback: 0x{cpu_result:X}")
-            return cpu_result
+            if cpu_result != 0:
+                logger.info(f"[d3d12_wrapper] Using CPU handle as fallback: 0x{cpu_result:X}")
+                return cpu_result
 
         debug_print(f"GetGPUDescriptorHandleForHeapStart result: 0x{result:X}")
         return result
     except Exception as e:
         logger.error(f"[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart failed: {e}")
         return 0
-    finally:
-        with _DISABLE_LOCK:
-            _DISABLE_PYTHON_CALLS = saved
 
+def cleanup_descriptor_handles():
+    """Очищает сохранённые исправленные дескрипторные handle'ы"""
+    if _cleanup_descriptor_handles:
+        try:
+            _cleanup_descriptor_handles()
+        except Exception as e:
+            logger.error(f"[d3d12_wrapper] cleanup_descriptor_handles failed: {e}")
 
 def offset_descriptor_handle(base: int, index: int) -> int:
     if _offset_descriptor_handle is None:
@@ -765,6 +761,12 @@ def create_constant_buffer_view(
         logger.error("[d3d12_wrapper] create_constant_buffer_view: cpu_handle is 0")
         return False
 
+    # Проверка на битый GPU handle
+    if cpu_handle == 0x15678A00110000:
+        logger.error("[d3d12_wrapper] create_constant_buffer_view: Detected broken GPU handle pattern!")
+        logger.error("This is a known D3D12 issue. You must use CPU handle instead.")
+        return False
+
     try:
         safe_device = _to_cvoid(device)
         safe_resource = _to_cvoid(resource)
@@ -800,6 +802,12 @@ def set_root_descriptor_table(root_index: int, gpu_handle: int) -> bool:
         logger.error(f"[d3d12_wrapper] set_root_descriptor_table: GPU handle is 0")
         # Возвращаем True, чтобы не прерывать рендеринг
         return True
+
+    # Проверка на битый GPU handle
+    if gpu_handle == 0x15678A00110000:
+        logger.error("[d3d12_wrapper] set_root_descriptor_table: Detected broken GPU handle pattern!")
+        logger.error("This handle cannot be used in shaders. You must use CPU handle instead.")
+        return False
 
     # Проверяем валидность handle
     if gpu_handle > 0x7FFFFFFFFFFF:
