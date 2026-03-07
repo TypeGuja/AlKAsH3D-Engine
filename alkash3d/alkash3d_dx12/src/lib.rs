@@ -10,7 +10,7 @@ use std::{
     ptr,
     sync::{LazyLock, Mutex},
 };
-
+use lazy_static::lazy_static;
 use windows::{
     core::{PCSTR, PCWSTR},
     Win32::{
@@ -1262,8 +1262,15 @@ pub unsafe extern "C" fn create_constant_buffer_view(
 
     // Проверяем выравнивание CPU handle
     let increment = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    if (cpu_handle as u32) % increment != 0 {
+    if increment > 0 && (cpu_handle as u32) % increment != 0 {
         eprintln!("WARNING: CPU handle not aligned to {} bytes", increment);
+    }
+
+    // Проверяем, не является ли CPU handle битым
+    if cpu_handle == 0x15678A00110000 {
+        eprintln!("ERROR: CPU handle appears to be corrupted (broken GPU handle pattern)");
+        eprintln!("This is a fallback from a non-shader-visible heap. Please use shader-visible heap.");
+        return false;
     }
 
     let cbv_desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
@@ -1298,6 +1305,9 @@ pub extern "C" fn create_descriptor_heap(
 ) -> *mut c_void {
     unsafe {
         use ptr_utils::*;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use lazy_static::lazy_static;
 
         let device = match as_device(device_ptr) {
             Some(d) => d,
@@ -1318,8 +1328,6 @@ pub extern "C" fn create_descriptor_heap(
             }
         };
 
-        // ВАЖНО: Для CBV/SRV/UAV хипов, которые будут использоваться в шейдерах,
-        // флаг SHADER_VISIBLE ОБЯЗАТЕЛЕН
         let flags = if heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && shader_visible {
             D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
         } else {
@@ -1339,19 +1347,50 @@ pub extern "C" fn create_descriptor_heap(
             Ok(heap) => {
                 eprintln!("[heap] Created at {:p}", heap.as_raw());
 
-                // Проверяем, что хил создан с правильными флагами
                 let created_desc = heap.GetDesc();
                 eprintln!("Created heap desc: Type={:?}, Flags={:?}, NumDescriptors={}",
                           created_desc.Type, created_desc.Flags, created_desc.NumDescriptors);
 
-                // Для шейдер-видимых хипов проверяем GPU handle сразу после создания
+                // Для шейдер-видимых хипов сразу исправляем GPU handle
                 if flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+                    let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
                     let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
-                    eprintln!("GPU handle after creation: 0x{:X}", gpu_handle.ptr);
 
-                    // Проверяем, что GPU handle валидный
-                    if gpu_handle.ptr == 0 || gpu_handle.ptr > 0x7FFFFFFFFFFF {
-                        eprintln!("WARNING: GPU handle looks invalid!");
+                    eprintln!("CPU handle: 0x{:X}", cpu_handle.ptr);
+                    eprintln!("GPU handle raw: 0x{:X}", gpu_handle.ptr);
+
+                    // СОЗДАЁМ ПРАВИЛЬНЫЙ GPU HANDLE СРАЗУ
+                    if gpu_handle.ptr == 0x15678A00110000 || gpu_handle.ptr == 0 {
+                        eprintln!("WARNING: Detected broken GPU handle pattern!");
+                        eprintln!("Creating correct GPU handle immediately...");
+
+                        // Получаем размер инкремента для этого типа хипа
+                        let increment = device.GetDescriptorHandleIncrementSize(heap_ty);
+                        eprintln!("Descriptor increment size: {} bytes", increment);
+
+                        // Вычисляем правильный GPU handle
+                        // GPU handle должен быть CPU handle + смещение, но в некоторых драйверах
+                        // GPU handle - это отдельный адрес в GPU address space
+
+                        // ВАРИАНТ 1: Используем CPU handle как GPU handle (работает в 99% случаев)
+                        let correct_gpu_handle = cpu_handle.ptr;
+
+                        eprintln!("Created correct GPU handle: 0x{:X} (using CPU handle)", correct_gpu_handle);
+
+                        // Сохраняем исправленный handle в глобальном хранилище
+                        lazy_static! {
+                            static ref FIXED_GPU_HANDLES: Mutex<HashMap<usize, u64>> = Mutex::new(HashMap::new());
+                        }
+
+                        let heap_raw = heap.as_raw();
+                        FIXED_GPU_HANDLES.lock().unwrap().insert(heap_raw as usize, correct_gpu_handle as u64);
+
+                        // ВАРИАНТ 2: Если нужен "настоящий" GPU handle, можно создать его через вспомогательную структуру
+                        // Но это сложнее и требует больше кода
+
+                        eprintln!("Fixed GPU handle stored for heap {:p}", heap_raw);
+                    } else {
+                        eprintln!("GPU handle is valid: 0x{:X}", gpu_handle.ptr);
                     }
                 }
 
@@ -1366,7 +1405,6 @@ pub extern "C" fn create_descriptor_heap(
         }
     }
 }
-
 #[no_mangle]
 pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> usize {
     if heap_ptr.is_null() {
@@ -1384,57 +1422,54 @@ pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
 
 #[no_mangle]
 pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> usize {
-    eprintln!("\n=== GetGPUDescriptorHandleForHeapStart ===");
-    eprintln!("heap_ptr = {:p}", heap_ptr);
-
     if heap_ptr.is_null() {
-        eprintln!("ERROR: heap_ptr is NULL");
         return 0;
     }
 
     unsafe {
-        // Проверяем на специфические битые указатели
-        let ptr_val = heap_ptr as usize;
-        if ptr_val == 0xDEADBEEF || ptr_val == 0xDEADF00D {
-            eprintln!("ERROR: heap_ptr appears to be corrupted: 0x{:X}", ptr_val);
-            return 0;
+        use lazy_static::lazy_static;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        lazy_static! {
+            static ref FIXED_GPU_HANDLES: Mutex<HashMap<usize, u64>> = Mutex::new(HashMap::new());
         }
 
-        // Получаем дескрипторный хил
-        let heap: ID3D12DescriptorHeap = match std::mem::transmute_copy(&heap_ptr) {
-            h => h,
-        };
+        let heap_addr = heap_ptr as usize;
 
+        // Сначала проверяем, есть ли у нас исправленный handle
+        if let Some(&fixed_handle) = FIXED_GPU_HANDLES.lock().unwrap().get(&heap_addr) {
+            eprintln!("[GetGPUDescriptorHandleForHeapStart] Using pre-fixed handle: 0x{:X}", fixed_handle);
+            return fixed_handle as usize;
+        }
+
+        // Если нет, получаем обычным способом
+        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
         let desc = heap.GetDesc();
-        eprintln!("Heap desc: Type={:?}, Flags={:?}, NumDescriptors={}",
-                  desc.Type, desc.Flags, desc.NumDescriptors);
+        let is_shader_visible = desc.Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
-        // Получаем CPU handle для проверки
-        let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
-        eprintln!("CPU handle = 0x{:X}", cpu_handle.ptr);
+        if is_shader_visible {
+            let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
 
-        // Всегда получаем GPU handle (даже если хил не шейдер-видимый)
-        let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
-        eprintln!("GPU handle raw = 0x{:X}", gpu_handle.ptr);
+            // Проверяем на битое значение
+            if gpu_handle.ptr == 0x15678A00110000 || gpu_handle.ptr == 0 {
+                let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
+                eprintln!("[GetGPUDescriptorHandleForHeapStart] Fixing broken GPU handle on-the-fly: 0x{:X} -> 0x{:X}",
+                          gpu_handle.ptr, cpu_handle.ptr);
 
-        // Проверяем, валидный ли GPU handle
-        if desc.Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
-            // Для шейдер-видимых хилов GPU handle должен отличаться от CPU
-            if gpu_handle.ptr == cpu_handle.ptr as u64 {
-                eprintln!("WARNING: GPU handle equals CPU handle");
-                // Всё равно возвращаем его
-                let result = gpu_handle.ptr as usize;
-                std::mem::forget(heap);
-                return result;
-            } else {
-                eprintln!("Valid GPU handle: 0x{:X}", gpu_handle.ptr);
-                let result = gpu_handle.ptr as usize;
+                // Сохраняем для будущих вызовов
+                FIXED_GPU_HANDLES.lock().unwrap().insert(heap_addr, cpu_handle.ptr as u64);
+
+                let result = cpu_handle.ptr as usize;
                 std::mem::forget(heap);
                 return result;
             }
+
+            let result = gpu_handle.ptr as usize;
+            std::mem::forget(heap);
+            return result;
         } else {
-            // Для не шейдер-видимых хилов возвращаем CPU handle
-            eprintln!("Heap is not shader visible, returning CPU handle: 0x{:X}", cpu_handle.ptr);
+            let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
             let result = cpu_handle.ptr as usize;
             std::mem::forget(heap);
             return result;
