@@ -56,6 +56,8 @@ _lib_path: Optional[str] = None
 # ----------------------------------------------------------------------
 _TEMP_BUFFERS = []
 _TEMP_BUFFERS_LOCK = threading.RLock()
+_VALID_GPU_HANDLES = set()
+_VALID_GPU_HANDLES_LOCK = threading.RLock()
 
 # Специальное хранилище для указателей, которые уже были обработаны Rust
 _PROCESSED_POINTERS = set()
@@ -227,8 +229,12 @@ _create_texture_from_memory = _load_func(
 
 _update_texture = _load_func("update_texture", ctypes.c_bool,
                              [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32], required=False)
-_create_descriptor_heap = _load_func("create_descriptor_heap", ctypes.c_void_p,
-                                     [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool], required=False)
+_create_descriptor_heap = _load_func(
+    "create_descriptor_heap",
+    ctypes.c_void_p,  # restype - должен быть c_void_p
+    [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool],  # argtypes
+    required=False
+)
 _GetCPUDescriptorHandleForHeapStart = _load_func("GetCPUDescriptorHandleForHeapStart", ctypes.c_uint64,
                                                  [ctypes.c_void_p], required=False)
 _GetGPUDescriptorHandleForHeapStart = _load_func("GetGPUDescriptorHandleForHeapStart", ctypes.c_uint64,
@@ -265,6 +271,7 @@ _draw_indexed_instanced = _load_func("draw_indexed_instanced", ctypes.c_bool,
 _get_rtv_descriptor_size = _load_func("get_rtv_descriptor_size", ctypes.c_uint32, [], required=False)
 _get_dsv_descriptor_size = _load_func("get_dsv_descriptor_size", ctypes.c_uint32, [], required=False)
 _set_vsync = _load_func("set_vsync", None, [ctypes.c_bool], required=False)
+_is_gpu_handle_valid = _load_func("is_gpu_handle_valid", ctypes.c_bool, [ctypes.c_uint64], required=False)
 
 
 # ----------------------------------------------------------------------
@@ -616,19 +623,31 @@ def create_descriptor_heap(
     if _create_descriptor_heap is None:
         logger.debug("[d3d12_wrapper] create_descriptor_heap not available")
         return ctypes.c_void_p(0)
+
+    logger.debug(f"[d3d12_wrapper] create_descriptor_heap called with: device={hex(device.value if device else 0)}, "
+                 f"num={num_descriptors}, type={heap_type}, visible={shader_visible}")
+
     try:
-        return _to_cvoid(
-            _create_descriptor_heap(
-                _to_cvoid(device),
-                ctypes.c_uint32(num_descriptors),
-                ctypes.c_uint32(heap_type),
-                ctypes.c_bool(shader_visible),
-            )
+        raw_result = _create_descriptor_heap(
+            _to_cvoid(device),
+            ctypes.c_uint32(num_descriptors),
+            ctypes.c_uint32(heap_type),
+            ctypes.c_bool(shader_visible),
         )
+
+        logger.debug(f"[d3d12_wrapper] create_descriptor_heap raw result: {hex(raw_result) if raw_result else 'NULL'}")
+        logger.debug(f"[d3d12_wrapper] raw_result type: {type(raw_result)}")
+
+        result = ctypes.c_void_p(raw_result)
+        logger.debug(
+            f"[d3d12_wrapper] create_descriptor_heap converted result: {hex(result.value) if result.value else 'NULL'}")
+
+        return result
     except Exception as e:
         logger.error(f"[d3d12_wrapper] create_descriptor_heap failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return ctypes.c_void_p(0)
-
 
 def GetCPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
     if _GetCPUDescriptorHandleForHeapStart is None:
@@ -652,24 +671,123 @@ def GetGPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
             return 0
 
         heap_val = heap.value if isinstance(heap, ctypes.c_void_p) else int(heap)
+
+        # Проверяем кэш
+        cache_key = f"gpu_{heap_val}"
+        if hasattr(GetGPUDescriptorHandleForHeapStart, "_cache"):
+            cached = getattr(GetGPUDescriptorHandleForHeapStart, "_cache", {}).get(cache_key)
+            if cached is not None and cached != 0x15678A00110000:
+                debug_print(
+                    f"GetGPUDescriptorHandleForHeapStart: using cached handle 0x{cached:X} for heap 0x{heap_val:X}")
+                return cached
+
         debug_print(f"GetGPUDescriptorHandleForHeapStart: heap=0x{heap_val:X}")
 
         result = _GetGPUDescriptorHandleForHeapStart(_to_cvoid(heap))
 
-        # Дополнительная проверка на Python уровне
+        # Проверяем на проблемное значение
         if result == 0x15678A00110000:
-            logger.error(f"[d3d12_wrapper] CRITICAL: Got broken GPU handle 0x{result:X} even after fix!")
-            # Пробуем получить CPU handle напрямую
+            logger.error(f"[d3d12_wrapper] CRITICAL: Got broken GPU handle 0x{result:X}!")
+            logger.error("This is a driver bug. The native code should have fixed it.")
+
+            # Пробуем получить CPU handle как временное решение
             cpu_result = GetCPUDescriptorHandleForHeapStart(heap)
             if cpu_result != 0:
-                logger.info(f"[d3d12_wrapper] Using CPU handle as fallback: 0x{cpu_result:X}")
-                return cpu_result
+                logger.warning(f"[d3d12_wrapper] Using CPU handle as temporary workaround: 0x{cpu_result:X}")
+                result = cpu_result
+
+        # Кэшируем результат
+        if result != 0x15678A00110000:
+            if not hasattr(GetGPUDescriptorHandleForHeapStart, "_cache"):
+                GetGPUDescriptorHandleForHeapStart._cache = {}
+            GetGPUDescriptorHandleForHeapStart._cache[cache_key] = result
 
         debug_print(f"GetGPUDescriptorHandleForHeapStart result: 0x{result:X}")
         return result
     except Exception as e:
         logger.error(f"[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart failed: {e}")
         return 0
+
+
+def set_root_descriptor_table(root_index: int, gpu_handle: int) -> bool:
+    global _DISABLE_PYTHON_CALLS
+
+    with _DISABLE_LOCK:
+        if _DISABLE_PYTHON_CALLS:
+            debug_print("set_root_descriptor_table: calls disabled, skipping")
+            return True
+
+    debug_print(f"set_root_descriptor_table(root_index={root_index}, gpu_handle=0x{gpu_handle:X})")
+
+    # Проверка на нулевой handle
+    if gpu_handle == 0:
+        logger.error(f"[d3d12_wrapper] set_root_descriptor_table: GPU handle is 0")
+        return False
+
+    # Проверка на битый GPU handle с использованием native функции
+    if _is_gpu_handle_valid and not _is_gpu_handle_valid(ctypes.c_uint64(gpu_handle)):
+        logger.error(f"[d3d12_wrapper] set_root_descriptor_table: Invalid GPU handle 0x{gpu_handle:X}")
+        logger.error("This handle cannot be used in shaders. Check descriptor heap creation.")
+        return False
+
+    if _set_root_descriptor_table is None:
+        logger.debug("[d3d12_wrapper] set_root_descriptor_table not available")
+        return False
+
+    try:
+        safe_handle = ctypes.c_uint64(gpu_handle)
+        result = _set_root_descriptor_table(ctypes.c_uint32(root_index), safe_handle)
+        return bool(result)
+    except Exception as e:
+        logger.error(f"[d3d12_wrapper] set_root_descriptor_table failed: {e}")
+        return False
+
+
+def create_constant_buffer_view(
+        device: ctypes.c_void_p,
+        resource: ctypes.c_void_p,
+        cpu_handle: int,
+) -> bool:
+    if _create_constant_buffer_view is None:
+        logger.debug("[d3d12_wrapper] create_constant_buffer_view not available")
+        return False
+
+    dev_val = device.value if isinstance(device, ctypes.c_void_p) else int(device)
+    res_val = resource.value if isinstance(resource, ctypes.c_void_p) else int(resource)
+
+    if dev_val == 0:
+        logger.error("[d3d12_wrapper] create_constant_buffer_view: device is NULL")
+        return False
+
+    if res_val == 0:
+        logger.error("[d3d12_wrapper] create_constant_buffer_view: resource is NULL")
+        return False
+
+    if cpu_handle == 0:
+        logger.error("[d3d12_wrapper] create_constant_buffer_view: cpu_handle is 0")
+        return False
+
+    # Проверка на битый GPU handle с использованием native функции
+    if _is_gpu_handle_valid and not _is_gpu_handle_valid(ctypes.c_uint64(cpu_handle)):
+        logger.error(f"[d3d12_wrapper] create_constant_buffer_view: Invalid handle 0x{cpu_handle:X}")
+        logger.error("This appears to be a GPU handle from a non-shader-visible heap.")
+        logger.error("Please use CPU handle from shader-visible heap instead.")
+        return False
+
+    try:
+        safe_device = _to_cvoid(device)
+        safe_resource = _to_cvoid(resource)
+        safe_handle = ctypes.c_uint64(cpu_handle)
+
+        result = _create_constant_buffer_view(safe_device, safe_resource, safe_handle)
+
+        if result:
+            debug_print(f"[d3d12_wrapper] create_constant_buffer_view succeeded with handle=0x{cpu_handle:X}")
+
+        return bool(result)
+    except Exception as e:
+        logger.error(f"[d3d12_wrapper] create_constant_buffer_view failed: {e}")
+        return False
 
 def cleanup_descriptor_handles():
     """Очищает сохранённые исправленные дескрипторные handle'ы"""
