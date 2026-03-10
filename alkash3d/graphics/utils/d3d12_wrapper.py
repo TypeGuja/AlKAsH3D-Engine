@@ -667,42 +667,25 @@ def GetGPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
 
     try:
         if heap is None or (hasattr(heap, 'value') and heap.value == 0):
-            logger.error("[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart: heap is NULL")
             return 0
 
         heap_val = heap.value if isinstance(heap, ctypes.c_void_p) else int(heap)
 
-        # Проверяем кэш
+        # Проверяем кэш (только для отладки, можно убрать)
         cache_key = f"gpu_{heap_val}"
         if hasattr(GetGPUDescriptorHandleForHeapStart, "_cache"):
             cached = getattr(GetGPUDescriptorHandleForHeapStart, "_cache", {}).get(cache_key)
             if cached is not None and cached != 0x15678A00110000:
-                debug_print(
-                    f"GetGPUDescriptorHandleForHeapStart: using cached handle 0x{cached:X} for heap 0x{heap_val:X}")
                 return cached
-
-        debug_print(f"GetGPUDescriptorHandleForHeapStart: heap=0x{heap_val:X}")
 
         result = _GetGPUDescriptorHandleForHeapStart(_to_cvoid(heap))
 
-        # Проверяем на проблемное значение
-        if result == 0x15678A00110000:
-            logger.error(f"[d3d12_wrapper] CRITICAL: Got broken GPU handle 0x{result:X}!")
-            logger.error("This is a driver bug. The native code should have fixed it.")
-
-            # Пробуем получить CPU handle как временное решение
-            cpu_result = GetCPUDescriptorHandleForHeapStart(heap)
-            if cpu_result != 0:
-                logger.warning(f"[d3d12_wrapper] Using CPU handle as temporary workaround: 0x{cpu_result:X}")
-                result = cpu_result
-
-        # Кэшируем результат
-        if result != 0x15678A00110000:
+        # Кэшируем результат (только валидные значения)
+        if result != 0x15678A00110000 and result != 0:
             if not hasattr(GetGPUDescriptorHandleForHeapStart, "_cache"):
                 GetGPUDescriptorHandleForHeapStart._cache = {}
             GetGPUDescriptorHandleForHeapStart._cache[cache_key] = result
 
-        debug_print(f"GetGPUDescriptorHandleForHeapStart result: 0x{result:X}")
         return result
     except Exception as e:
         logger.error(f"[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart failed: {e}")
