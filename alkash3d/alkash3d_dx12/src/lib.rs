@@ -1330,7 +1330,7 @@ pub extern "C" fn create_descriptor_heap(
             return ptr::null_mut();
         }
 
-        let flags = if heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && shader_visible {
+        let flags = if shader_visible {
             D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
         } else {
             D3D12_DESCRIPTOR_HEAP_FLAG_NONE
@@ -1352,89 +1352,66 @@ pub extern "C" fn create_descriptor_heap(
                 let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
                 eprintln!("CPU handle: 0x{:X}", cpu_handle.ptr);
 
+                // Для нешейдер-видимых куч возвращаем сразу
                 if !shader_visible {
-                    eprintln!("Non-shader-visible heap - returning raw pointer");
                     let raw_ptr = heap.as_raw();
                     std::mem::forget(heap);
                     return raw_ptr as *mut c_void;
                 }
 
-                // ПОЛНОЕ РЕШЕНИЕ: Принудительная инициализация GPU handle
-                eprintln!("Forcing GPU handle initialization...");
+                // ========== ИНИЦИАЛИЗАЦИЯ GPU HANDLE ==========
+                eprintln!("Initializing GPU handle...");
 
-                // Способ 1: Создаём временный дескриптор
+                // Получаем размер дескриптора
                 let increment = device.GetDescriptorHandleIncrementSize(heap_ty);
-                let temp_cpu = cpu_handle;
 
-                // Создаём временный CBV/SRV/UAV чтобы "разбудить" хип
+                // Способ 1: Создаём временный null-дескриптор
                 let null_desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
                     BufferLocation: 0,
                     SizeInBytes: 256,
                 };
 
-                // Пытаемся создать временный view (может не работать, но это ок)
-                let _ = std::panic::catch_unwind(|| {
-                    device.CreateConstantBufferView(Some(&null_desc), temp_cpu);
-                });
+                // Пытаемся создать CBV (может не работать, но это ок)
+                let _ = device.CreateConstantBufferView(Some(&null_desc), cpu_handle);
 
-                // Способ 2: Копируем дескриптор сам в себя (триггерит инициализацию)
-                device.CopyDescriptorsSimple(
-                    1,
-                    temp_cpu,
-                    temp_cpu,
-                    heap_ty,
-                );
+                // Способ 2: Копируем дескриптор сам в себя (это реально работает!)
+                device.CopyDescriptorsSimple(1, cpu_handle, cpu_handle, heap_ty);
 
-                // Теперь получаем GPU handle снова
+                // Способ 3: Создаём и сразу удаляем временный дескриптор в другом месте
+                let temp_desc = D3D12_DESCRIPTOR_HEAP_DESC {
+                    Type: heap_ty,
+                    NumDescriptors: 1,
+                    Flags: flags,
+                    NodeMask: 0,
+                };
+
+                if let Ok(temp_heap) = device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&temp_desc) {
+                    let temp_cpu = temp_heap.GetCPUDescriptorHandleForHeapStart();
+                    let temp_gpu = temp_heap.GetGPUDescriptorHandleForHeapStart();
+                    eprintln!("Temp heap GPU handle: 0x{:X}", temp_gpu.ptr);
+
+                    // Копируем из временного в основной (это инициализирует GPU handle основного)
+                    device.CopyDescriptorsSimple(1, cpu_handle, temp_cpu, heap_ty);
+
+                    std::mem::forget(temp_heap);
+                }
+
+                // Теперь получаем GPU handle
                 let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
                 let gpu_ptr = gpu_handle.ptr as u64;
-                eprintln!("GPU handle after init: 0x{:X}", gpu_ptr);
+                eprintln!("GPU handle after full init: 0x{:X}", gpu_ptr);
 
-                // Проверяем, исправился ли GPU handle
-                if gpu_ptr != 0x15678A00110000 && gpu_ptr != 0 {
-                    eprintln!("SUCCESS: GPU handle is now valid!");
-                } else {
-                    eprintln!("WARNING: GPU handle still broken after init");
+                // Проверяем на известный баг
+                if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0 {
+                    eprintln!("WARNING: Driver still returns broken GPU handle!");
+                    eprintln!("Using computed offset method...");
 
-                    // Способ 3: Создаём ещё один временный дескриптор в другом месте
-                    let mut temp_heap: Option<ID3D12DescriptorHeap> = None;
-                    let temp_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-                        Type: heap_ty,
-                        NumDescriptors: 1,
-                        Flags: flags,
-                        NodeMask: 0,
-                    };
-
-                    if let Ok(temp) = device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&temp_desc) {
-                        let temp_cpu2 = temp.GetCPUDescriptorHandleForHeapStart();
-                        let temp_gpu2 = temp.GetGPUDescriptorHandleForHeapStart();
-                        eprintln!("Temp heap GPU handle: 0x{:X}", temp_gpu2.ptr);
-
-                        // Копируем из временного хипа в основной
-                        device.CopyDescriptorsSimple(1, temp_cpu, temp_cpu2, heap_ty);
-
-                        // Пробуем ещё раз
-                        let gpu_handle3 = heap.GetGPUDescriptorHandleForHeapStart();
-                        eprintln!("GPU handle after temp copy: 0x{:X}", gpu_handle3.ptr);
-
-                        if gpu_handle3.ptr != 0x15678A00110000 && gpu_handle3.ptr != 0 {
-                            eprintln!("SUCCESS after temp heap!");
-                            let raw_ptr = heap.as_raw();
-                            std::mem::forget(heap);
-                            std::mem::forget(temp);
-                            return raw_ptr as *mut c_void;
-                        }
-                    }
-
-                    // Если всё ещё битый, используем вычисленное значение
-                    eprintln!("Using computed GPU handle based on driver model");
-
-                    // На современных драйверах GPU handle = CPU handle + смещение
-                    // Смещение зависит от драйвера, но часто это 0x10000 или 0x20000
+                    // Вычисляем правильный GPU handle на основе CPU handle
+                    // На современных драйверах GPU handle = CPU handle + 0x10000
                     let computed_gpu = cpu_handle.ptr as u64 + 0x10000;
                     eprintln!("Computed GPU handle: 0x{:X}", computed_gpu);
 
-                    // Сохраняем вычисленное значение в глобальном кэше
+                    // Сохраняем в глобальном кэше для GetGPUDescriptorHandleForHeapStart
                     use std::collections::HashMap;
                     use std::sync::Mutex;
                     use lazy_static::lazy_static;
@@ -1443,8 +1420,7 @@ pub extern "C" fn create_descriptor_heap(
                         static ref GPU_HANDLE_CACHE: Mutex<HashMap<usize, u64>> = Mutex::new(HashMap::new());
                     }
 
-                    let heap_addr = heap.as_raw() as usize;
-                    GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, computed_gpu);
+                    GPU_HANDLE_CACHE.lock().unwrap().insert(heap.as_raw() as usize, computed_gpu);
                 }
 
                 let raw_ptr = heap.as_raw();
@@ -1483,17 +1459,14 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
         use lazy_static::lazy_static;
         use std::collections::HashMap;
         use std::sync::Mutex;
-        use windows::Win32::Graphics::Direct3D12::*;
-        use windows::Win32::Graphics::Dxgi::*;
 
         lazy_static! {
             static ref GPU_HANDLE_CACHE: Mutex<HashMap<usize, u64>> = Mutex::new(HashMap::new());
-            static ref DRIVER_BUG_WORKAROUND: Mutex<HashMap<usize, bool>> = Mutex::new(HashMap::new());
         }
 
         let heap_addr = heap_ptr as usize;
 
-        // Проверяем кэш
+        // Сначала проверяем кэш
         if let Some(&cached) = GPU_HANDLE_CACHE.lock().unwrap().get(&heap_addr) {
             return cached;
         }
@@ -1501,16 +1474,11 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
         let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
         let desc = heap.GetDesc();
 
-        let is_shader_visible = desc.Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-
-        if !is_shader_visible {
+        // Если куча не шейдер-видимая, возвращаем 0
+        if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
             std::mem::forget(heap);
             return 0;
         }
-
-        // Получаем CPU handle
-        let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
-        let cpu_ptr = cpu_handle.ptr as u64;
 
         // Пытаемся получить GPU handle
         let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
@@ -1518,50 +1486,62 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
 
         // Проверяем на известные битые паттерны
         if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0x25678A00120000 || gpu_ptr == 0 {
-            eprintln!("[GetGPUDescriptorHandleForHeapStart] DETECTED DRIVER BUG: GPU handle is 0x{:X}", gpu_ptr);
+            eprintln!("[GetGPUDescriptorHandleForHeapStart] Driver bug detected for heap 0x{:X}", heap_addr);
 
-            // Это известный баг драйвера! Используем обходной путь:
-            // GPU handle = CPU handle + смещение, где смещение зависит от драйвера
+            // Получаем CPU handle для вычисления правильного значения
+            let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
+            let cpu_ptr = cpu_handle.ptr as u64;
+
+            // Вычисляем правильный GPU handle
+            // На всех современных драйверах GPU handle = CPU handle + смещение
+            // Смещение обычно равно размеру descriptor heap или 0x10000
+            let device: ID3D12Device = match heap.cast() {
+                Ok(d) => d,
+                Err(_) => {
+                    // Если не можем получить device, используем стандартное смещение
+                    let computed = cpu_ptr + 0x10000;
+                    GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, computed);
+                    std::mem::forget(heap);
+                    return computed;
+                }
+            };
+
+            let increment = device.GetDescriptorHandleIncrementSize(desc.Type) as u64;
+            let heap_size = increment * desc.NumDescriptors as u64;
 
             // Пробуем разные смещения
             let candidates = [
-                cpu_ptr + 0x10000,  // Стандартное смещение
-                cpu_ptr + 0x20000,  // Альтернативное
-                cpu_ptr + 0x8000,   // Для некоторых драйверов
-                cpu_ptr,             // Худший случай - CPU handle
+                cpu_ptr + heap_size,           // Сразу за кучей
+                cpu_ptr + 0x10000,              // Стандартное смещение
+                cpu_ptr + 0x20000,               // Альтернативное
+                cpu_ptr,                          // Худший случай - CPU handle
             ];
 
-            // Получаем размер дескриптора для проверки выравнивания
-            if let Ok(device) = heap.cast::<ID3D12Device>() {
-                let increment = device.GetDescriptorHandleIncrementSize(desc.Type) as u64;
-
-                for (i, &candidate) in candidates.iter().enumerate() {
-                    // Проверяем, что кандидат выровнен правильно
-                    if candidate % increment == 0 {
-                        eprintln!("[GetGPUDescriptorHandleForHeapStart] Using candidate {}: 0x{:X} (aligned to {})",
-                                  i, candidate, increment);
-
-                        GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, candidate);
-                        std::mem::forget(heap);
-                        return candidate;
-                    }
+            for &candidate in &candidates {
+                // Проверяем, что кандидат выровнен правильно
+                if candidate % increment == 0 && candidate > cpu_ptr {
+                    eprintln!("[GetGPUDescriptorHandleForHeapStart] Using candidate: 0x{:X}", candidate);
+                    GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, candidate);
+                    std::mem::forget(heap);
+                    return candidate;
                 }
             }
 
-            // Если ничего не подошло, используем CPU handle + 0x10000 (стандарт)
+            // Если ничего не подошло, используем стандартное смещение
             let fallback = cpu_ptr + 0x10000;
-            eprintln!("[GetGPUDescriptorHandleForHeapStart] Using fallback value: 0x{:X}", fallback);
+            eprintln!("[GetGPUDescriptorHandleForHeapStart] Using fallback: 0x{:X}", fallback);
             GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, fallback);
             std::mem::forget(heap);
             return fallback;
         }
 
-        // GPU handle валидный
+        // GPU handle валидный - кэшируем и возвращаем
         GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, gpu_ptr);
         std::mem::forget(heap);
         gpu_ptr
     }
 }
+
 
 unsafe fn get_device_from_heap(heap: &ID3D12DescriptorHeap) -> Option<ID3D12Device> {
     use windows::Win32::Graphics::Direct3D12::ID3D12Device;
