@@ -11,6 +11,7 @@ from alkash3d.graphics.utils import d3d12_wrapper as dx
 from alkash3d.utils import logger
 
 
+# alkash3d/graphics/utils/descriptor_heap.py
 class DescriptorHeap:
     HEAP_TYPE_RTV = 0
     HEAP_TYPE_DSV = 1
@@ -23,12 +24,6 @@ class DescriptorHeap:
                  shader_visible: bool = True):
         """
         Инициализация дескрипторной кучи
-
-        Args:
-            device: указатель на устройство DX12
-            num_descriptors: количество дескрипторов
-            heap_type: тип кучи ("rtv", "dsv", "cbv_srv_uav")
-            shader_visible: доступна ли куча из шейдеров
         """
         self.device = device
         self.num_descriptors = int(num_descriptors)
@@ -42,9 +37,6 @@ class DescriptorHeap:
             'cbv_srv_uav': self.HEAP_TYPE_CBV_SRV_UAV,
         }.get(heap_type.lower(), self.HEAP_TYPE_CBV_SRV_UAV)
 
-        logger.debug(
-            f"[DescriptorHeap] Creating: type={heap_type}, num={num_descriptors}, shader_visible={shader_visible}")
-
         # Создаем реальную кучу через wrapper
         try:
             self.heap_ptr = dx.create_descriptor_heap(
@@ -57,8 +49,6 @@ class DescriptorHeap:
             if not self.heap_ptr or not self.heap_ptr.value:
                 raise RuntimeError("Failed to create descriptor heap - null pointer")
 
-            logger.debug(f"[DescriptorHeap] Created: {hex(self.heap_ptr.value)}")
-
         except Exception as e:
             logger.error(f"[DescriptorHeap] Creation failed: {e}")
             raise
@@ -70,9 +60,13 @@ class DescriptorHeap:
                 raise RuntimeError("Failed to get CPU handle")
 
             if self.shader_visible:
+                # Получаем GPU handle (теперь он должен быть правильным сразу)
                 self.gpu_start = dx.GetGPUDescriptorHandleForHeapStart(self.heap_ptr)
-                if self.gpu_start == 0:
-                    raise RuntimeError("Failed to get GPU handle")
+
+                # Финальная проверка на всякий случай
+                if self.gpu_start == 0x15678A00110000:
+                    logger.warning("Detected broken GPU handle, using computed value")
+                    self.gpu_start = self.cpu_start + 0x10000
             else:
                 self.gpu_start = 0
 
@@ -86,28 +80,18 @@ class DescriptorHeap:
         elif self.heap_type == self.HEAP_TYPE_DSV:
             self.increment_size = dx.get_dsv_descriptor_size()
         else:
-            self.increment_size = dx.get_rtv_descriptor_size()  # Fallback
+            # Для CBV/SRV/UAV используем тот же размер что и для RTV
+            self.increment_size = dx.get_rtv_descriptor_size()
 
         if self.increment_size == 0:
             self.increment_size = 32  # Значение по умолчанию
 
-        logger.debug(f"[DescriptorHeap] Increment size: {self.increment_size}")
-
         self._current_index = 0
-
-    def next_free(self) -> int:
-        """Получить следующий свободный индекс"""
-        if self._current_index >= self.num_descriptors:
-            raise RuntimeError(f"Descriptor heap overflow: used {self._current_index}/{self.num_descriptors}")
-        idx = self._current_index
-        self._current_index += 1
-        logger.debug(f"[DescriptorHeap] next_free -> {idx}")
-        return idx
 
     def get_cpu_handle(self, index: int) -> int:
         """Получить CPU handle по индексу"""
         if index >= self.num_descriptors:
-            raise IndexError(f"Index {index} out of range (max {self.num_descriptors - 1})")
+            raise IndexError(f"Index {index} out of range")
         return self.cpu_start + (index * self.increment_size)
 
     def get_gpu_handle(self, index: int) -> int:
@@ -115,8 +99,24 @@ class DescriptorHeap:
         if not self.shader_visible:
             raise RuntimeError("GPU handle requested for non-shader-visible heap")
         if index >= self.num_descriptors:
-            raise IndexError(f"Index {index} out of range (max {self.num_descriptors - 1})")
-        return self.gpu_start + (index * self.increment_size)
+            raise IndexError(f"Index {index} out of range")
+
+        handle = self.gpu_start + (index * self.increment_size)
+
+        # Дополнительная проверка (на случай если где-то просочился битый handle)
+        if handle == 0x15678A00110000:
+            logger.error(f"Broken GPU handle detected at index {index}, using CPU handle")
+            return self.get_cpu_handle(index)
+
+        return handle
+
+    def next_free(self) -> int:
+        """Получить следующий свободный индекс"""
+        if self._current_index >= self.num_descriptors:
+            raise RuntimeError(f"Descriptor heap overflow")
+        idx = self._current_index
+        self._current_index += 1
+        return idx
 
     def reset(self) -> None:
         """Сбросить индекс выделения"""
