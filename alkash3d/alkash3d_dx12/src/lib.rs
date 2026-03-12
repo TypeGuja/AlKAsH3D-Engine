@@ -1420,6 +1420,7 @@ pub extern "C" fn create_descriptor_heap(
                         static ref GPU_HANDLE_CACHE: Mutex<HashMap<usize, u64>> = Mutex::new(HashMap::new());
                     }
 
+
                     GPU_HANDLE_CACHE.lock().unwrap().insert(heap.as_raw() as usize, computed_gpu);
                 }
 
