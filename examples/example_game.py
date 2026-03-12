@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-example_game.py - ИСПРАВЛЕННАЯ РАБОЧАЯ ВЕРСИЯ
+example_game_simple.py - МАКСИМАЛЬНО ПРОСТАЯ РАБОЧАЯ ВЕРСИЯ
 """
 
 import sys
 import time
+import numpy as np
+import ctypes
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -14,12 +16,12 @@ import glfw
 from alkash3d.graphics import select_backend
 
 
-class WorkingDX12App:
+class SimpleApp:
     def __init__(self):
         print("\n" + "=" * 60)
-        print("✅ DX12 WORKING FINAL - ДОЛЖНО РАБОТАТЬ")
+        print("✅ DX12 SIMPLE - МИНИМАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ")
         print("=" * 60)
-        print("Если вы видите цветной экран - DX12 работает!")
+        print("Просто меняет цвет фона")
         print("ESC - выход")
         print("=" * 60 + "\n")
 
@@ -29,7 +31,7 @@ class WorkingDX12App:
 
         # Создаем окно
         glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
-        self.window = glfw.create_window(800, 600, "DX12 Working", None, None)
+        self.window = glfw.create_window(800, 600, "DX12 Simple", None, None)
         if not self.window:
             glfw.terminate()
             raise RuntimeError("Failed to create window")
@@ -45,13 +47,10 @@ class WorkingDX12App:
             (1.0, 1.0, 0.0, 1.0),  # Желтый
         ]
         self.color_index = 0
-        self.last_change = time.time()
-        self.frame_count = 0
-        self.fps_time = time.time()
 
-        # Флаг для отслеживания состояния
         self.device_ok = False
-        self.frame_index = 0
+        self.frame_count = 0
+        self.last_fps_time = time.time()
 
     def init_device(self):
         """Инициализация устройства."""
@@ -68,11 +67,13 @@ class WorkingDX12App:
                 print("❌ RTV heap не создан!")
                 return False
 
-            print(f"✅ Swap chain: {hex(self.backend.swap_chain.value)}")
-            print(f"✅ RTV heap: {self.backend.rtv_heap}")
-            print(f"✅ RTV дескрипторов: {len(self.backend._rtv_cpu_handles)}")
+            if not hasattr(self.backend, '_rtv_cpu_handles') or len(self.backend._rtv_cpu_handles) < 2:
+                print("❌ RTV handles не созданы!")
+                return False
 
-            self.frame_index = self.backend.get_frame_index()
+            print(f"✅ Swap chain: {hex(self.backend.swap_chain.value)}")
+            print(f"✅ RTV handles: {len(self.backend._rtv_cpu_handles)}")
+
             self.device_ok = True
             return True
 
@@ -83,50 +84,40 @@ class WorkingDX12App:
             return False
 
     def render_frame(self):
-        """Отрисовка одного кадра."""
+        """Отрисовка одного кадра (только очистка)."""
         if not self.device_ok:
             return False
 
         try:
-            # Начало кадра - проверяем возвращаемое значение
+            # Начало кадра
             if not self.backend.begin_frame():
-                print("❌ begin_frame failed")
-                self.device_ok = False
                 return False
 
             # Получаем текущий back buffer индекс
-            self.frame_index = self.backend.get_frame_index()
+            frame_idx = self.backend.get_frame_index()
 
-            # Получаем правильный RTV для текущего back buffer
-            if hasattr(self.backend, '_rtv_cpu_handles') and len(self.backend._rtv_cpu_handles) > self.frame_index:
-                rtv = self.backend._rtv_cpu_handles[self.frame_index]
+            # Получаем RTV для текущего back buffer
+            if frame_idx < len(self.backend._rtv_cpu_handles):
+                rtv = self.backend._rtv_cpu_handles[frame_idx]
             else:
-                # Fallback на первый RTV
-                rtv = self.backend.rtv_heap.get_cpu_handle(0)
-                print(f"⚠️ Using fallback RTV for index {self.frame_index}")
+                rtv = self.backend._rtv_cpu_handles[0]
 
             # Устанавливаем render target
             if not self.backend.set_render_target(rtv):
-                print("❌ set_render_target failed")
                 return False
 
-            # Очищаем цветом
+            # Очищаем текущим цветом
             if not self.backend.clear_render_target(rtv, self.colors[self.color_index]):
-                print("❌ clear_render_target failed")
                 return False
 
             # Завершаем кадр
             if not self.backend.end_frame():
-                print("❌ end_frame failed")
                 return False
 
             return True
 
         except Exception as e:
             print(f"❌ Ошибка рендеринга: {e}")
-            import traceback
-            traceback.print_exc()
-            self.device_ok = False
             return False
 
     def run(self):
@@ -134,12 +125,10 @@ class WorkingDX12App:
         if not self.init_device():
             return
 
-        print("\n🟢 ЗАПУСК - цвет должен меняться каждую секунду!")
+        print("\n🟢 ЗАПУСК - цвет меняется каждую секунду!")
         print("🟢 Если видите цвет - все работает!\n")
 
-        last_frame_time = time.time()
-        frame_times = []
-        frames_since_color_change = 0
+        last_color_change = time.time()
 
         while not glfw.window_should_close(self.window):
             # Обработка событий
@@ -149,54 +138,32 @@ class WorkingDX12App:
             if glfw.get_key(self.window, glfw.KEY_ESCAPE) == glfw.PRESS:
                 break
 
-            # Проверяем состояние устройства
-            if not self.device_ok:
-                print("\n⚠️ Устройство потеряно, пытаемся пересоздать...")
-                if not self.init_device():
-                    print("❌ Не удалось пересоздать устройство")
-                    break
-                continue
-
             # Рендерим кадр
-            frame_start = time.time()
             if not self.render_frame():
-                print("\n❌ Ошибка рендеринга - ждем...")
-                time.sleep(0.1)  # Пауза перед повторной попыткой
+                time.sleep(0.1)
                 continue
 
-            # Презентуем кадр (sync_interval=1 для VSync)
+            # Презентуем кадр
             if not self.backend.present(sync_interval=1):
-                print("❌ present failed")
-                self.device_ok = False
                 continue
 
-            # Считаем время кадра
-            frame_time = time.time() - frame_start
-            frame_times.append(frame_time)
-            if len(frame_times) > 60:
-                frame_times.pop(0)
-
+            # Считаем FPS и меняем цвет
             self.frame_count += 1
-            frames_since_color_change += 1
+            current_time = time.time()
 
-            # Меняем цвет каждые 60 кадров (~1 секунда при 60 FPS)
-            if frames_since_color_change >= 60:
+            # Меняем цвет каждую секунду
+            if current_time - last_color_change >= 1.0:
                 self.color_index = (self.color_index + 1) % len(self.colors)
-                frames_since_color_change = 0
 
                 # Считаем FPS
-                if frame_times:
-                    avg_fps = 1.0 / (sum(frame_times) / len(frame_times))
-                else:
-                    avg_fps = 0
-
+                fps = self.frame_count / (current_time - last_color_change)
                 color_names = ["КРАСНЫЙ", "ЗЕЛЕНЫЙ", "СИНИЙ", "ЖЕЛТЫЙ"]
-                print(
-                    f"\r🎨 Цвет: {color_names[self.color_index]} | FPS: {avg_fps:.1f} | Кадров: {self.frame_count} | BackBuffer: {self.frame_index}",
-                    end="")
-                self.frame_count = 0
+                print(f"\r🎨 {color_names[self.color_index]} | FPS: {fps:.1f}      ", end="")
 
-            # Небольшая задержка для уменьшения нагрузки CPU
+                self.frame_count = 0
+                last_color_change = current_time
+
+            # Небольшая задержка
             time.sleep(0.001)
 
         self.cleanup()
@@ -212,7 +179,7 @@ class WorkingDX12App:
 
 if __name__ == "__main__":
     try:
-        app = WorkingDX12App()
+        app = SimpleApp()
         app.run()
     except KeyboardInterrupt:
         print("\n\n⚠️ Прервано")
