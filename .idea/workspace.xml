@@ -41,37 +41,12 @@
   <component name="ChangeListManager">
     <list default="true" id="ef9bb2be-dc37-40fd-9b98-968926a06cfa" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/src/lib.rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/src/lib.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/.rustc_info.json" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/.rustc_info.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/.fingerprint/alkash3d_dx12-2e75030a807e816a/output-lib-alkash3d_dx12" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/.fingerprint/alkash3d_dx12-2e75030a807e816a/output-lib-alkash3d_dx12" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/.fingerprint/alkash3d_dx12-d9da5d0324b7f519/output-test-lib-alkash3d_dx12" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/.fingerprint/alkash3d_dx12-d9da5d0324b7f519/output-test-lib-alkash3d_dx12" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build-script-build.exe" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.exe" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgj61xqmh7-1rwhf2c-bd9z9rhmtjgpde2n8c1428bfm/dep-graph.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgj61xqmh7-1rwhf2c-bd9z9rhmtjgpde2n8c1428bfm/query-cache.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgj61xqmh7-1rwhf2c-bd9z9rhmtjgpde2n8c1428bfm/work-products.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-10ih8gdsyszas/s-hgj61xqmh7-1rwhf2c.lock" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgj61xqo4u-0sla99c-a4ye42n1jxnynhbh2w08hwv7d/dep-graph.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgj61xqo4u-0sla99c-a4ye42n1jxnynhbh2w08hwv7d/query-cache.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgj61xqo4u-0sla99c-a4ye42n1jxnynhbh2w08hwv7d/work-products.bin" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/debug/incremental/alkash3d_dx12-3fx1udtoo9nne/s-hgj61xqo4u-0sla99c.lock" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/.fingerprint/alkash3d_dx12-0cbab424e1dbd7ce/output-lib-alkash3d_dx12" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/.fingerprint/alkash3d_dx12-0cbab424e1dbd7ce/output-lib-alkash3d_dx12" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.dll.exp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/alkash3d_dx12.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build-script-build.exe" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.exe" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build-ecde79a71cdf240b.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/build/windows_x86_64_msvc-ecde79a71cdf240b/build_script_build.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.dll.exp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/release/deps/alkash3d_dx12.pdb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/graphics/utils/alkash3d_dx12.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/graphics/utils/alkash3d_dx12.dll" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/examples/example_game.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/example_game.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/examples/game_template.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/game_template.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/examples/simple_game.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/simple_game.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/mesh/mesh.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/mesh/mesh.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/renderer/pipelines/forward.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/pipelines/forward.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d/scene/scene.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/scene.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/resources/shaders/forward_frag.hlsl" beforeDir="false" afterPath="$PROJECT_DIR$/resources/shaders/forward_frag.hlsl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/resources/shaders/forward_vert.hlsl" beforeDir="false" afterPath="$PROJECT_DIR$/resources/shaders/forward_vert.hlsl" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -176,7 +151,7 @@
     &quot;Python.direct_test.executor&quot;: &quot;Run&quot;,
     &quot;Python.dll_tester.executor&quot;: &quot;Run&quot;,
     &quot;Python.dx12_backend.executor&quot;: &quot;Run&quot;,
-    &quot;Python.engine.executor&quot;: &quot;Debug&quot;,
+    &quot;Python.engine.executor&quot;: &quot;Run&quot;,
     &quot;Python.example_game.executor&quot;: &quot;Run&quot;,
     &quot;Python.fixed_launcher.executor&quot;: &quot;Run&quot;,
     &quot;Python.forward.executor&quot;: &quot;Run&quot;,
@@ -274,7 +249,7 @@
     </key>
   </component>
   <component name="RunManager" selected="Python.simple_game">
-    <configuration name="example_game" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="__init__" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -283,11 +258,33 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/alkash3d" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/example_game.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/alkash3d/__init__.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="engine" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="AlKAsH3D-Engine" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/alkash3d" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/alkash3d/engine.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -318,28 +315,6 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="my_game" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="AlKAsH3D-Engine" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/examples" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/examples/my_game.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
     <configuration name="simple_game" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
@@ -362,28 +337,35 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="Python tests in engine_tester.py" type="tests" factoryName="Autodetect" temporary="true" nameIsGenerated="true">
+    <configuration name="window" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/alkash3d" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="_new_additionalArguments" value="&quot;&quot;" />
-      <option name="_new_target" value="&quot;$PROJECT_DIR$/examples/engine_tester.py&quot;" />
-      <option name="_new_targetType" value="&quot;PATH&quot;" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/alkash3d/window.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
     <recent_temporary>
       <list>
         <item itemvalue="Python.simple_game" />
+        <item itemvalue="Python.__init__" />
+        <item itemvalue="Python.window" />
+        <item itemvalue="Python.engine" />
         <item itemvalue="Python.game_template" />
-        <item itemvalue="Python.example_game" />
-        <item itemvalue="Python tests.Python tests in engine_tester.py" />
-        <item itemvalue="Python.my_game" />
       </list>
     </recent_temporary>
   </component>
@@ -446,8 +428,14 @@
       <workItem from="1772857804208" duration="1710000" />
       <workItem from="1772960153099" duration="2114000" />
       <workItem from="1773161057794" duration="736000" />
+      <workItem from="1773293916030" duration="6000" />
     </task>
     <servers />
+  </component>
+  <component name="TerminalProjectNonSharedOptionsProvider">
+    <envs>
+      <env key="PATH" value="C:\Users\user\.local\bin" />
+    </envs>
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
