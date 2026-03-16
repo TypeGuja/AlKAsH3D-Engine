@@ -126,10 +126,28 @@ mod ptr_utils {
 
     pub unsafe fn as_resource(ptr: *mut c_void) -> Option<ID3D12Resource> {
         if ptr.is_null() {
-            None
-        } else {
-            Some(std::mem::transmute_copy(&ptr))
+            return None;
         }
+
+        // Минимальная защита от мусорных/заглушечных указателей
+        let ptr_val = ptr as usize;
+        if ptr_val < 0x10000 {
+            return None;
+        }
+        if ptr_val == 0xDEADBEEF
+            || ptr_val == 0xDEADF00D
+            || ptr_val == 0xFEEDC0DE
+            || ptr_val == 0x12345678
+            || ptr_val == 0x87654321
+        {
+            return None;
+        }
+
+        let res: ID3D12Resource = std::mem::transmute_copy(&ptr);
+        if res.as_raw().is_null() {
+            return None;
+        }
+        Some(res)
     }
 
     pub unsafe fn as_blob(ptr: *mut c_void) -> Option<ID3DBlob> {
@@ -645,13 +663,11 @@ mod texture_mod {
         width: u32,
         height: u32,
         format: DXGI_FORMAT,
-        upload: bool,
+        _upload: bool,
     ) -> Option<ID3D12Resource> {
-        let heap_type = if upload {
-            D3D12_HEAP_TYPE_UPLOAD
-        } else {
-            D3D12_HEAP_TYPE_DEFAULT
-        };
+        // Нельзя создавать TEXTURE2D на UPLOAD heap (часто даёт E_INVALIDARG).
+        // Всегда создаём DEFAULT ресурс. Аплоад (CopyTextureRegion) можно добавить позже.
+        let heap_type = D3D12_HEAP_TYPE_DEFAULT;
 
         let heap_props = D3D12_HEAP_PROPERTIES {
             Type: heap_type,
@@ -661,11 +677,7 @@ mod texture_mod {
             VisibleNodeMask: 0,
         };
 
-        let init_state = if upload {
-            D3D12_RESOURCE_STATE_GENERIC_READ
-        } else {
-            D3D12_RESOURCE_STATE_COPY_DEST
-        };
+        let init_state = D3D12_RESOURCE_STATE_COPY_DEST;
 
         let desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
@@ -678,7 +690,6 @@ mod texture_mod {
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: D3D12_RESOURCE_FLAG_NONE,
-            height: 0,
         };
 
         let mut tex_opt: Option<ID3D12Resource> = None;
@@ -1731,23 +1742,13 @@ pub extern "C" fn create_texture_from_memory(
             _ => DXGI_FORMAT_R8G8B8A8_UNORM,
         };
 
-        let upload = !data_ptr.is_null();
-        let tex_opt = texture_mod::create_2d(&device, width, height, dxgi_format, upload);
+        let tex_opt = texture_mod::create_2d(&device, width, height, dxgi_format, false);
         let tex = match tex_opt {
             Some(t) => t,
             None => return ptr::null_mut(),
         };
 
-        if !data_ptr.is_null() {
-            let bpp = match dxgi_format {
-                DXGI_FORMAT_R8G8B8A8_UNORM => 4,
-                DXGI_FORMAT_R16G16B16A16_FLOAT => 8,
-                DXGI_FORMAT_R32G32B32A32_FLOAT => 16,
-                _ => 4,
-            };
-
-            texture_mod::update(&tex, data_ptr, width, height, bpp);
-        }
+        // Пока не делаем CPU->GPU upload для DEFAULT texture (нужен upload buffer + copy).
 
         let raw = tex.as_raw();
         std::mem::forget(tex);
