@@ -10,9 +10,7 @@ a broken part of the engine was found, the problem is in the dx12_backend, d3d12
 <img width="726" height="482" alt="image" src="https://github.com/user-attachments/assets/d6093d4b-4b09-4eeb-a5a2-b6e3c72ac31a" />
 **I also don't like that the GPU heap is created 3 times
 
-also possible problems (according to assumptions deepsek)
-
-Why 3D Objects Aren't Rendering in the Engine – GitHub Issue Draft
+also possible problems (according to assumptions deepseek)
 
 ---
 
@@ -22,8 +20,7 @@ Description
 
 When running the engine, the window opens, the engine loop executes, but no 3D objects are visible on screen. The engine appears to be running normally (FPS counter works, window responds), but the render output shows only the clear color.
 
-Architecture Overview
-
+Architecture Overviews 
 ```
 Python Application Layer
     ↓
