@@ -3,11 +3,13 @@
 
 ## !WARNING!
 
-<img width="1717" height="825" alt="image" src="https://github.com/user-attachments/assets/58e035dc-4343-410e-809e-8ff67a69c542" />
+<img width="1724" height="835" alt="image" src="https://github.com/user-attachments/assets/07df3f78-05d3-4a98-a3cf-b4b5c44836ad" />
 ( _for an unknown reason, there is no image when running any of the example games_ ) 
-a broken part of the engine was found, the problem is in the dx12_backend, d3d12_wrapper, and lib.rs (alkash3d_dx12.dll) files
+~a broken part of the engine was found, the problem is in the dx12_backend, d3d12_wrapper, and lib.rs (alkash3d_dx12.dll) files~
+I don't even know what the problem is, and there's no 3D rendering
 
-<img width="726" height="482" alt="image" src="https://github.com/user-attachments/assets/d6093d4b-4b09-4eeb-a5a2-b6e3c72ac31a" />
+
+<img width="682" height="713" alt="image" src="https://github.com/user-attachments/assets/dbd34657-1f9a-4da8-a471-5c6dbc00472d" />
 **I also don't like that the GPU heap is created 3 times
 
 also possible problems (according to assumptions deepseek)
