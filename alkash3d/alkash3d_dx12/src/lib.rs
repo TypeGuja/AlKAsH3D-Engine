@@ -690,6 +690,7 @@ mod texture_mod {
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: D3D12_RESOURCE_FLAG_NONE,
+            height: 0,
         };
 
         let mut tex_opt: Option<ID3D12Resource> = None;
