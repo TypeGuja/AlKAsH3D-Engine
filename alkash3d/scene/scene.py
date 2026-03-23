@@ -1,6 +1,7 @@
+# alkash3d/scene/scene.py
 """
 Корневой узел сцены с поддержкой Octree‑culling.
-ИСПРАВЛЕННАЯ ВЕРСИЯ с отключенным culling для отладки
+ИСПРАВЛЕННАЯ ВЕРСИЯ с включенным culling для отладки
 """
 
 from alkash3d.scene.node import Node
@@ -32,18 +33,26 @@ class Scene(Node):
 
         logger.debug(f"[Scene] Updated {updated} nodes")
 
-        # Временно отключаем rebuild для отладки
-        # try:
-        #     self.culling.rebuild(self)
-        # except Exception as e:
-        #     logger.error(f"[Scene] Culling rebuild error: {e}")
+        # Обновляем octree для корректного culling
+        try:
+            self.culling.rebuild(self)
+            logger.debug("[Scene] Octree rebuilt successfully")
+        except Exception as e:
+            logger.error(f"[Scene] Culling rebuild error: {e}")
 
     def visible_nodes(self, camera):
         """Возвращает видимые узлы сцены."""
         try:
+            # Сначала обновляем octree, если нужно
+            # self.culling.rebuild(self)  # rebuild уже вызывается в update
+            
             frustum = camera.get_view_projection_frustum()
-            return self.culling.query(frustum)
+            visible = self.culling.query(frustum)
+            logger.debug(f"[Scene] Visible nodes: {len(visible)}")
+            return visible
         except Exception as e:
             logger.error(f"[Scene] visible_nodes error: {e}")
             # В случае ошибки возвращаем все узлы
-            return list(self.traverse())
+            all_nodes = list(self.traverse())
+            logger.debug(f"[Scene] Fallback - returning all {len(all_nodes)} nodes")
+            return all_nodes
