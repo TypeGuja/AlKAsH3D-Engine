@@ -559,12 +559,13 @@ def create_texture_from_memory(
         data: Optional[bytes],
         w: int,
         h: int,
-        fmt: str = "rgba8",
+        fmt: str = "rgba8",  # Теперь принимает строку
 ) -> ctypes.c_void_p:
     if _create_texture_from_memory is None:
         logger.debug("[d3d12_wrapper] create_texture_from_memory not available")
         return ctypes.c_void_p(0)
 
+    # fmt - это строка, кодируем её в bytes для передачи в C
     fmt_bytes = ctypes.create_string_buffer(fmt.encode('utf-8'))
 
     data_ptr = 0
@@ -942,29 +943,35 @@ def set_descriptor_heaps(heaps: Sequence[Any]) -> bool:
     for h in heaps:
         if h is None:
             continue
-        if isinstance(h, ctypes.c_void_p):
-            val = h.value or 0
-        elif isinstance(h, int):
-            val = h
-        elif hasattr(h, "heap_ptr"):
-            hp = getattr(h, "heap_ptr")
-            val = hp.value if isinstance(hp, ctypes.c_void_p) else int(hp)
-        elif hasattr(h, "value"):
-            val = h.value or 0
-        else:
-            continue
 
-        if val != 0:
-            ptrs.append(ctypes.c_void_p(val))
+        # Преобразуем в c_void_p
+        if isinstance(h, int):
+            if h != 0:
+                ptrs.append(ctypes.c_void_p(h))
+        elif hasattr(h, 'value'):
+            if h.value != 0:
+                ptrs.append(ctypes.c_void_p(h.value))
+        elif isinstance(h, ctypes.c_void_p):
+            if h.value != 0:
+                ptrs.append(h)
+        else:
+            # Пробуем преобразовать в int
+            try:
+                val = int(h)
+                if val != 0:
+                    ptrs.append(ctypes.c_void_p(val))
+            except:
+                pass
 
     if not ptrs:
-        logger.debug("[d3d12_wrapper] No descriptor heaps to set")
+        logger.debug("[d3d12_wrapper] No valid descriptor heaps to set")
         return False
 
     try:
         arr = (ctypes.c_void_p * len(ptrs))(*ptrs)
-        debug_print(f"Setting {len(ptrs)} descriptor heaps")
-        return bool(_set_descriptor_heaps(ctypes.c_size_t(len(ptrs)), arr))
+        logger.debug(f"[d3d12_wrapper] Setting {len(ptrs)} descriptor heaps")
+        result = _set_descriptor_heaps(ctypes.c_size_t(len(ptrs)), arr)
+        return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_descriptor_heaps failed: {e}")
         return False
