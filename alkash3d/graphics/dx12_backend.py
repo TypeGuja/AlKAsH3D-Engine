@@ -11,7 +11,7 @@ import ctypes
 import os
 import time
 import traceback
-from typing import Any, Sequence, Tuple, Optional  # <-- Optional нужен
+from typing import Any, Sequence, Tuple, Optional
 
 from alkash3d.graphics.backend import GraphicsBackend
 from alkash3d.graphics.utils import d3d12_wrapper as dx
@@ -316,15 +316,10 @@ class DX12Backend(GraphicsBackend):
     # PSO
     # ------------------------------------------------------------------
     def create_graphics_ps(self, vs_blob: int, ps_blob: int) -> Optional[int]:
-        """Создаёт PSO из двух скомпилированных шейдер‑blob‑ов.
-
-        `vs_blob` и `ps_blob` – уже‑целочисленные дескрипторы,
-        `dx.create_graphics_ps` их сам преобразует.
-        """
+        """Создаёт PSO из двух скомпилированных шейдер‑blob‑ов."""
         if self._in_stub_mode or not vs_blob or not ps_blob:
             return None
 
-        # Передаём int‑значения напрямую – обёртка уже делает `_to_cvoid`.
         return dx.create_graphics_ps(self.device, vs_blob, ps_blob)
 
     def set_graphics_pipeline(self, pso: int) -> bool:
@@ -353,7 +348,6 @@ class DX12Backend(GraphicsBackend):
         if data and len(data) > 0:
             if not self.update_buffer(buf, data):
                 logger.error("[DX12Backend] Failed to update buffer data")
-                # Still return the buffer, but log error
 
         self._resources.append(buf)
         return buf
@@ -370,15 +364,6 @@ class DX12Backend(GraphicsBackend):
             logger.error("[DX12Backend] update_buffer: data is empty")
             return False
 
-        # Verify data is valid
-        try:
-            # Just check we can access the data
-            _ = len(data)
-            _ = data[0] if data else None
-        except Exception as e:
-            logger.error(f"[DX12Backend] update_buffer: invalid data: {e}")
-            return False
-
         return dx.update_subresource(buffer, data)
 
     def create_constant_buffer(self, data: bytes) -> Any:
@@ -386,13 +371,14 @@ class DX12Backend(GraphicsBackend):
         return self.create_buffer(data, usage="constant")
 
     # ------------------------------------------------------------------
-    # Текстуры
+    # Текстуры - ИСПРАВЛЕНО
     # ------------------------------------------------------------------
     def create_texture(self, data: Optional[bytes], w: int, h: int, fmt: str = "RGBA8") -> Optional[DX12Texture]:
         if self._in_stub_mode or not self.device:
             return DX12Texture(ctypes.c_void_p(0xDEADBEEF), w, h, fmt)
 
-        tex_ptr = dx.create_texture_from_memory(self.device, data, w, h, fmt.encode())
+        # fmt уже строка, передаем как есть
+        tex_ptr = dx.create_texture_from_memory(self.device, data, w, h, fmt)
         if not tex_ptr or not tex_ptr.value:
             logger.error("create_texture_from_memory returned NULL")
             return None
