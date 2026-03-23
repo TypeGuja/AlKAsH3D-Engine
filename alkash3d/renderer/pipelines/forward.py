@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Простой forward‑pipeline.
-ИСПРАВЛЕННАЯ ВЕРСИЯ с корректной обработкой текстур и отладкой
+ИСПРАВЛЕННАЯ ВЕРСИЯ с корректной установкой дескрипторных хипов
 """
 
 import numpy as np
@@ -42,17 +42,8 @@ class ForwardRenderer:
             traceback.print_exc()
             self.shader = None
 
-        # Белый 1×1‑placeholder‑текстура (используется, если у материала нет карт)
+        # Белый 1×1‑placeholder‑текстура
         self._create_white_placeholder()
-
-        # В D3D12 через SetDescriptorHeaps можно устанавливать только shader‑visible heaps
-        if hasattr(self.backend, "cbv_srv_uav_heap"):
-            try:
-                if self.backend.cbv_srv_uav_heap:
-                    logger.debug("[ForwardRenderer] Setting descriptor heaps")
-                    self.backend.set_descriptor_heaps([self.backend.cbv_srv_uav_heap])
-            except Exception as e:
-                logger.error(f"[ForwardRenderer] set_descriptor_heaps error: {e}")
 
         # Привязываем PSO сразу, если шейдер успешно скомпилировался
         if self.shader and hasattr(self.shader, "pso") and self.shader.pso:
@@ -64,16 +55,12 @@ class ForwardRenderer:
 
     # ------------------------------------------------------------------
     def _create_white_placeholder(self):
-        """
-        Создаёт 1×1‑белую текстуру и SRV.
-        """
+        """Создаёт 1×1‑белую текстуру и SRV."""
         try:
             logger.info("[ForwardRenderer] Creating white placeholder texture")
 
-            # Создаем 1x1 белый пиксель как bytes (RGBA)
-            white_pixel = b'\xff\xff\xff\xff'  # RGBA белый (255,255,255,255)
+            white_pixel = b'\xff\xff\xff\xff'
 
-            # Создаем текстуру
             self.white_tex = self.backend.create_texture(
                 data=white_pixel,
                 w=1,
@@ -81,12 +68,10 @@ class ForwardRenderer:
                 fmt="RGBA8"
             )
 
-            # Если текстура создалась успешно
             if self.white_tex and hasattr(self.white_tex, 'ptr') and self.white_tex.ptr:
                 ptr_val = self.white_tex.ptr.value if hasattr(self.white_tex.ptr, 'value') else int(self.white_tex.ptr)
                 logger.info(f"[ForwardRenderer] White texture created: {hex(ptr_val)}")
 
-                # SRV‑дескриптор
                 if hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
                     try:
                         idx = self.backend.cbv_srv_uav_heap.next_free()
@@ -100,8 +85,6 @@ class ForwardRenderer:
                             self.default_srv_gpu = 0
                     except Exception as e:
                         logger.error(f"[ForwardRenderer] SRV creation error: {e}")
-                        import traceback
-                        traceback.print_exc()
                         self.default_srv_gpu = 0
                 else:
                     logger.warning("[ForwardRenderer] No CBV/SRV/UAV heap available")
@@ -112,8 +95,6 @@ class ForwardRenderer:
 
         except Exception as e:
             logger.error(f"[ForwardRenderer] white placeholder error: {e}")
-            import traceback
-            traceback.print_exc()
             self.default_srv_gpu = 0
 
     # ------------------------------------------------------------------
@@ -127,6 +108,25 @@ class ForwardRenderer:
         """Главный цикл отрисовки."""
         try:
             logger.debug("[ForwardRenderer] render() called")
+
+            # ВАЖНО: Устанавливаем дескрипторные хипы ТОЛЬКО если они есть и валидны
+            if hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
+                try:
+                    # Получаем указатель на heap
+                    heap_ptr = self.backend.cbv_srv_uav_heap.heap_ptr
+                    if heap_ptr and hasattr(heap_ptr, 'value') and heap_ptr.value:
+                        # Передаем список с указателями
+                        result = self.backend.set_descriptor_heaps([heap_ptr.value])
+                        if result:
+                            logger.debug(f"[ForwardRenderer] Descriptor heap set successfully")
+                        else:
+                            logger.warning(f"[ForwardRenderer] Failed to set descriptor heap")
+                    else:
+                        logger.warning(f"[ForwardRenderer] Invalid heap pointer")
+                except Exception as e:
+                    logger.error(f"[ForwardRenderer] set_descriptor_heaps error: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             if not self.backend.begin_frame():
                 logger.error("[ForwardRenderer] begin_frame failed")
@@ -152,6 +152,8 @@ class ForwardRenderer:
                     self.backend.end_frame()
                     return
 
+                logger.debug(f"[ForwardRenderer] PSO set: {hex(self.shader.pso)}")
+
                 # ---- Камера ----
                 try:
                     aspect = self.window.width / max(self.window.height, 1.0)
@@ -176,34 +178,43 @@ class ForwardRenderer:
                         logger.debug(f"[ForwardRenderer] Node {node.name} not visible")
                         continue
 
-                    logger.debug(f"[ForwardRenderer] Drawing node: {node.name}")
+                    logger.info(f"[ForwardRenderer] Drawing node: {node.name}")
 
                     try:
                         model = node.get_world_matrix()
                         self.shader.set_uniform_mat4("uModel", model.to_gl())
+                        logger.debug(f"[ForwardRenderer] Model matrix set for {node.name}")
                     except Exception as e:
                         logger.error(f"[ForwardRenderer] model matrix error for {node.name}: {e}")
                         continue
 
                     # Привязываем материал (если есть)
+                    TEXTURE_ROOT_INDEX = 1  # Root index для текстур в шейдере
+
                     if hasattr(node, "material") and node.material:
                         try:
-                            logger.debug(f"[ForwardRenderer] Binding material for {node.name}")
-                            node.material.bind(self.backend)
+                            logger.info(f"[ForwardRenderer] Binding material for {node.name}")
+                            # Предполагаем, что material имеет метод bind
+                            if hasattr(node.material, 'bind'):
+                                node.material.bind(self.backend)
+                            else:
+                                logger.warning(f"[ForwardRenderer] Material has no bind method")
+                                if self.default_srv_gpu:
+                                    self.backend.set_root_descriptor_table(TEXTURE_ROOT_INDEX, self.default_srv_gpu)
                         except Exception as e:
                             logger.error(f"[ForwardRenderer] material bind error for {node.name}: {e}")
-                            # fallback – белый placeholder
                             if self.default_srv_gpu:
-                                logger.debug(
-                                    f"[ForwardRenderer] Using fallback texture, handle 0x{self.default_srv_gpu:X}")
-                                self.backend.set_root_descriptor_table(1, self.default_srv_gpu)
+                                logger.debug(f"[ForwardRenderer] Using fallback texture")
+                                self.backend.set_root_descriptor_table(TEXTURE_ROOT_INDEX, self.default_srv_gpu)
                     elif self.default_srv_gpu:
                         logger.debug(f"[ForwardRenderer] No material, using fallback texture")
-                        self.backend.set_root_descriptor_table(1, self.default_srv_gpu)
+                        self.backend.set_root_descriptor_table(TEXTURE_ROOT_INDEX, self.default_srv_gpu)
 
                     # Рисуем геометрию
+                    logger.info(f"[ForwardRenderer] Calling draw for {node.name}")
                     node.draw(self.backend)
                     rendered += 1
+                    logger.info(f"[ForwardRenderer] Draw completed for {node.name}")
 
                 logger.info(f"[ForwardRenderer] Rendered {rendered} drawable nodes")
             else:
