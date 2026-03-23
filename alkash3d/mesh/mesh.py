@@ -1,15 +1,15 @@
-# alkash3d/scene/mesh.py
+# alkash3d/mesh/mesh.py
 # -*- coding: utf-8 -*-
 """
-Mesh – геометрический объект сцены.
-ИСПРАВЛЕННАЯ ВЕРСИЯ с подробной отладкой
+Mesh – геометрический объект.
+ИСПРАВЛЕННАЯ ВЕРСИЯ с подробной отладкой и исправленными импортами
 """
 
 from __future__ import annotations
 import numpy as np
 import ctypes
 from alkash3d.scene.node import Node
-from alkash3d.utils.logger import logger
+from alkash3d.utils import logger
 
 
 class Mesh(Node):
@@ -43,18 +43,24 @@ class Mesh(Node):
         if texcoords is not None:
             self.texcoords = np.asarray(texcoords, dtype=np.float32)
 
-        # Ссылки на GPU‑буферы, которые создаются «лениво» при первом draw
-        self._vb = None  # vertex buffer (ctypes.c_void_p)
-        self._ib = None  # index buffer (ctypes.c_void_p) – может быть None
+        # Ссылки на GPU‑буферы
+        self._vb = None
+        self._ib = None
 
-        # Видимость – можно отключать объектом
+        # Видимость и материал
         self.visible = True
+        self.material = None
 
-        # Вычисляем bounding sphere для culling
+        # Вычисляем bounding sphere
         self._compute_bounding_sphere()
 
-        logger.info(
-            f"[Mesh] Created {name} with {len(self.vertices)} vertices, {len(self.indices) if self.indices is not None else 0} indices")
+        logger.info(f"[Mesh] Created {name}:")
+        logger.info(f"  - Vertices: {len(self.vertices)}")
+        logger.info(f"  - Indices: {len(self.indices) if self.indices is not None else 0}")
+        if len(self.vertices) > 0:
+            logger.info(f"  - First vertex: {self.vertices[0]}")
+        if self.indices is not None and len(self.indices) > 0:
+            logger.info(f"  - First indices: {self.indices[:6]}")
 
     def _compute_bounding_sphere(self):
         """Вычисляет сферу, охватывающую все вершины."""
@@ -63,81 +69,84 @@ class Mesh(Node):
             self._bounding_radius = 1.0
             return
 
-        # Центр = среднее всех вершин
         self._bounding_center = np.mean(self.vertices, axis=0)
-
-        # Радиус = максимальное расстояние от центра
         distances = np.linalg.norm(self.vertices - self._bounding_center, axis=1)
         self._bounding_radius = float(np.max(distances))
 
-        logger.debug(f"[Mesh] {self.name}: center={self._bounding_center}, radius={self._bounding_radius}")
-
     @property
     def bounding_sphere(self):
-        """Возвращает (центр, радиус) в локальных координатах."""
         return self._bounding_center, self._bounding_radius
 
-    # -----------------------------------------------------------------
-    # Простейший draw‑метод, совместимый с DX12Backend
+    @property
+    def vertex_count(self) -> int:
+        return len(self.vertices)
+
     # -----------------------------------------------------------------
     def draw(self, backend):
-        """
-        Создаёт (при первом вызове) vertex‑/index‑буферы,
-        привязывает их к командному списку и отрисовывает.
-        """
+        """Отрисовка меша."""
         if not self.visible:
             logger.debug(f"[Mesh] {self.name} not visible, skipping")
             return
 
-        logger.info(f"[Mesh] Drawing {self.name}")
+        logger.info(f"[Mesh] === Drawing {self.name} ===")
 
-        # 1️⃣ Сначала создаём буферы, если их ещё нет
+        # 1️⃣ Создаём vertex buffer
         if self._vb is None:
-            logger.info(f"[Mesh] Creating vertex buffer for {self.name}, size={len(self.vertices)} vertices")
-            # vertices → raw bytes, layout 3×float32 = 12 байт на вершину
+            logger.info(f"[Mesh] Creating vertex buffer for {self.name}")
             vertex_data = self.vertices.tobytes()
             logger.info(f"[Mesh] Vertex data size: {len(vertex_data)} bytes")
-            logger.info(f"[Mesh] First few vertices: {self.vertices[:3]}")
+            logger.info(f"[Mesh] Vertex layout: {self.vertices.shape}, dtype={self.vertices.dtype}")
 
             self._vb = backend.create_buffer(vertex_data, usage="vertex")
-            if self._vb and hasattr(self._vb, 'value') and self._vb.value:
+
+            if self._vb and hasattr(self._vb, 'value'):
                 logger.info(f"[Mesh] Vertex buffer created: {hex(self._vb.value)}")
             else:
-                logger.error(f"[Mesh] Failed to create vertex buffer for {self.name}")
+                logger.error(f"[Mesh] FAILED to create vertex buffer for {self.name}")
                 return
+        else:
+            logger.info(
+                f"[Mesh] Vertex buffer already exists: {hex(self._vb.value if hasattr(self._vb, 'value') else 0)}")
 
+        # 2️⃣ Создаём index buffer (если нужен)
         if self.indices is not None and self._ib is None:
-            logger.info(f"[Mesh] Creating index buffer for {self.name}, size={len(self.indices)} indices")
+            logger.info(f"[Mesh] Creating index buffer for {self.name}")
             index_data = self.indices.tobytes()
             logger.info(f"[Mesh] Index data size: {len(index_data)} bytes")
-            logger.info(f"[Mesh] First few indices: {self.indices[:6]}")
+            logger.info(f"[Mesh] First indices: {self.indices[:6]}")
 
             self._ib = backend.create_buffer(index_data, usage="index")
-            if self._ib and hasattr(self._ib, 'value') and self._ib.value:
+
+            if self._ib and hasattr(self._ib, 'value'):
                 logger.info(f"[Mesh] Index buffer created: {hex(self._ib.value)}")
             else:
-                logger.error(f"[Mesh] Failed to create index buffer for {self.name}")
+                logger.error(f"[Mesh] FAILED to create index buffer for {self.name}")
 
-        # 2️⃣ Привязываем буферы к пайплайну
+        # 3️⃣ Привязываем буферы
         if self._vb:
-            logger.info(f"[Mesh] Setting vertex buffers for {self.name}")
+            logger.info(f"[Mesh] Setting vertex buffers")
             backend.set_vertex_buffers(self._vb, self._ib)
 
-            # 3️⃣ Выполняем draw‑call
+            # 4️⃣ Выполняем draw call
             if self.indices is not None and self._ib:
-                # index‑based draw
-                logger.info(f"[Mesh] Drawing indexed: {len(self.indices)} indices")
-                backend.draw_indexed(len(self.indices),
-                                     start_index=0,
-                                     base_vertex=0,
-                                     instance_count=1)
-                logger.info(f"[Mesh] Indexed draw completed")
+                logger.info(f"[Mesh] Drawing INDEXED: {len(self.indices)} indices")
+                result = backend.draw_indexed(
+                    len(self.indices),
+                    start_index=0,
+                    base_vertex=0,
+                    instance_count=1
+                )
+                logger.info(f"[Mesh] Indexed draw result: {result}")
             else:
-                # простой non‑indexed draw
-                logger.info(f"[Mesh] Drawing non-indexed: {len(self.vertices)} vertices")
-                backend.draw(len(self.vertices),
-                             start_vertex=0,
-                             instance_count=1)
-                logger.info(f"[Mesh] Non-indexed draw completed")
+                logger.info(f"[Mesh] Drawing NON-INDEXED: {len(self.vertices)} vertices")
+                result = backend.draw(
+                    len(self.vertices),
+                    start_vertex=0,
+                    instance_count=1
+                )
+                logger.info(f"[Mesh] Non-indexed draw result: {result}")
         else:
             logger.error(f"[Mesh] No vertex buffer for {self.name}")
+
+    def get_world_matrix(self):
+        return super().get_world_matrix()
