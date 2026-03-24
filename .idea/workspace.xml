@@ -42,12 +42,8 @@
     <list default="true" id="ef9bb2be-dc37-40fd-9b98-968926a06cfa" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/.rustc_info.json" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/.rustc_info.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/graphics/dx12_backend.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/graphics/dx12_backend.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/graphics/utils/d3d12_wrapper.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/graphics/utils/d3d12_wrapper.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/mesh/mesh.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/mesh/mesh.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/alkash3d/renderer/pipelines/forward.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/renderer/pipelines/forward.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/scene/mesh.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/mesh.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/scene/scene.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/scene/scene.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/examples/simple_game.py" beforeDir="false" afterPath="$PROJECT_DIR$/examples/simple_game.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -436,6 +432,8 @@
       <workItem from="1774194743767" duration="427000" />
       <workItem from="1774195218373" duration="10000" />
       <workItem from="1774197807174" duration="12000" />
+      <workItem from="1774283663000" duration="78000" />
+      <workItem from="1774290938291" duration="5000" />
     </task>
     <servers />
   </component>
