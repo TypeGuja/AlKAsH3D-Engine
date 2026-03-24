@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Простой forward‑pipeline.
-ИСПРАВЛЕННАЯ ВЕРСИЯ с корректной установкой дескрипторных хипов
+ИСПРАВЛЕННАЯ ВЕРСИЯ с принудительным красным фоном для теста
 """
 
 import numpy as np
@@ -107,41 +107,44 @@ class ForwardRenderer:
     def render(self, scene, camera):
         """Главный цикл отрисовки."""
         try:
-            logger.debug("[ForwardRenderer] render() called")
+            logger.info("=" * 60)
+            logger.info("[ForwardRenderer] render() called")
+            logger.info(f"[ForwardRenderer] Camera position: {camera.position}")
+            logger.info(f"[ForwardRenderer] Camera forward: {camera.forward}")
+            logger.info("=" * 60)
 
-            # ВАЖНО: Устанавливаем дескрипторные хипы ТОЛЬКО если они есть и валидны
+            # Устанавливаем дескрипторные хипы
             if hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
                 try:
-                    # Получаем указатель на heap
                     heap_ptr = self.backend.cbv_srv_uav_heap.heap_ptr
                     if heap_ptr and hasattr(heap_ptr, 'value') and heap_ptr.value:
-                        # Передаем список с указателями
                         result = self.backend.set_descriptor_heaps([heap_ptr.value])
                         if result:
                             logger.debug(f"[ForwardRenderer] Descriptor heap set successfully")
                         else:
                             logger.warning(f"[ForwardRenderer] Failed to set descriptor heap")
-                    else:
-                        logger.warning(f"[ForwardRenderer] Invalid heap pointer")
                 except Exception as e:
                     logger.error(f"[ForwardRenderer] set_descriptor_heaps error: {e}")
-                    import traceback
-                    traceback.print_exc()
 
             if not self.backend.begin_frame():
                 logger.error("[ForwardRenderer] begin_frame failed")
                 return
 
-            # ---- Выбираем back‑buffer RTV (если есть) ----
+            # ---- Выбираем back‑buffer RTV и очищаем его ЯРКИМ КРАСНЫМ ЦВЕТОМ ----
             if (hasattr(self.backend, "rtv_heap")
                     and self.backend.rtv_heap
                     and self.backend.rtv_heap.num_descriptors > 0):
                 try:
                     frame_idx = self.backend.get_frame_index() % dx.SWAP_CHAIN_BUFFER_COUNT
                     back_rtv = self.backend.rtv_heap.get_cpu_handle(frame_idx)
-                    logger.debug(f"[ForwardRenderer] Setting RTV at frame {frame_idx}, handle 0x{back_rtv:X}")
+                    logger.info(f"[ForwardRenderer] Setting RTV at frame {frame_idx}, handle 0x{back_rtv:X}")
                     self.backend.set_render_target(back_rtv)
-                    self.backend.clear_render_target(back_rtv, (0.1, 0.1, 0.2, 1.0))
+                    # Очищаем ЯРКО-КРАСНЫМ цветом для проверки видимости
+                    self.backend.clear_render_target(back_rtv, (1.0, 0.0, 0.0, 1.0))
+                    logger.info("=" * 60)
+                    logger.info("[ForwardRenderer] !!! SCREEN CLEARED TO RED !!!")
+                    logger.info("[ForwardRenderer] If you see RED screen, rendering works!")
+                    logger.info("=" * 60)
                 except Exception as e:
                     logger.error(f"[ForwardRenderer] clear/render_target error: {e}")
 
@@ -152,7 +155,7 @@ class ForwardRenderer:
                     self.backend.end_frame()
                     return
 
-                logger.debug(f"[ForwardRenderer] PSO set: {hex(self.shader.pso)}")
+                logger.info(f"[ForwardRenderer] PSO set: {hex(self.shader.pso)}")
 
                 # ---- Камера ----
                 try:
@@ -161,7 +164,7 @@ class ForwardRenderer:
                     proj = camera.get_projection_matrix(aspect)
                     self.shader.set_uniform_mat4("uView", view)
                     self.shader.set_uniform_mat4("uProj", proj)
-                    logger.debug("[ForwardRenderer] Camera uniforms set")
+                    logger.info("[ForwardRenderer] Camera uniforms set")
                 except Exception as e:
                     logger.error(f"[ForwardRenderer] camera uniform error: {e}")
 
@@ -178,37 +181,30 @@ class ForwardRenderer:
                         logger.debug(f"[ForwardRenderer] Node {node.name} not visible")
                         continue
 
-                    logger.info(f"[ForwardRenderer] Drawing node: {node.name}")
+                    logger.info(f"[ForwardRenderer] ===== Drawing node: {node.name} =====")
+
+                    # Выводим информацию о позиции узла
+                    if hasattr(node, "position"):
+                        logger.info(f"[ForwardRenderer] Node position: {node.position}")
+                    if hasattr(node, "rotation"):
+                        logger.info(f"[ForwardRenderer] Node rotation: {node.rotation}")
 
                     try:
                         model = node.get_world_matrix()
                         self.shader.set_uniform_mat4("uModel", model.to_gl())
-                        logger.debug(f"[ForwardRenderer] Model matrix set for {node.name}")
+                        logger.info(f"[ForwardRenderer] Model matrix set")
                     except Exception as e:
                         logger.error(f"[ForwardRenderer] model matrix error for {node.name}: {e}")
                         continue
 
-                    # Привязываем материал (если есть)
-                    TEXTURE_ROOT_INDEX = 1  # Root index для текстур в шейдере
+                    # Привязываем материал (используем белую текстуру-заглушку)
+                    TEXTURE_ROOT_INDEX = 1
 
-                    if hasattr(node, "material") and node.material:
-                        try:
-                            logger.info(f"[ForwardRenderer] Binding material for {node.name}")
-                            # Предполагаем, что material имеет метод bind
-                            if hasattr(node.material, 'bind'):
-                                node.material.bind(self.backend)
-                            else:
-                                logger.warning(f"[ForwardRenderer] Material has no bind method")
-                                if self.default_srv_gpu:
-                                    self.backend.set_root_descriptor_table(TEXTURE_ROOT_INDEX, self.default_srv_gpu)
-                        except Exception as e:
-                            logger.error(f"[ForwardRenderer] material bind error for {node.name}: {e}")
-                            if self.default_srv_gpu:
-                                logger.debug(f"[ForwardRenderer] Using fallback texture")
-                                self.backend.set_root_descriptor_table(TEXTURE_ROOT_INDEX, self.default_srv_gpu)
-                    elif self.default_srv_gpu:
-                        logger.debug(f"[ForwardRenderer] No material, using fallback texture")
+                    if self.default_srv_gpu:
+                        logger.info(f"[ForwardRenderer] Using white placeholder texture")
                         self.backend.set_root_descriptor_table(TEXTURE_ROOT_INDEX, self.default_srv_gpu)
+                    else:
+                        logger.warning(f"[ForwardRenderer] No texture available")
 
                     # Рисуем геометрию
                     logger.info(f"[ForwardRenderer] Calling draw for {node.name}")
