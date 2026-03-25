@@ -51,27 +51,20 @@ class Mesh(Node):
         self._bounding_center = verts.mean(axis=0).astype(np.float32)
         self._bounding_radius = float(np.linalg.norm(verts - self._bounding_center, axis=1).max())
 
-        logger.debug(
+        logger.info(
             f"[Mesh] Created {name} with {self.vertex_count} vertices, indices: {len(self.indices) if self.indices is not None else 0}")
 
-    # -----------------------------------------------------------------
-    # Properties для bounding sphere
-    # -----------------------------------------------------------------
-    @property
-    def bounding_sphere(self):
-        """Возвращает (центр, радиус) для culling."""
-        return self._bounding_center, self._bounding_radius
-
-    # -----------------------------------------------------------------
-    # Compatibility API
     # -----------------------------------------------------------------
     @property
     def vertex_count(self) -> int:
         """Return number of vertices (or number of indices if an index buffer is used)."""
         return self.index_count
 
-    # -----------------------------------------------------------------
-    # Draw method
+    @property
+    def bounding_sphere(self):
+        """Возвращает (центр, радиус) для culling."""
+        return self._bounding_center, self._bounding_radius
+
     # -----------------------------------------------------------------
     def draw(self, backend):
         """
@@ -80,37 +73,26 @@ class Mesh(Node):
         """
         logger.debug(f"[Mesh] Drawing {self.name}, vertices: {self.vertex_count}")
 
-        # 1️⃣ Сначала создаём буферы, если их ещё нет
+        # 1️⃣ Создаём буферы, если их ещё нет
         if self._vb is None:
-            # vertices → raw bytes, layout 3×float32 = 12 байт
-            logger.debug(f"[Mesh] Creating vertex buffer for {self.name}")
             vertex_data = self.vertices.tobytes()
-            logger.debug(f"[Mesh] Vertex data size: {len(vertex_data)} bytes")
+            logger.debug(f"[Mesh] Creating vertex buffer, size: {len(vertex_data)} bytes")
             self._vb = backend.create_buffer(vertex_data, usage="vertex")
-            if self._vb:
-                logger.debug(
-                    f"[Mesh] Vertex buffer created: {hex(self._vb.value if hasattr(self._vb, 'value') else int(self._vb))}")
+            if not self._vb or not self._vb.value:
+                raise RuntimeError(f"Failed to create vertex buffer for {self.name}")
 
         if self.indices is not None and self._ib is None:
-            logger.debug(f"[Mesh] Creating index buffer for {self.name}")
             index_data = self.indices.tobytes()
-            logger.debug(f"[Mesh] Index data size: {len(index_data)} bytes")
+            logger.debug(f"[Mesh] Creating index buffer, size: {len(index_data)} bytes")
             self._ib = backend.create_buffer(index_data, usage="index")
-            if self._ib:
-                logger.debug(
-                    f"[Mesh] Index buffer created: {hex(self._ib.value if hasattr(self._ib, 'value') else int(self._ib))}")
+            if not self._ib or not self._ib.value:
+                raise RuntimeError(f"Failed to create index buffer for {self.name}")
 
-        # 2️⃣ Привязываем буферы к пайплайну
-        if self._vb:
-            logger.debug(f"[Mesh] Setting vertex buffers for {self.name}")
-            backend.set_vertex_buffers(self._vb, self._ib)
-        else:
-            logger.error(f"[Mesh] No vertex buffer for {self.name}")
-            return
+        # 2️⃣ Привязываем буферы
+        backend.set_vertex_buffers(self._vb, self._ib)
 
         # 3️⃣ Выполняем draw‑call
         if self.indices is not None:
-            # index‑based draw
             logger.debug(f"[Mesh] Drawing indexed: {len(self.indices)} indices")
             backend.draw_indexed(
                 index_count=len(self.indices),
@@ -119,7 +101,6 @@ class Mesh(Node):
                 instance_count=1
             )
         else:
-            # простой non‑indexed draw
             vertex_count = len(self.vertices) if self.vertices.ndim == 1 else self.vertices.shape[0]
             logger.debug(f"[Mesh] Drawing non-indexed: {vertex_count} vertices")
             backend.draw(
