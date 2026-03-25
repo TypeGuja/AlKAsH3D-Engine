@@ -1462,6 +1462,7 @@ pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
     }
 }
 
+// В функции GetGPUDescriptorHandleForHeapStart, убрать блок с вычислением:
 #[no_mangle]
 pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u64 {
     if heap_ptr.is_null() {
@@ -1469,21 +1470,6 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
     }
 
     unsafe {
-        use lazy_static::lazy_static;
-        use std::collections::HashMap;
-        use std::sync::Mutex;
-
-        lazy_static! {
-            static ref GPU_HANDLE_CACHE: Mutex<HashMap<usize, u64>> = Mutex::new(HashMap::new());
-        }
-
-        let heap_addr = heap_ptr as usize;
-
-        // Сначала проверяем кэш
-        if let Some(&cached) = GPU_HANDLE_CACHE.lock().unwrap().get(&heap_addr) {
-            return cached;
-        }
-
         let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
         let desc = heap.GetDesc();
 
@@ -1493,64 +1479,17 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
             return 0;
         }
 
-        // Пытаемся получить GPU handle
+        // Возвращаем то, что даёт драйвер, даже если это 0x15678A00110000
         let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
         let gpu_ptr = gpu_handle.ptr as u64;
 
-        // Проверяем на известные битые паттерны
-        if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0x25678A00120000 || gpu_ptr == 0 {
-            eprintln!("[GetGPUDescriptorHandleForHeapStart] Driver bug detected for heap 0x{:X}", heap_addr);
-
-            // Получаем CPU handle для вычисления правильного значения
-            let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
-            let cpu_ptr = cpu_handle.ptr as u64;
-
-            // Вычисляем правильный GPU handle
-            // На всех современных драйверах GPU handle = CPU handle + смещение
-            // Смещение обычно равно размеру descriptor heap или 0x10000
-            let device: ID3D12Device = match heap.cast() {
-                Ok(d) => d,
-                Err(_) => {
-                    // Если не можем получить device, используем стандартное смещение
-                    let computed = cpu_ptr + 0x10000;
-                    GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, computed);
-                    std::mem::forget(heap);
-                    return computed;
-                }
-            };
-
-            let increment = device.GetDescriptorHandleIncrementSize(desc.Type) as u64;
-            let heap_size = increment * desc.NumDescriptors as u64;
-
-            // Пробуем разные смещения
-            let candidates = [
-                cpu_ptr + heap_size,           // Сразу за кучей
-                cpu_ptr + 0x10000,              // Стандартное смещение
-                cpu_ptr + 0x20000,               // Альтернативное
-                cpu_ptr,                          // Худший случай - CPU handle
-            ];
-
-            for &candidate in &candidates {
-                // Проверяем, что кандидат выровнен правильно
-                if candidate % increment == 0 && candidate > cpu_ptr {
-                    eprintln!("[GetGPUDescriptorHandleForHeapStart] Using candidate: 0x{:X}", candidate);
-                    GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, candidate);
-                    std::mem::forget(heap);
-                    return candidate;
-                }
-            }
-
-            // Если ничего не подошло, используем стандартное смещение
-            let fallback = cpu_ptr + 0x10000;
-            eprintln!("[GetGPUDescriptorHandleForHeapStart] Using fallback: 0x{:X}", fallback);
-            GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, fallback);
-            std::mem::forget(heap);
-            return fallback;
-        }
-
-        // GPU handle валидный - кэшируем и возвращаем
-        GPU_HANDLE_CACHE.lock().unwrap().insert(heap_addr, gpu_ptr);
         std::mem::forget(heap);
+
+        // НЕ исправляем, возвращаем как есть
+        // if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0x25678A00120000 || gpu_ptr == 0 {
+        //     // ... вычисления ...
+        // }
+
         gpu_ptr
     }
 }
@@ -2193,24 +2132,21 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
         return false;
     }
 
-    // Проверяем на специфические битые значения
-    if gpu_handle == 0x15678A00110000 {
-        eprintln!("ERROR: Detected broken GPU handle 0x15678A00110000");
-        eprintln!("This handle is from a non-shader-visible heap!");
-        eprintln!("Please use shader-visible heap (heap_type=2, shader_visible=true)");
-        return false;
-    }
+    // УБИРАЕМ ВСЕ ПРОВЕРКИ на битые handle - доверяем драйверу
+    // if gpu_handle == 0x15678A00110000 {
+    //     eprintln!("ERROR: Detected broken GPU handle...");
+    //     return false;
+    // }
 
-    // Validate handle range
-    if gpu_handle < 0x10000 {
-        eprintln!("ERROR: gpu_handle too small: 0x{:X}", gpu_handle);
-        return false;
-    }
+    // if gpu_handle < 0x10000 {
+    //     eprintln!("ERROR: gpu_handle too small");
+    //     return false;
+    // }
 
-    if gpu_handle > 0x7FFFFFFFFFFF {
-        eprintln!("ERROR: gpu_handle too large: 0x{:X}", gpu_handle);
-        return false;
-    }
+    // if gpu_handle > 0x7FFFFFFFFFFF {
+    //     eprintln!("ERROR: gpu_handle too large");
+    //     return false;
+    // }
 
     let state = match STATE.lock() {
         Ok(s) => s,
@@ -2228,12 +2164,6 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
 
         let handle = D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu_handle };
         eprintln!("  Calling SetGraphicsRootDescriptorTable with handle=0x{:X}", handle.ptr);
-
-        // Проверяем выравнивание
-        let increment = state.cbv_srv_uav_descriptor_size as u64;
-        if increment > 0 && (handle.ptr % increment) != 0 {
-            eprintln!("WARNING: Handle not aligned to {} bytes", increment);
-        }
 
         list.SetGraphicsRootDescriptorTable(root_index, handle);
         eprintln!("  SUCCESS");
