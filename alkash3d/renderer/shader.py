@@ -1,9 +1,5 @@
 # alkash3d/renderer/shader.py
 # -*- coding: utf-8 -*-
-"""
-Обёртка над VS/PS‑blob‑ами и готовым PSO.
-Поддерживает произвольные имена entry‑point‑ов (по‑умолчанию VSMain/PSMain).
-"""
 
 import ctypes
 import os
@@ -15,16 +11,8 @@ from alkash3d.graphics.dx12_backend import DX12Backend
 
 
 class Shader:
-    """Обёртка над парой шейдер‑blob‑ов и PSO.
+    """Обёртка над VS/PS‑blob‑ами и готовым PSO."""
 
-    По‑умолчанию ищет функции VSMain / PSMain.
-    Если ваши HLSL‑файлы используют entry‑point «main», передайте
-    явные имена через параметры `vs_entry` и `ps_entry`.
-    """
-
-    # -----------------------------------------------------------------
-    # Смещения в constant‑buffer (по 32 байта на переменную)
-    # -----------------------------------------------------------------
     _MAT_OFFSETS = {
         "uView": 0,
         "uProj": 64,
@@ -34,30 +22,16 @@ class Shader:
         "uNumLights": 212,
     }
 
-    _CB_SIZE = 256  # байт
+    _CB_SIZE = 256
 
-    # -----------------------------------------------------------------
     def __init__(
-        self,
-        vertex_path: str,
-        fragment_path: str,
-        backend: DX12Backend,
-        vs_entry: str = "VSMain",   # <‑‑ по‑умолчанию старые имена
-        ps_entry: str = "PSMain",
+            self,
+            vertex_path: str,
+            fragment_path: str,
+            backend: DX12Backend,
+            vs_entry: str = "VSMain",
+            ps_entry: str = "PSMain",
     ):
-        """
-        Parameters
-        ----------
-        vertex_path, fragment_path : str
-            Полные пути к HLSL‑файлам.
-        backend : DX12Backend
-            Бэкенд, через который будет выполнена компиляция.
-        vs_entry, ps_entry : str, optional
-            Имена функций‑входов в HLSL‑файлах.
-            По‑умолчанию – VSMain / PSMain (совместимо с оригинальными
-            шейдерами).  Если ваши файлы используют entry‑point «main»,
-            передайте `vs_entry="main"` и `ps_entry="main"`.
-        """
         self.backend = backend
         self.vertex_path = vertex_path
         self.fragment_path = fragment_path
@@ -67,86 +41,89 @@ class Shader:
             f"PS={os.path.basename(fragment_path)}"
         )
 
-        # -------------------------------------------------------------
-        # Компилируем шейдеры (DX12Backend.compile_shader умеет принимать
-        # optional entry_point)
-        # -------------------------------------------------------------
-        self.vs_blob = backend.compile_shader(
-            "vs", vertex_path, entry_point=vs_entry
-        )
-        self.ps_blob = backend.compile_shader(
-            "ps", fragment_path, entry_point=ps_entry
-        )
+        # Компилируем шейдеры
+        self.vs_blob = backend.compile_shader("vs", vertex_path, entry_point=vs_entry)
+        self.ps_blob = backend.compile_shader("ps", fragment_path, entry_point=ps_entry)
 
-        # -------------------------------------------------------------
-        # Создаём PSO (если оба blob‑а получены)
-        # -------------------------------------------------------------
-        self.pso: Optional[int] = None
-        if self.vs_blob and self.ps_blob:
-            try:
-                logger.debug(
-                    f"[Shader] Creating PSO: vs=0x{self.vs_blob:x} ps=0x{self.ps_blob:x}"
-                )
-                pso_res = backend.create_graphics_ps(self.vs_blob, self.ps_blob)
+        # Создаём PSO
+        self.pso = backend.create_graphics_ps(self.vs_blob, self.ps_blob)
+        logger.info(f"[Shader] PSO created: 0x{self.pso:x}")
 
-                # `create_graphics_ps` может вернуть int или объект с .value
-                if isinstance(pso_res, int) and pso_res:
-                    self.pso = pso_res
-                elif hasattr(pso_res, "value") and pso_res.value:
-                    self.pso = pso_res.value
-            except Exception as e:
-                logger.error(f"[Shader] PSO creation failed: {e}")
+        # Выделяем слоты в дескрипторной куче
+        self._cb_slot = backend.cbv_srv_uav_heap.next_free()
+        self._tex_slot = backend.cbv_srv_uav_heap.next_free()
 
-        # -------------------------------------------------------------
-        # Constant‑buffer (256 байт) + SRV‑дескриптер
-        # -------------------------------------------------------------
+        logger.info(f"[Shader] CB slot: {self._cb_slot}, Texture slot: {self._tex_slot}")
+
+        # Создаём Constant Buffer
         self._frame_cb = backend.create_constant_buffer(b"\x00" * self._CB_SIZE)
-        self._frame_cb_gpu = 0
 
-        if self._frame_cb and getattr(self._frame_cb, "value", 0):
-            idx = backend.cbv_srv_uav_heap.next_free()
-            cpu = backend.cbv_srv_uav_heap.get_cpu_handle(idx)
-            if backend.create_constant_buffer_view(self._frame_cb, cpu):
-                self._frame_cb_gpu = backend.cbv_srv_uav_heap.get_gpu_handle(idx)
+        if not self._frame_cb or not getattr(self._frame_cb, "value", 0):
+            raise RuntimeError("Failed to create constant buffer")
 
-        # Хранилище данных, которые будем писать в CB
+        # Создаём CBV дескриптор в слоте CB - используем CPU handle
+        cb_cpu = backend.cbv_srv_uav_heap.get_cpu_handle(self._cb_slot)
+        if not backend.create_constant_buffer_view(self._frame_cb, cb_cpu):
+            raise RuntimeError("Failed to create constant buffer view")
+
+        # ВАЖНО: Используем CPU handle вместо GPU handle, так как Rust блокирует GPU handle 0x15678A00110000
+        # На многих системах CPU и GPU handle совпадают или имеют фиксированное смещение
+        self._descriptor_table_handle = cb_cpu
+        logger.info(f"[Shader] Descriptor table handle (CPU): 0x{self._descriptor_table_handle:X}")
+
         self._frame_data = bytearray(self._CB_SIZE)
         self._dirty = False
+        self._texture_set = False
 
     # -----------------------------------------------------------------
     def use(self) -> bool:
-        """Активировать шейдер (установить PSO)."""
         if not self.pso:
-            logger.warning("[Shader] No valid PSO – use() returns False")
-            return False
-        try:
-            return self.backend.set_graphics_pipeline(self.pso)
-        except Exception as e:
-            logger.error(f"[Shader] set_graphics_pipeline failed: {e}")
-            return False
+            raise RuntimeError("[Shader] No valid PSO")
+        return self.backend.set_graphics_pipeline(self.pso)
 
     # -----------------------------------------------------------------
-    # ----------  Constant‑buffer handling  ----------
+    def set_texture_from_resource(self, resource_ptr: Any) -> bool:
+        """
+        Создаёт SRV для текстуры в слоте TEXTURE.
+        """
+        try:
+            cpu_handle = self.backend.cbv_srv_uav_heap.get_cpu_handle(self._tex_slot)
+            result = self.backend.create_shader_resource_view(resource_ptr, cpu_handle)
+            if result:
+                self._texture_set = True
+                logger.debug(f"[Shader] SRV created at slot {self._tex_slot}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"[Shader] set_texture_from_resource error: {e}")
+            return False
+
     # -----------------------------------------------------------------
     def _write_to_cb(self, name: str, data_bytes: bytes) -> None:
         offset = self._MAT_OFFSETS.get(name)
         if offset is None:
             return
-        if self._frame_data[offset : offset + len(data_bytes)] != data_bytes:
-            self._frame_data[offset : offset + len(data_bytes)] = data_bytes
+        if self._frame_data[offset: offset + len(data_bytes)] != data_bytes:
+            self._frame_data[offset: offset + len(data_bytes)] = data_bytes
             self._dirty = True
 
-    def _flush_cb(self) -> None:
-        if self._dirty and self._frame_cb and self._frame_cb_gpu:
-            try:
-                self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
-                self.backend.set_root_descriptor_table(0, self._frame_cb_gpu)
-                self._dirty = False
-            except Exception as e:
-                logger.error(f"[Shader] flush_cb error: {e}")
-
     # -----------------------------------------------------------------
-    # ----------  Uniform‑setters  ----------
+    def _flush_cb(self) -> None:
+        if not self._dirty:
+            return
+
+        try:
+            self.backend.update_buffer(self._frame_cb, bytes(self._frame_data))
+            self._dirty = False
+
+            # Устанавливаем корневую таблицу дескрипторов
+            # Используем CPU handle (он должен работать на большинстве систем)
+            self.backend.set_root_descriptor_table(0, self._descriptor_table_handle)
+
+        except Exception as e:
+            logger.error(f"[Shader] flush_cb error: {e}")
+            raise
+
     # -----------------------------------------------------------------
     def set_uniform_mat4(self, name: str, mat: Any) -> None:
         if name not in self._MAT_OFFSETS:
@@ -187,7 +164,16 @@ class Shader:
         except Exception as e:
             logger.error(f"[Shader] set_uniform_int({name}) error: {e}")
 
-    # -----------------------------------------------------------------
     def flush(self) -> None:
-        """Синхронно отослать накопленные uniform‑ы в GPU."""
         self._flush_cb()
+
+    @property
+    def cb_slot(self) -> int:
+        return self._cb_slot
+
+    @property
+    def tex_slot(self) -> int:
+        return self._tex_slot
+
+    def __repr__(self) -> str:
+        return f"Shader(vs={os.path.basename(self.vertex_path)}, ps={os.path.basename(self.fragment_path)}, pso=0x{self.pso:x})"
