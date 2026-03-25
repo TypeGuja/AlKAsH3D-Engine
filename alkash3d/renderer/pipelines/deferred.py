@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from alkash3d.renderer.base_renderer import BaseRenderer
 from alkash3d.renderer.shader import Shader
-from alkash3d.utils import logger, gl_check_error
+from alkash3d.utils import logger
 from alkash3d.scene.light import DirectionalLight, PointLight, SpotLight
 from alkash3d.scene.mesh import Mesh
 from alkash3d.culling.bvh import BVH
@@ -12,15 +12,12 @@ from alkash3d.graphics import select_backend
 
 MAX_LIGHTS = 256
 
-# -------------------------------------------------------------
-# Корневой каталог проекта → resources/shaders
-# -------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[3]   # …/AlKAsH3D-Engine
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SHADER_DIR = PROJECT_ROOT / "resources" / "shaders"
 
 
 class DeferredRenderer(BaseRenderer):
-    """Deferred‑renderer с PBR‑G‑buffer и простым кластер‑lighting."""
+    """Deferred‑renderer с PBR‑G‑buffer и кластер‑lighting."""
 
     def __init__(self, window, backend=None):
         self.window = window
@@ -46,7 +43,7 @@ class DeferredRenderer(BaseRenderer):
         self._setup_quad()
         self._setup_state()
 
-        self.bvh = BVH()  # ускоритель (заглушка)
+        self.bvh = BVH()
 
     # -----------------------------------------------------------------
     def _setup_gbuffer(self):
@@ -62,20 +59,20 @@ class DeferredRenderer(BaseRenderer):
 
         for i, (name, fmt) in enumerate(fmt_map.items()):
             tex = self.backend.create_texture(
-                data=b"", w=self.width, h=self.height, fmt=fmt,
+                data=None, w=self.width, h=self.height, fmt=fmt,
             )
             self.gbuffer_textures[name] = tex
-            # создаём RTV‑дескриптор в rtv‑heap
+
+            # Создаём RTV‑дескриптор
             rtv_idx = self.backend.rtv_heap.next_free()
             rtv_handle = self.backend.rtv_heap.get_cpu_handle(rtv_idx)
             self.backend.create_render_target_view(tex, rtv_handle)
             self.rtv_handles.append(rtv_handle)
 
-        # depth‑buffer (можно добавить отдельный DSV, но пока упрощаем)
+        # depth‑buffer
         self.depth_tex = self.backend.create_texture(
-            data=b"", w=self.width, h=self.height, fmt="D24_UNORM_S8_UINT"
+            data=None, w=self.width, h=self.height, fmt="D24_UNORM_S8_UINT"
         )
-        # DSV‑дескриптор (необязательно в упрощённой реализации)
 
     # -----------------------------------------------------------------
     def _setup_quad(self):
@@ -83,8 +80,8 @@ class DeferredRenderer(BaseRenderer):
         verts = np.array(
             [
                 -1.0, -1.0,
-                 3.0, -1.0,
-                -1.0,  3.0,
+                3.0, -1.0,
+                -1.0, 3.0,
             ],
             dtype=np.float32,
         )
@@ -98,24 +95,21 @@ class DeferredRenderer(BaseRenderer):
     # -----------------------------------------------------------------
     def resize(self, w: int, h: int) -> None:
         self.width, self.height = w, h
-        self._setup_gbuffer()    # recreate textures
-        self._setup_quad()
+        self._setup_gbuffer()
 
     # -----------------------------------------------------------------
     def render(self, scene, camera):
-        # -------------------------------------------------------------
         # 1️⃣ Geometry‑pass → G‑buffer
-        # -------------------------------------------------------------
         self.backend.begin_frame()
 
-        # привязываем все 4 RTV
+        # Привязываем все 4 RTV
         self.backend.set_render_targets(self.rtv_handles)
 
         self.geom_shader.use()
         self.geom_shader.set_uniform_mat4("uView", camera.get_view_matrix())
         self.geom_shader.set_uniform_mat4("uProj", camera.get_projection_matrix(self.width / self.height))
 
-        # culling (упрощённый)
+        # Culling
         cam_pos = camera.position.as_np()
         for node in scene.visible_nodes(camera):
             if not hasattr(node, "draw"):
@@ -136,10 +130,7 @@ class DeferredRenderer(BaseRenderer):
 
             node.draw(self.backend)
 
-        # -------------------------------------------------------------
         # 2️⃣ Lighting‑pass (fullscreen)
-        # -------------------------------------------------------------
-        # Пишем результат сразу в back‑buffer (swap‑chain RTV0)
         back_rtv = self.backend.rtv_heap.get_cpu_handle(0)
         self.backend.set_render_target(back_rtv)
         self.backend.clear_render_target(back_rtv, (0.07, 0.07, 0.08, 1.0))
@@ -147,11 +138,16 @@ class DeferredRenderer(BaseRenderer):
         self.light_shader.use()
         self.light_shader.set_uniform_vec3("uCamPos", camera.position)
 
-        # bind G‑buffer textures (SRV) – каждый SRV уже находится в cbv_srv_uav‑heap
-        for i, name in enumerate(self.gbuffer_textures):
-            tex = self.gbuffer_textures[name]
-            gpu_handle = self.backend.cbv_srv_uav_heap.get_gpu_handle(i)
-            self.backend.set_root_descriptor_table(i, gpu_handle)
+        # bind G‑buffer textures (SRV)
+        for i, (name, tex) in enumerate(self.gbuffer_textures.items()):
+            # Создаём SRV для текстуры, если ещё не создан
+            if not hasattr(tex, '_srv_gpu') or not tex._srv_gpu:
+                idx = self.backend.cbv_srv_uav_heap.next_free()
+                cpu = self.backend.cbv_srv_uav_heap.get_cpu_handle(idx)
+                self.backend.create_shader_resource_view(tex, cpu)
+                tex._srv_gpu = self.backend.cbv_srv_uav_heap.get_gpu_handle(idx)
+
+            self.backend.set_root_descriptor_table(i, tex._srv_gpu)
 
         # bind lights
         lights = [
@@ -178,7 +174,6 @@ class DeferredRenderer(BaseRenderer):
 
         # draw fullscreen triangle (lighting)
         self.backend.set_vertex_buffers(self.quad_vb)
-        self.backend.draw(3)  # 3‑вершинный triangle
+        self.backend.draw(3)
 
         self.backend.end_frame()
-        gl_check_error("[DeferredRenderer] render")
