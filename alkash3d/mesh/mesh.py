@@ -108,7 +108,7 @@ class Mesh(Node):
             logger.info(
                 f"[Mesh] Vertex buffer already exists: {hex(self._vb.value if hasattr(self._vb, 'value') else 0)}")
 
-        # 2️⃣ Создаём index buffer (если нужен)
+        # 2️⃣ Создаём index buffer (если нужен) - отдельный буфер!
         if self.indices is not None and self._ib is None:
             logger.info(f"[Mesh] Creating index buffer for {self.name}")
             index_data = self.indices.tobytes()
@@ -124,8 +124,17 @@ class Mesh(Node):
 
         # 3️⃣ Привязываем буферы
         if self._vb:
+            # Проверяем, что вершинный и индексный буферы разные
+            vb_val = self._vb.value if hasattr(self._vb, 'value') else int(self._vb)
+            ib_val = 0
+            if self._ib:
+                ib_val = self._ib.value if hasattr(self._ib, 'value') else int(self._ib)
+                if vb_val == ib_val:
+                    logger.error(f"[Mesh] Vertex and index buffers have same address: 0x{vb_val:X}")
+                    return
+
             logger.info(f"[Mesh] Setting vertex buffers")
-            backend.set_vertex_buffers(self._vb, self._ib)
+            backend.set_vertex_buffers(self._vb, self._ib if self.indices is not None else None)
 
             # 4️⃣ Выполняем draw call
             if self.indices is not None and self._ib:
