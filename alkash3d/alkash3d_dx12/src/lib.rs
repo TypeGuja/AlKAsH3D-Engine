@@ -126,28 +126,46 @@ mod ptr_utils {
 
     pub unsafe fn as_resource(ptr: *mut c_void) -> Option<ID3D12Resource> {
         if ptr.is_null() {
+            eprintln!("[as_resource] ptr is null");
             return None;
         }
 
-        // Минимальная защита от мусорных/заглушечных указателей
         let ptr_val = ptr as usize;
         if ptr_val < 0x10000 {
-            return None;
-        }
-        if ptr_val == 0xDEADBEEF
-            || ptr_val == 0xDEADF00D
-            || ptr_val == 0xFEEDC0DE
-            || ptr_val == 0x12345678
-            || ptr_val == 0x87654321
-        {
+            eprintln!("[as_resource] ptr too small: 0x{:X}", ptr_val);
             return None;
         }
 
-        let res: ID3D12Resource = std::mem::transmute_copy(&ptr);
-        if res.as_raw().is_null() {
+        // Проверяем на известные заглушки
+        if ptr_val == 0xDEADBEEF || ptr_val == 0xDEADF00D ||
+            ptr_val == 0xFEEDC0DE || ptr_val == 0x12345678 ||
+            ptr_val == 0x87654321 {
+            eprintln!("[as_resource] stub pointer: 0x{:X}", ptr_val);
             return None;
         }
-        Some(res)
+
+        // Попытка преобразования через IUnknown
+        let unknown = IUnknown::from_raw(ptr);
+        if unknown.as_raw().is_null() {
+            eprintln!("[as_resource] unknown.as_raw() is null");
+            return None;
+        }
+
+        // Пробуем получить интерфейс ID3D12Resource
+        match unknown.cast::<ID3D12Resource>() {
+            Ok(resource) => {
+                let desc = resource.GetDesc();
+                eprintln!("[as_resource] resource desc: Dimension={:?}, Width={}",
+                          desc.Dimension, desc.Width);
+
+                // Не проверяем на буфер - может быть текстура!
+                Some(resource)
+            }
+            Err(e) => {
+                eprintln!("[as_resource] Failed to cast: HRESULT 0x{:X}", e.code().0);
+                None
+            }
+        }
     }
 
     pub unsafe fn as_blob(ptr: *mut c_void) -> Option<ID3DBlob> {
@@ -563,6 +581,8 @@ mod buffer_mod {
         device: &ID3D12Device,
         size: usize,
     ) -> Option<ID3D12Resource> {
+        eprintln!("[buffer] create_upload: creating buffer of size {}", size);
+
         let heap_props = D3D12_HEAP_PROPERTIES {
             Type: D3D12_HEAP_TYPE_UPLOAD,
             CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -596,8 +616,13 @@ mod buffer_mod {
         );
 
         if let Err(e) = hr {
-            debug_println!("[buffer] Failed: HRESULT 0x{:X}", e.code().0);
+            eprintln!("[buffer] CreateCommittedResource failed: HRESULT 0x{:X}", e.code().0);
             return None;
+        }
+
+        if let Some(ref resource) = resource_opt {
+            let actual_desc = resource.GetDesc();
+            eprintln!("[buffer] Successfully created buffer at {:p}, actual size: {}", resource.as_raw(), actual_desc.Width);
         }
 
         resource_opt
@@ -1538,20 +1563,33 @@ pub extern "C" fn create_buffer(
         use ptr_utils::*;
 
         if size == 0 || size > 1024 * 1024 * 1024 {
+            eprintln!("[create_buffer] Invalid size: {}", size);
             return ptr::null_mut();
         }
 
         let device = match as_device(device_ptr) {
             Some(d) => d,
-            None => return ptr::null_mut(),
+            None => {
+                eprintln!("[create_buffer] Failed to get device");
+                return ptr::null_mut();
+            }
         };
+
+        eprintln!("[create_buffer] Creating buffer of size {} bytes", size);
 
         let buffer = match buffer_mod::create_upload(&device, size) {
             Some(b) => b,
-            None => return ptr::null_mut(),
+            None => {
+                eprintln!("[create_buffer] Failed to create buffer");
+                return ptr::null_mut();
+            }
         };
 
+        let desc = buffer.GetDesc();
         let raw_ptr = buffer.as_raw();
+        eprintln!("[create_buffer] Created buffer at {:p}, size: {} bytes", raw_ptr, desc.Width);
+
+        // Важно: forget чтобы буфер не удалился
         std::mem::forget(buffer);
         raw_ptr as *mut c_void
     }
@@ -1569,7 +1607,6 @@ pub extern "C" fn update_subresource(
         eprintln!("data_ptr = {:p}", data_ptr);
         eprintln!("size = {}", size);
 
-        // Базовая валидация
         if buffer_ptr.is_null() {
             eprintln!("ERROR: buffer_ptr is NULL");
             return false;
@@ -1585,18 +1622,6 @@ pub extern "C" fn update_subresource(
             return false;
         }
 
-        // Создаем локальную копию данных на стеке для надежности
-        let mut local_buffer = vec![0u8; size];
-        let src = data_ptr as *const u8;
-
-        // Копируем данные из переданного указателя в локальный буфер
-        for i in 0..size {
-            let byte = *src.add(i);
-            local_buffer[i] = byte;
-        }
-        eprintln!("Data copied to local buffer, first byte: {}", local_buffer[0]);
-
-        // Получаем ресурс
         let buffer: ID3D12Resource = match std::mem::transmute_copy(&buffer_ptr) {
             b => b,
         };
@@ -1606,7 +1631,6 @@ pub extern "C" fn update_subresource(
             return false;
         }
 
-        // Получаем описание ресурса
         let desc = buffer.GetDesc();
         eprintln!("Buffer desc: Width={}, Dimension={:?}", desc.Width, desc.Dimension);
 
@@ -1614,6 +1638,9 @@ pub extern "C" fn update_subresource(
             eprintln!("ERROR: buffer too small: {} < {}", desc.Width, size);
             return false;
         }
+
+        // Создаём локальную копию данных
+        let local_buffer = std::slice::from_raw_parts(data_ptr as *const u8, size);
 
         // Маппим ресурс
         let mut mapped: *mut c_void = std::ptr::null_mut();
@@ -1627,15 +1654,10 @@ pub extern "C" fn update_subresource(
                     return false;
                 }
 
-                eprintln!("Mapped at {:p}, copying {} bytes from local buffer", mapped, size);
+                eprintln!("Mapped at {:p}, copying {} bytes", mapped, size);
 
-                // Копируем из локального буфера в GPU память
-                let dst = mapped as *mut u8;
-                for i in 0..size {
-                    *dst.add(i) = local_buffer[i];
-                }
-
-                eprintln!("Data copied to GPU successfully");
+                // Копируем данные
+                std::ptr::copy_nonoverlapping(local_buffer.as_ptr(), mapped as *mut u8, size);
 
                 // Указываем, что данные были записаны
                 let written_range = D3D12_RANGE { Begin: 0, End: size };
@@ -2132,22 +2154,7 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
         return false;
     }
 
-    // УБИРАЕМ ВСЕ ПРОВЕРКИ на битые handle - доверяем драйверу
-    // if gpu_handle == 0x15678A00110000 {
-    //     eprintln!("ERROR: Detected broken GPU handle...");
-    //     return false;
-    // }
-
-    // if gpu_handle < 0x10000 {
-    //     eprintln!("ERROR: gpu_handle too small");
-    //     return false;
-    // }
-
-    // if gpu_handle > 0x7FFFFFFFFFFF {
-    //     eprintln!("ERROR: gpu_handle too large");
-    //     return false;
-    // }
-
+    // Убираем ВСЕ проверки на битые handle
     let state = match STATE.lock() {
         Ok(s) => s,
         Err(e) => {
@@ -2176,6 +2183,9 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
 
 #[no_mangle]
 pub unsafe extern "C" fn set_descriptor_heaps(count: usize, heaps: *const *mut c_void) -> bool {
+    eprintln!("\n=== set_descriptor_heaps ===");
+    eprintln!("count = {}", count);
+
     if count == 0 || heaps.is_null() {
         return false;
     }
@@ -2185,13 +2195,26 @@ pub unsafe extern "C" fn set_descriptor_heaps(count: usize, heaps: *const *mut c
         let mut heap_ptrs = Vec::with_capacity(count);
         for i in 0..count {
             let heap_ptr = *heaps.add(i);
+            eprintln!("heap_ptr[{}] = {:p}", i, heap_ptr);
             if !heap_ptr.is_null() {
-                let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
-                heap_ptrs.push(Some(heap));
+                // Используем IUnknown для безопасного преобразования
+                let unknown = IUnknown::from_raw(heap_ptr);
+                match unknown.cast::<ID3D12DescriptorHeap>() {
+                    Ok(heap) => {
+                        eprintln!("  Successfully cast to ID3D12DescriptorHeap: {:p}", heap.as_raw());
+                        heap_ptrs.push(Some(heap));
+                    }
+                    Err(e) => {
+                        eprintln!("  Failed to cast to ID3D12DescriptorHeap: {:?}", e);
+                    }
+                }
             }
         }
-        list.SetDescriptorHeaps(&heap_ptrs);
-        return true;
+        if !heap_ptrs.is_empty() {
+            eprintln!("Setting {} descriptor heaps", heap_ptrs.len());
+            list.SetDescriptorHeaps(&heap_ptrs);
+            return true;
+        }
     }
     false
 }
@@ -2275,38 +2298,86 @@ pub unsafe extern "C" fn set_scissor_rect(left: i32, top: i32, right: i32, botto
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn set_vertex_buffers(vertex_buffer: *mut c_void, index_buffer: *mut c_void) -> bool {
+pub unsafe extern "C" fn set_vertex_buffers(
+    vertex_buffer: *mut c_void,
+    index_buffer: *mut c_void
+) -> bool {
     use ptr_utils::*;
+
+    eprintln!("\n=== set_vertex_buffers ===");
+    eprintln!("vertex_buffer ptr: {:p}", vertex_buffer);
+    eprintln!("index_buffer ptr: {:p}", index_buffer);
+
+    // Проверяем, что указатели разные
+    if vertex_buffer == index_buffer && !vertex_buffer.is_null() {
+        eprintln!("ERROR: Vertex and index buffers point to the same address!");
+        return false;
+    }
 
     let state = STATE.lock().unwrap();
     if let Some(list) = &state.command_list {
+        // Vertex buffer
         if !vertex_buffer.is_null() {
+            eprintln!("Processing vertex buffer...");
             if let Some(buffer) = as_resource(vertex_buffer) {
                 let desc = buffer.GetDesc();
+                eprintln!("Vertex buffer desc: Dimension={:?}, Width={}",
+                          desc.Dimension, desc.Width);
+
+                if desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER {
+                    eprintln!("ERROR: Vertex buffer is not a buffer! Dimension={:?}",
+                              desc.Dimension);
+                    return false;
+                }
+
+                let gpu_va = buffer.GetGPUVirtualAddress();
+                eprintln!("Vertex buffer GPU VA: 0x{:X}", gpu_va);
+
                 let view = D3D12_VERTEX_BUFFER_VIEW {
-                    BufferLocation: buffer.GetGPUVirtualAddress(),
+                    BufferLocation: gpu_va,
                     SizeInBytes: desc.Width as u32,
                     StrideInBytes: 12,
                 };
                 list.IASetVertexBuffers(0, Some(&[view]));
-                std::mem::forget(buffer);
+                eprintln!("Vertex buffer set successfully");
+            } else {
+                eprintln!("Failed to convert vertex buffer pointer to ID3D12Resource");
+                return false;
             }
         }
 
-        if !index_buffer.is_null() {
+        // Index buffer
+        if !index_buffer.is_null() && index_buffer != vertex_buffer {
+            eprintln!("Processing index buffer...");
             if let Some(buffer) = as_resource(index_buffer) {
                 let desc = buffer.GetDesc();
+                eprintln!("Index buffer desc: Dimension={:?}, Width={}",
+                          desc.Dimension, desc.Width);
+
+                if desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER {
+                    eprintln!("ERROR: Index buffer is not a buffer! Dimension={:?}",
+                              desc.Dimension);
+                    return false;
+                }
+
+                let gpu_va = buffer.GetGPUVirtualAddress();
+                eprintln!("Index buffer GPU VA: 0x{:X}", gpu_va);
+
                 let view = D3D12_INDEX_BUFFER_VIEW {
-                    BufferLocation: buffer.GetGPUVirtualAddress(),
+                    BufferLocation: gpu_va,
                     SizeInBytes: desc.Width as u32,
                     Format: DXGI_FORMAT_R32_UINT,
                 };
                 list.IASetIndexBuffer(Some(&view));
-                std::mem::forget(buffer);
+                eprintln!("Index buffer set successfully");
+            } else {
+                eprintln!("Failed to convert index buffer pointer to ID3D12Resource");
+                return false;
             }
         }
         return true;
     }
+    eprintln!("No command list available");
     false
 }
 
