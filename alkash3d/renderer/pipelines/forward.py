@@ -1,7 +1,6 @@
 # alkash3d/renderer/pipelines/forward.py
 # -*- coding: utf-8 -*-
 
-import numpy as np
 from alkash3d.renderer.shader import Shader
 from alkash3d.utils import logger
 from alkash3d.graphics import select_backend
@@ -31,6 +30,9 @@ class ForwardRenderer:
         # Создаём белую текстуру
         self._create_white_placeholder()
 
+        # Флаг, что heap уже установлен
+        self._heap_set = False
+
     # ------------------------------------------------------------------
     def _create_white_placeholder(self):
         """Создаёт 1×1‑белую текстуру и SRV в слоте TEXTURE"""
@@ -51,12 +53,12 @@ class ForwardRenderer:
                 raise RuntimeError("Failed to create white texture")
 
             # Создаём SRV для текстуры в слоте TEXTURE
-            tex_cpu = self.backend.cbv_srv_uav_heap.get_cpu_handle(self.shader._tex_slot)
+            tex_cpu = self.backend.cbv_srv_uav_heap.get_cpu_handle(self.shader.tex_slot)
 
             if not self.backend.create_shader_resource_view(self.white_tex, tex_cpu):
                 raise RuntimeError("Failed to create SRV for white texture")
 
-            logger.info(f"[ForwardRenderer] White texture SRV created at slot {self.shader._tex_slot}")
+            logger.info(f"[ForwardRenderer] White texture SRV created at slot {self.shader.tex_slot}")
 
         except Exception as e:
             logger.error(f"[ForwardRenderer] white placeholder error: {e}")
@@ -71,11 +73,14 @@ class ForwardRenderer:
     # ------------------------------------------------------------------
     def render(self, scene, camera):
         try:
-            # Устанавливаем дескрипторный heap ПЕРЕД begin_frame
-            if hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
-                heap_ptr = self.backend.cbv_srv_uav_heap.heap_ptr
-                if heap_ptr and hasattr(heap_ptr, 'value') and heap_ptr.value:
+            # Устанавливаем дескрипторный heap ТОЛЬКО ОДИН РАЗ
+            if not self._heap_set and hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
+                heap = self.backend.cbv_srv_uav_heap
+                heap_ptr = heap.heap_ptr
+                if heap_ptr and heap_ptr.value:
+                    logger.info(f"[ForwardRenderer] Setting descriptor heap once: 0x{heap_ptr.value:X}")
                     self.backend.set_descriptor_heaps([heap_ptr])
+                    self._heap_set = True
 
             if not self.backend.begin_frame():
                 logger.error("[ForwardRenderer] begin_frame failed")
@@ -103,6 +108,7 @@ class ForwardRenderer:
             self.shader.set_uniform_mat4("uProj", proj)
 
             # Рисуем все узлы
+            rendered = 0
             for node in scene.traverse():
                 if not hasattr(node, "draw"):
                     continue
@@ -112,8 +118,10 @@ class ForwardRenderer:
                 model = node.get_world_matrix()
                 self.shader.set_uniform_mat4("uModel", model.to_gl())
                 node.draw(self.backend)
+                rendered += 1
 
-            # Сбрасываем uniform'ы в GPU
+            logger.info(f"[ForwardRenderer] Rendered {rendered} nodes")
+
             self.shader.flush()
 
             if not self.backend.end_frame():
@@ -123,4 +131,3 @@ class ForwardRenderer:
             logger.error(f"[ForwardRenderer] render error: {e}")
             import traceback
             traceback.print_exc()
-            raise
