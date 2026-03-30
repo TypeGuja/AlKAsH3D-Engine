@@ -73,7 +73,6 @@ class ForwardRenderer:
     # ------------------------------------------------------------------
     def render(self, scene, camera):
         try:
-            # Устанавливаем дескрипторный heap ТОЛЬКО ОДИН РАЗ
             if not self._heap_set and hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
                 heap = self.backend.cbv_srv_uav_heap
                 heap_ptr = heap.heap_ptr
@@ -86,9 +85,7 @@ class ForwardRenderer:
                 logger.error("[ForwardRenderer] begin_frame failed")
                 return
 
-            # RTV и очистка
-            if (hasattr(self.backend, "rtv_heap")
-                    and self.backend.rtv_heap
+            if (hasattr(self.backend, "rtv_heap") and self.backend.rtv_heap
                     and self.backend.rtv_heap.num_descriptors > 0):
                 frame_idx = self.backend.get_frame_index() % dx.SWAP_CHAIN_BUFFER_COUNT
                 back_rtv = self.backend.rtv_heap.get_cpu_handle(frame_idx)
@@ -100,15 +97,14 @@ class ForwardRenderer:
                 self.backend.end_frame()
                 return
 
-            # Матрицы камеры
             aspect = self.window.width / max(self.window.height, 1.0)
             view = camera.get_view_matrix()
             proj = camera.get_projection_matrix(aspect)
             self.shader.set_uniform_mat4("uView", view)
             self.shader.set_uniform_mat4("uProj", proj)
+            self.shader.set_uniform_vec4("uTint", (1.0, 1.0, 1.0, 1.0))
 
-            # Рисуем все узлы
-            rendered = 0
+            # Отрисовка всех узлов
             for node in scene.traverse():
                 if not hasattr(node, "draw"):
                     continue
@@ -117,12 +113,11 @@ class ForwardRenderer:
 
                 model = node.get_world_matrix()
                 self.shader.set_uniform_mat4("uModel", model.to_gl())
+
+                # 👇 КЛЮЧЕВОЙ МОМЕНТ: отправляем данные в GPU перед отрисовкой
+                self.shader.flush()
+
                 node.draw(self.backend)
-                rendered += 1
-
-            logger.info(f"[ForwardRenderer] Rendered {rendered} nodes")
-
-            self.shader.flush()
 
             if not self.backend.end_frame():
                 logger.error("[ForwardRenderer] end_frame failed")
