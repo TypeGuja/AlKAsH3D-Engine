@@ -278,12 +278,8 @@ class DX12Backend(GraphicsBackend):
         # Сохраняем в список для последующей очистки
         self._resources.append(buf)
 
-        # Возвращаем КОПИЮ указателя, а не исходный объект
-        # Это важно, чтобы последующие буферы не перезаписывали предыдущие
-        result = ctypes.c_void_p(buf.value)
-
-        # Не удаляем buf, он остаётся в self._resources
-        return result
+        # ⚠️ ВАЖНО: возвращаем ОРИГИНАЛЬНЫЙ объект, а не копию!
+        return buf
 
     def update_buffer(self, buffer: ctypes.c_void_p, data: bytes) -> bool:
         """Обновляет данные в буфере."""
@@ -295,10 +291,7 @@ class DX12Backend(GraphicsBackend):
             return False
 
         try:
-            # Убеждаемся, что buffer - это ctypes.c_void_p
-            if not isinstance(buffer, ctypes.c_void_p):
-                buffer = ctypes.c_void_p(buffer.value if hasattr(buffer, 'value') else int(buffer))
-
+            # buffer уже должен быть ctypes.c_void_p
             result = dx.update_subresource(buffer, data)
             if not result:
                 logger.error(f"update_buffer: update_subresource returned False for size {len(data)}")
