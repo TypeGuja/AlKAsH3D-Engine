@@ -85,8 +85,14 @@ class Mesh(Node):
 
         self._vb = backend.create_buffer(vertex_data, usage="vertex")
 
-        if not self._vb or not getattr(self._vb, 'value', 0):
+        # Проверяем, что буфер создался
+        if self._vb is None:
             logger.error(f"[Mesh] Failed to create vertex buffer for '{self.name}'")
+            return False
+
+        # Проверяем value (должно быть ненулевое)
+        if not getattr(self._vb, 'value', 0):
+            logger.error(f"[Mesh] Vertex buffer has zero value for '{self.name}'")
             return False
 
         self._vb_created = True
@@ -106,8 +112,12 @@ class Mesh(Node):
 
         self._ib = backend.create_buffer(index_data, usage="index")
 
-        if not self._ib or not getattr(self._ib, 'value', 0):
+        if self._ib is None:
             logger.error(f"[Mesh] Failed to create index buffer for '{self.name}'")
+            return False
+
+        if not getattr(self._ib, 'value', 0):
+            logger.error(f"[Mesh] Index buffer has zero value for '{self.name}'")
             return False
 
         self._ib_created = True
@@ -154,8 +164,9 @@ class Mesh(Node):
 
         # Привязываем буферы
         try:
-            logger.debug(f"[Mesh] Setting buffers for '{self.name}': vb=0x{vb_val:X}, "
-                         f"ib=0x{ib_ptr.value:X if ib_ptr else 0}")
+            # Форматируем вывод для отладки
+            ib_info = f"0x{ib_ptr.value:X}" if ib_ptr else "None"
+            logger.debug(f"[Mesh] Setting buffers for '{self.name}': vb=0x{vb_val:X}, ib={ib_info}")
 
             result = backend.set_vertex_buffers(self._vb, ib_ptr)
             if not result:
