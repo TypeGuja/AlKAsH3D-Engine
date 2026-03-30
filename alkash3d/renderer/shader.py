@@ -3,7 +3,7 @@
 
 import os
 import numpy as np
-from typing import Any
+from typing import Any, Tuple
 
 from alkash3d.utils import logger
 from alkash3d.graphics.dx12_backend import DX12Backend
@@ -46,16 +46,17 @@ class Shader:
         if not self._frame_cb or not getattr(self._frame_cb, "value", 0):
             raise RuntimeError("Failed to create constant buffer")
 
+        # Создаём CBV (Constant Buffer View) в heap
         cb_cpu = backend.cbv_srv_uav_heap.get_cpu_handle(self._cb_slot)
         if not backend.create_constant_buffer_view(self._frame_cb, cb_cpu):
             raise RuntimeError("Failed to create constant buffer view")
 
-        self._descriptor_table_handle = cb_cpu
-        logger.info(f"[Shader] Descriptor table handle: 0x{self._descriptor_table_handle:X}")
+        # ✅ ВАЖНО: для root descriptor table нужен GPU handle!
+        self._descriptor_table_handle = backend.cbv_srv_uav_heap.get_gpu_handle(self._cb_slot)
+        logger.info(f"[Shader] Descriptor table GPU handle: 0x{self._descriptor_table_handle:X}")
 
         self._frame_data = bytearray(self._CB_SIZE)
         self._dirty = False
-        self._cb_initialized = False
 
     def use(self) -> bool:
         if not self.pso:
@@ -76,16 +77,11 @@ class Shader:
             self._frame_data[offset:end] = data_bytes
             self._dirty = True
 
-    def _init_cb(self) -> None:
-        """Временно отключаем constant buffer."""
-        self._cb_initialized = True
-        self._dirty = False
-        return
-
     def set_uniform_mat4(self, name: str, mat: Any) -> None:
         offsets = {"uView": 0, "uProj": 64, "uModel": 128}
         offset = offsets.get(name)
         if offset is None:
+            logger.warning(f"[Shader] Unknown mat4 uniform: {name}")
             return
         try:
             arr = np.asarray(mat, dtype=np.float32).reshape(16)
@@ -93,9 +89,41 @@ class Shader:
         except Exception as e:
             logger.error(f"[Shader] set_uniform_mat4({name}) error: {e}")
 
+    def set_uniform_vec4(self, name: str, value: Tuple[float, float, float, float]) -> None:
+        offsets = {"uTint": 192}
+        offset = offsets.get(name)
+        if offset is None:
+            logger.warning(f"[Shader] Unknown vec4 uniform: {name}")
+            return
+        try:
+            arr = np.array(value, dtype=np.float32)
+            self._write_to_cb(offset, arr.tobytes())
+        except Exception as e:
+            logger.error(f"[Shader] set_uniform_vec4({name}) error: {e}")
+
     def flush(self) -> None:
-        """Временно отключаем constant buffer."""
-        pass
+        """Отправляет данные в GPU."""
+        if not self._dirty:
+            logger.debug("[Shader] No dirty data, skipping flush")
+            return
+
+        logger.info(f"[Shader] Flushing {self._CB_SIZE} bytes, dirty={self._dirty}")
+
+        # Обновляем constant buffer
+        if not self.backend.update_buffer(self._frame_cb, bytes(self._frame_data)):
+            logger.error("[Shader] Failed to update constant buffer")
+            return
+
+        # Проверяем, что command list существует и не закрыт
+        # Устанавливаем descriptor table (root parameter 0 = CBV)
+        logger.info(f"[Shader] Setting root descriptor table with handle 0x{self._descriptor_table_handle:X}")
+
+        if not self.backend.set_root_descriptor_table(0, self._descriptor_table_handle):
+            logger.error("[Shader] Failed to set descriptor table")
+            return
+
+        self._dirty = False
+        logger.debug("[Shader] Flush completed")
 
     @property
     def cb_slot(self) -> int:
