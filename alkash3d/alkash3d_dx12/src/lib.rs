@@ -10,7 +10,6 @@ use std::{
     ptr,
     sync::{LazyLock, Mutex},
 };
-use lazy_static::lazy_static;
 use windows::{
     core::{PCSTR, PCWSTR},
     Win32::{
@@ -27,7 +26,8 @@ use windows::{
         },
     },
 };
-use windows_core::{ComInterface, Interface, IUnknown};
+use windows_core::{Interface, IUnknown};
+static RESOURCES: LazyLock<Mutex<Vec<ID3D12Resource>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 // Флаг отладки
 const DEBUG: bool = true;
@@ -258,9 +258,6 @@ mod root_sig {
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-                DescriptorTable: Default::default(),
-                Constants: Default::default(),
-                Descriptor: Default::default(),
             },
         ];
 
@@ -440,7 +437,7 @@ mod swapchain_mod {
             return None;
         }
 
-        let factory: IDXGIFactory4 = match CreateDXGIFactory2(0) {
+        let factory: IDXGIFactory4 = match CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) {
             Ok(f) => f,
             Err(e) => {
                 debug_println!("[swapchain] Failed to create factory: HRESULT 0x{:X}", e.code().0);
@@ -464,7 +461,7 @@ mod swapchain_mod {
 
         let swap_chain1: IDXGISwapChain1 = match factory.CreateSwapChainForHwnd(
             queue,
-            HWND(hwnd as isize),
+            HWND(hwnd as *mut c_void),
             &swap_desc,
             None,
             None,
@@ -483,7 +480,7 @@ mod swapchain_mod {
             Ok(sc) => {
                 debug_println!("[swapchain] Created successfully at {:p}", sc.as_raw());
 
-                let _ = factory.MakeWindowAssociation(HWND(hwnd as isize), DXGI_MWA_NO_ALT_ENTER);
+                let _ = factory.MakeWindowAssociation(HWND(hwnd as *mut c_void), DXGI_MWA_NO_ALT_ENTER);
 
                 Some(sc)
             },
@@ -497,7 +494,7 @@ mod swapchain_mod {
     pub unsafe fn present(swap: &IDXGISwapChain3, sync_interval: u32) -> bool {
         debug_println!("[swapchain_mod::present] Calling Present({}, 0)", sync_interval);
 
-        let hr = swap.Present(sync_interval, 0);
+        let hr = swap.Present(sync_interval, DXGI_PRESENT(0));
 
         if hr.is_ok() {
             let frame_idx = swap.GetCurrentBackBufferIndex();
@@ -515,7 +512,7 @@ mod swapchain_mod {
     pub unsafe fn resize(swap: &IDXGISwapChain3, width: u32, height: u32) -> bool {
         debug_println!("[swapchain] Resizing to {}x{}", width, height);
 
-        let hr = swap.ResizeBuffers(2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+        let hr = swap.ResizeBuffers(2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SWAP_CHAIN_FLAG(0));
 
         if hr.is_ok() {
             debug_println!("[swapchain] ResizeBuffers succeeded");
@@ -602,7 +599,6 @@ mod buffer_mod {
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
             Flags: D3D12_RESOURCE_FLAG_NONE,
-            height: 0,
         };
 
         let mut resource_opt: Option<ID3D12Resource> = None;
@@ -715,7 +711,6 @@ mod texture_mod {
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: D3D12_RESOURCE_FLAG_NONE,
-            height: 0,
         };
 
         let mut tex_opt: Option<ID3D12Resource> = None;
@@ -1373,8 +1368,6 @@ pub extern "C" fn create_descriptor_heap(
             D3D12_DESCRIPTOR_HEAP_FLAG_NONE
         };
 
-        eprintln!("Creating heap with flags: {:?}", flags);
-
         let desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: heap_ty,
             NumDescriptors: num_descriptors,
@@ -1385,81 +1378,8 @@ pub extern "C" fn create_descriptor_heap(
         match device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&desc) {
             Ok(heap) => {
                 eprintln!("[heap] Created at {:p}", heap.as_raw());
-
                 let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
                 eprintln!("CPU handle: 0x{:X}", cpu_handle.ptr);
-
-                // Для нешейдер-видимых куч возвращаем сразу
-                if !shader_visible {
-                    let raw_ptr = heap.as_raw();
-                    std::mem::forget(heap);
-                    return raw_ptr as *mut c_void;
-                }
-
-                // ========== ИНИЦИАЛИЗАЦИЯ GPU HANDLE ==========
-                eprintln!("Initializing GPU handle...");
-
-                // Получаем размер дескриптора
-                let increment = device.GetDescriptorHandleIncrementSize(heap_ty);
-
-                // Способ 1: Создаём временный null-дескриптор
-                let null_desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
-                    BufferLocation: 0,
-                    SizeInBytes: 256,
-                };
-
-                // Пытаемся создать CBV (может не работать, но это ок)
-                let _ = device.CreateConstantBufferView(Some(&null_desc), cpu_handle);
-
-                // Способ 2: Копируем дескриптор сам в себя (это реально работает!)
-                device.CopyDescriptorsSimple(1, cpu_handle, cpu_handle, heap_ty);
-
-                // Способ 3: Создаём и сразу удаляем временный дескриптор в другом месте
-                let temp_desc = D3D12_DESCRIPTOR_HEAP_DESC {
-                    Type: heap_ty,
-                    NumDescriptors: 1,
-                    Flags: flags,
-                    NodeMask: 0,
-                };
-
-                if let Ok(temp_heap) = device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&temp_desc) {
-                    let temp_cpu = temp_heap.GetCPUDescriptorHandleForHeapStart();
-                    let temp_gpu = temp_heap.GetGPUDescriptorHandleForHeapStart();
-                    eprintln!("Temp heap GPU handle: 0x{:X}", temp_gpu.ptr);
-
-                    // Копируем из временного в основной (это инициализирует GPU handle основного)
-                    device.CopyDescriptorsSimple(1, cpu_handle, temp_cpu, heap_ty);
-
-                    std::mem::forget(temp_heap);
-                }
-
-                // Теперь получаем GPU handle
-                let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
-                let gpu_ptr = gpu_handle.ptr as u64;
-                eprintln!("GPU handle after full init: 0x{:X}", gpu_ptr);
-
-                // Проверяем на известный баг
-                if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0 {
-                    eprintln!("WARNING: Driver still returns broken GPU handle!");
-                    eprintln!("Using computed offset method...");
-
-                    // Вычисляем правильный GPU handle на основе CPU handle
-                    // На современных драйверах GPU handle = CPU handle + 0x10000
-                    let computed_gpu = cpu_handle.ptr as u64 + 0x10000;
-                    eprintln!("Computed GPU handle: 0x{:X}", computed_gpu);
-
-                    // Сохраняем в глобальном кэше для GetGPUDescriptorHandleForHeapStart
-                    use std::collections::HashMap;
-                    use std::sync::Mutex;
-                    use lazy_static::lazy_static;
-
-                    lazy_static! {
-                        static ref GPU_HANDLE_CACHE: Mutex<HashMap<usize, u64>> = Mutex::new(HashMap::new());
-                    }
-
-
-                    GPU_HANDLE_CACHE.lock().unwrap().insert(heap.as_raw() as usize, computed_gpu);
-                }
 
                 let raw_ptr = heap.as_raw();
                 std::mem::forget(heap);
@@ -1472,6 +1392,7 @@ pub extern "C" fn create_descriptor_heap(
         }
     }
 }
+
 #[no_mangle]
 pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> usize {
     if heap_ptr.is_null() {
@@ -1504,22 +1425,16 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
             return 0;
         }
 
-        // Возвращаем то, что даёт драйвер, даже если это 0x15678A00110000
         let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
         let gpu_ptr = gpu_handle.ptr as u64;
 
         std::mem::forget(heap);
 
-        // НЕ исправляем, возвращаем как есть
-        // if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0x25678A00120000 || gpu_ptr == 0 {
-        //     // ... вычисления ...
-        // }
-
+        // Просто возвращаем то, что дал драйвер
+        // Python сам определит, битый это handle или нет
         gpu_ptr
     }
 }
-
-
 unsafe fn get_device_from_heap(heap: &ID3D12DescriptorHeap) -> Option<ID3D12Device> {
     use windows::Win32::Graphics::Direct3D12::ID3D12Device;
     use windows_core::Interface;
@@ -1546,6 +1461,7 @@ pub extern "C" fn is_gpu_handle_valid(handle: u64) -> bool {
 
     true
 }
+
 #[no_mangle]
 pub extern "C" fn offset_descriptor_handle(start: usize, offset: u32) -> usize {
     let state = STATE.lock().unwrap();
@@ -1560,38 +1476,38 @@ pub extern "C" fn create_buffer(
     _usage: *const u8,
 ) -> *mut c_void {
     unsafe {
-        use ptr_utils::*;
-
-        if size == 0 || size > 1024 * 1024 * 1024 {
-            eprintln!("[create_buffer] Invalid size: {}", size);
-            return ptr::null_mut();
-        }
-
-        let device = match as_device(device_ptr) {
+        let device = match ptr_utils::as_device(device_ptr) {
             Some(d) => d,
-            None => {
-                eprintln!("[create_buffer] Failed to get device");
-                return ptr::null_mut();
-            }
+            None => return ptr::null_mut(),
         };
 
         eprintln!("[create_buffer] Creating buffer of size {} bytes", size);
 
         let buffer = match buffer_mod::create_upload(&device, size) {
             Some(b) => b,
-            None => {
-                eprintln!("[create_buffer] Failed to create buffer");
-                return ptr::null_mut();
-            }
+            None => return ptr::null_mut(),
         };
 
         let desc = buffer.GetDesc();
         let raw_ptr = buffer.as_raw();
         eprintln!("[create_buffer] Created buffer at {:p}, size: {} bytes", raw_ptr, desc.Width);
 
-        // Важно: forget чтобы буфер не удалился
-        std::mem::forget(buffer);
+        // Сохраняем ОРИГИНАЛЬНЫЙ буфер, не клон!
+        if let Ok(mut resources) = RESOURCES.lock() {
+            resources.push(buffer);  // перемещаем buffer в вектор
+            eprintln!("[create_buffer] RESOURCES count: {}", resources.len());
+        }
+
         raw_ptr as *mut c_void
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn clear_resources() {
+    if let Ok(mut resources) = RESOURCES.lock() {
+        let count = resources.len();
+        resources.clear();
+        eprintln!("[clear_resources] Cleared {} resources", count);
     }
 }
 
@@ -1622,20 +1538,21 @@ pub extern "C" fn update_subresource(
             return false;
         }
 
-        let buffer: ID3D12Resource = match std::mem::transmute_copy(&buffer_ptr) {
-            b => b,
+        // Восстанавливаем COM-объект из указателя (увеличивает счётчик ссылок)
+        let buffer = match ID3D12Resource::from_raw(buffer_ptr) {
+            b if !b.as_raw().is_null() => b,
+            _ => {
+                eprintln!("ERROR: Failed to create ID3D12Resource from pointer");
+                return false;
+            }
         };
-
-        if buffer.as_raw().is_null() {
-            eprintln!("ERROR: buffer resource is invalid");
-            return false;
-        }
 
         let desc = buffer.GetDesc();
         eprintln!("Buffer desc: Width={}, Dimension={:?}", desc.Width, desc.Dimension);
 
         if (desc.Width as usize) < size {
             eprintln!("ERROR: buffer too small: {} < {}", desc.Width, size);
+            std::mem::forget(buffer); // Не забываем освободить
             return false;
         }
 
@@ -1651,6 +1568,7 @@ pub extern "C" fn update_subresource(
                 if mapped.is_null() {
                     eprintln!("ERROR: Map returned null");
                     buffer.Unmap(0, None);
+                    std::mem::forget(buffer);
                     return false;
                 }
 
@@ -1664,10 +1582,14 @@ pub extern "C" fn update_subresource(
                 buffer.Unmap(0, Some(&written_range));
 
                 eprintln!("SUCCESS");
+
+                // Забываем буфер, чтобы он не уничтожился (Python будет управлять)
+                std::mem::forget(buffer);
                 true
             }
             Err(e) => {
                 eprintln!("Map failed: HRESULT 0x{:X}", e.code().0);
+                std::mem::forget(buffer);
                 false
             }
         }
@@ -1677,7 +1599,7 @@ pub extern "C" fn update_subresource(
 #[no_mangle]
 pub extern "C" fn create_texture_from_memory(
     device_ptr: *mut c_void,
-    data_ptr: *mut c_void,
+    _data_ptr: *mut c_void,
     width: u32,
     height: u32,
     fmt: *const u8,
@@ -2075,7 +1997,7 @@ pub unsafe extern "C" fn wait_for_gpu() -> bool {
         )
     };
 
-    if let (Some(queue), Some(fence)) = (queue, fence) {
+    if let (Some(_queue), Some(fence)) = (queue, fence) {
         // Получаем текущий кадр
         let frame_idx = {
             let state = STATE.lock().unwrap();
@@ -2302,7 +2224,6 @@ pub unsafe extern "C" fn set_vertex_buffers(
     vertex_buffer: *mut c_void,
     index_buffer: *mut c_void
 ) -> bool {
-    use ptr_utils::*;
 
     eprintln!("\n=== set_vertex_buffers ===");
     eprintln!("vertex_buffer ptr: {:p}", vertex_buffer);
@@ -2319,61 +2240,84 @@ pub unsafe extern "C" fn set_vertex_buffers(
         // Vertex buffer
         if !vertex_buffer.is_null() {
             eprintln!("Processing vertex buffer...");
-            if let Some(buffer) = as_resource(vertex_buffer) {
-                let desc = buffer.GetDesc();
-                eprintln!("Vertex buffer desc: Dimension={:?}, Width={}",
-                          desc.Dimension, desc.Width);
 
-                if desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER {
-                    eprintln!("ERROR: Vertex buffer is not a buffer! Dimension={:?}",
-                              desc.Dimension);
-                    return false;
-                }
-
-                let gpu_va = buffer.GetGPUVirtualAddress();
-                eprintln!("Vertex buffer GPU VA: 0x{:X}", gpu_va);
-
-                let view = D3D12_VERTEX_BUFFER_VIEW {
-                    BufferLocation: gpu_va,
-                    SizeInBytes: desc.Width as u32,
-                    StrideInBytes: 12,
-                };
-                list.IASetVertexBuffers(0, Some(&[view]));
-                eprintln!("Vertex buffer set successfully");
-            } else {
-                eprintln!("Failed to convert vertex buffer pointer to ID3D12Resource");
+            // Пробуем получить ресурс через from_raw
+            let buffer = ID3D12Resource::from_raw(vertex_buffer);
+            if buffer.as_raw().is_null() {
+                eprintln!("ERROR: Failed to get vertex buffer resource");
                 return false;
             }
+
+            let desc = buffer.GetDesc();
+            eprintln!("Vertex buffer desc: Dimension={:?}, Width={}",
+                      desc.Dimension, desc.Width);
+
+            if desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER {
+                eprintln!("ERROR: Vertex buffer is not a buffer! Dimension={:?}",
+                          desc.Dimension);
+                std::mem::forget(buffer);
+                return false;
+            }
+
+            let gpu_va = buffer.GetGPUVirtualAddress();
+            eprintln!("Vertex buffer GPU VA: 0x{:X}", gpu_va);
+
+            if gpu_va == 0 {
+                eprintln!("ERROR: Vertex buffer GPU VA is 0");
+                std::mem::forget(buffer);
+                return false;
+            }
+
+            let view = D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: gpu_va,
+                SizeInBytes: desc.Width as u32,
+                StrideInBytes: 12,  // 3 floats * 4 bytes
+            };
+            list.IASetVertexBuffers(0, Some(&[view]));
+            eprintln!("Vertex buffer set successfully");
+
+            std::mem::forget(buffer);
         }
 
         // Index buffer
         if !index_buffer.is_null() && index_buffer != vertex_buffer {
             eprintln!("Processing index buffer...");
-            if let Some(buffer) = as_resource(index_buffer) {
-                let desc = buffer.GetDesc();
-                eprintln!("Index buffer desc: Dimension={:?}, Width={}",
-                          desc.Dimension, desc.Width);
 
-                if desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER {
-                    eprintln!("ERROR: Index buffer is not a buffer! Dimension={:?}",
-                              desc.Dimension);
-                    return false;
-                }
-
-                let gpu_va = buffer.GetGPUVirtualAddress();
-                eprintln!("Index buffer GPU VA: 0x{:X}", gpu_va);
-
-                let view = D3D12_INDEX_BUFFER_VIEW {
-                    BufferLocation: gpu_va,
-                    SizeInBytes: desc.Width as u32,
-                    Format: DXGI_FORMAT_R32_UINT,
-                };
-                list.IASetIndexBuffer(Some(&view));
-                eprintln!("Index buffer set successfully");
-            } else {
-                eprintln!("Failed to convert index buffer pointer to ID3D12Resource");
+            let buffer = ID3D12Resource::from_raw(index_buffer);
+            if buffer.as_raw().is_null() {
+                eprintln!("ERROR: Failed to get index buffer resource");
                 return false;
             }
+
+            let desc = buffer.GetDesc();
+            eprintln!("Index buffer desc: Dimension={:?}, Width={}",
+                      desc.Dimension, desc.Width);
+
+            if desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER {
+                eprintln!("ERROR: Index buffer is not a buffer! Dimension={:?}",
+                          desc.Dimension);
+                std::mem::forget(buffer);
+                return false;
+            }
+
+            let gpu_va = buffer.GetGPUVirtualAddress();
+            eprintln!("Index buffer GPU VA: 0x{:X}", gpu_va);
+
+            if gpu_va == 0 {
+                eprintln!("ERROR: Index buffer GPU VA is 0");
+                std::mem::forget(buffer);
+                return false;
+            }
+
+            let view = D3D12_INDEX_BUFFER_VIEW {
+                BufferLocation: gpu_va,
+                SizeInBytes: desc.Width as u32,
+                Format: DXGI_FORMAT_R32_UINT,
+            };
+            list.IASetIndexBuffer(Some(&view));
+            eprintln!("Index buffer set successfully");
+
+            std::mem::forget(buffer);
         }
         return true;
     }
