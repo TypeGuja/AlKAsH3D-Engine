@@ -41,15 +41,26 @@ class DescriptorHeap:
         if not self.heap_ptr or not self.heap_ptr.value:
             raise RuntimeError("Failed to create descriptor heap")
 
-        # Получаем CPU handle
+        # Получаем CPU handle (всегда правильный)
         self.cpu_start = dx.GetCPUDescriptorHandleForHeapStart(self.heap_ptr)
         if self.cpu_start == 0:
             raise RuntimeError("Failed to get CPU handle")
 
-        # Получаем GPU handle (даже если он битый, используем как есть)
+        # Получаем GPU handle
         if self.shader_visible:
-            self.gpu_start = dx.GetGPUDescriptorHandleForHeapStart(self.heap_ptr)
-            logger.info(f"[DescriptorHeap] GPU start: 0x{self.gpu_start:X}")
+            raw_gpu_start = dx.GetGPUDescriptorHandleForHeapStart(self.heap_ptr)
+
+            # Проверяем на битый handle от WARP драйвера
+            BROKEN_HANDLES = [0, 0x15678A00110000, 0x25678A00120000]
+            if raw_gpu_start in BROKEN_HANDLES or raw_gpu_start < 0x1000000000000:
+                # Вычисляем правильный GPU handle
+                # CPU и GPU handles обычно отличаются на 0x10000
+                self.gpu_start = self.cpu_start + 0x10000
+                logger.warning(f"[DescriptorHeap] Driver returned broken GPU handle 0x{raw_gpu_start:X}")
+                logger.info(f"[DescriptorHeap] Using computed GPU start: 0x{self.gpu_start:X}")
+            else:
+                self.gpu_start = raw_gpu_start
+                logger.info(f"[DescriptorHeap] GPU start: 0x{self.gpu_start:X}")
         else:
             self.gpu_start = 0
 

@@ -41,8 +41,22 @@ _DEFAULT_DLL_NAME = f"alkash3d_dx12{_ext}"
 _lib: Optional[ctypes.CDLL] = None
 _lib_path: Optional[str] = None
 
+_PTR_CACHE = {}
+_PTR_CACHE_LOCK = threading.RLock()
+
 _TEMP_BUFFERS = []
 _TEMP_BUFFERS_LOCK = threading.RLock()
+
+
+def _get_cached_void_p(ptr_value: int) -> ctypes.c_void_p:
+    """Возвращает кэшированный ctypes.c_void_p для указателя."""
+    if ptr_value == 0:
+        return ctypes.c_void_p(0)
+
+    with _PTR_CACHE_LOCK:
+        if ptr_value not in _PTR_CACHE:
+            _PTR_CACHE[ptr_value] = ctypes.c_void_p(ptr_value)
+        return _PTR_CACHE[ptr_value]
 
 
 def _cleanup_temp_buffers():
@@ -201,38 +215,40 @@ _get_rtv_descriptor_size = _load_func("get_rtv_descriptor_size", ctypes.c_uint32
 _get_dsv_descriptor_size = _load_func("get_dsv_descriptor_size", ctypes.c_uint32, [], required=True)
 _set_vsync = _load_func("set_vsync", None, [ctypes.c_bool], required=False)
 
-
 def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
     if ptr is None:
         return ctypes.c_void_p()
     if isinstance(ptr, ctypes.c_void_p):
         return ptr
+    if isinstance(ptr, int):
+        return _get_cached_void_p(ptr)
     try:
-        return ctypes.c_void_p(int(ptr))
+        return _get_cached_void_p(int(ptr))
     except Exception:
         return ctypes.c_void_p()
-
 
 # ----------------------------------------------------------------------
 # Public API
 # ----------------------------------------------------------------------
 
 def create_device() -> ctypes.c_void_p:
-    return _to_cvoid(_create_device())
+    ptr_val = _create_device()
+    return _get_cached_void_p(ptr_val)
 
 
 def create_command_queue(device: ctypes.c_void_p) -> ctypes.c_void_p:
-    return _to_cvoid(_create_command_queue(_to_cvoid(device)))
+    ptr_val = _create_command_queue(_to_cvoid(device))
+    return _get_cached_void_p(ptr_val)
 
 
 def create_swap_chain(queue: ctypes.c_void_p, hwnd: int, width: int, height: int) -> ctypes.c_void_p:
-    return _to_cvoid(_create_swap_chain(
+    ptr_val = _create_swap_chain(
         _to_cvoid(queue),
         ctypes.c_uint64(hwnd),
         ctypes.c_uint32(width),
         ctypes.c_uint32(height),
-    ))
-
+    )
+    return _get_cached_void_p(ptr_val)
 
 def swap_chain_get_buffer(swap: ctypes.c_void_p, idx: int) -> ctypes.c_void_p:
     return _to_cvoid(_swap_chain_get_buffer(_to_cvoid(swap), ctypes.c_uint32(idx)))
@@ -301,11 +317,13 @@ def set_graphics_pipeline(pso: ctypes.c_void_p) -> bool:
 
 def create_buffer(device: ctypes.c_void_p, size: int, usage: str = "default") -> ctypes.c_void_p:
     usage_bytes = ctypes.create_string_buffer(usage.encode('utf-8'))
-    return _to_cvoid(_create_buffer(
+    result = _create_buffer(
         _to_cvoid(device),
         ctypes.c_size_t(size),
         ctypes.cast(usage_bytes, ctypes.c_void_p)
-    ))
+    )
+    # result - это int (указатель)
+    return _get_cached_void_p(result)
 
 
 def update_subresource(buffer: ctypes.c_void_p, data: bytes) -> bool:
@@ -538,13 +556,20 @@ def set_vertex_buffers(vertex_buffer: ctypes.c_void_p, index_buffer: Optional[ct
         raise RuntimeError("set_vertex_buffers not available")
 
     try:
-        # Убеждаемся, что передаём правильные указатели
-        vb_ptr = ctypes.c_void_p(vertex_buffer.value if hasattr(vertex_buffer, 'value') else int(vertex_buffer))
-        ib_ptr = ctypes.c_void_p(0)
-        if index_buffer:
-            ib_ptr = ctypes.c_void_p(index_buffer.value if hasattr(index_buffer, 'value') else int(index_buffer))
+        # Получаем значение указателя как int
+        vb_val = vertex_buffer.value if hasattr(vertex_buffer, 'value') else int(vertex_buffer)
 
-        logger.debug(f"[d3d12_wrapper] set_vertex_buffers: vb=0x{vb_ptr.value:X}, ib=0x{ib_ptr.value:X}")
+        # Создаём ctypes.c_void_p с правильным значением
+        vb_ptr = ctypes.c_void_p(vb_val)
+        ib_ptr = ctypes.c_void_p(0)
+
+        if index_buffer:
+            ib_val = index_buffer.value if hasattr(index_buffer, 'value') else int(index_buffer)
+            ib_ptr = ctypes.c_void_p(ib_val)
+
+        logger.debug(f"[d3d12_wrapper] set_vertex_buffers: vb=0x{vb_val:X}, ib=0x{ib_val if index_buffer else 0:X}")
+
+        # Передаём указатели напрямую
         result = _set_vertex_buffers(vb_ptr, ib_ptr)
         return bool(result)
     except Exception as e:
