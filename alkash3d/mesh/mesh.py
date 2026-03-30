@@ -23,7 +23,7 @@ class Mesh(Node):
                  indices: np.ndarray | None = None,
                  normals: np.ndarray | None = None,
                  texcoords: np.ndarray | None = None,
-                 name: str = "Mesh"):
+                 name: str = "1Mesh"):
         super().__init__(name)
 
         # Приводим в нужный формат
@@ -54,7 +54,7 @@ class Mesh(Node):
         # Вычисляем bounding sphere
         self._compute_bounding_sphere()
 
-        logger.info(f"[Mesh] Created {name}:")
+        logger.info(f"[1Mesh] Created {name}:")
         logger.info(f"  - Vertices: {len(self.vertices)}")
         logger.info(f"  - Indices: {len(self.indices) if self.indices is not None else 0}")
         if len(self.vertices) > 0:
@@ -85,42 +85,42 @@ class Mesh(Node):
     def draw(self, backend):
         """Отрисовка меша."""
         if not self.visible:
-            logger.debug(f"[Mesh] {self.name} not visible, skipping")
+            logger.debug(f"[1Mesh] {self.name} not visible, skipping")
             return
 
-        logger.info(f"[Mesh] === Drawing {self.name} ===")
+        logger.info(f"[1Mesh] === Drawing {self.name} ===")
 
         # 1️⃣ Создаём vertex buffer
         if self._vb is None:
-            logger.info(f"[Mesh] Creating vertex buffer for {self.name}")
+            logger.info(f"[1Mesh] Creating vertex buffer for {self.name}")
             vertex_data = self.vertices.tobytes()
-            logger.info(f"[Mesh] Vertex data size: {len(vertex_data)} bytes")
-            logger.info(f"[Mesh] Vertex layout: {self.vertices.shape}, dtype={self.vertices.dtype}")
+            logger.info(f"[1Mesh] Vertex data size: {len(vertex_data)} bytes")
+            logger.info(f"[1Mesh] Vertex layout: {self.vertices.shape}, dtype={self.vertices.dtype}")
 
             self._vb = backend.create_buffer(vertex_data, usage="vertex")
 
             if self._vb and hasattr(self._vb, 'value'):
-                logger.info(f"[Mesh] Vertex buffer created: {hex(self._vb.value)}")
+                logger.info(f"[1Mesh] Vertex buffer created: {hex(self._vb.value)}")
             else:
-                logger.error(f"[Mesh] FAILED to create vertex buffer for {self.name}")
+                logger.error(f"[1Mesh] FAILED to create vertex buffer for {self.name}")
                 return
         else:
             logger.info(
-                f"[Mesh] Vertex buffer already exists: {hex(self._vb.value if hasattr(self._vb, 'value') else 0)}")
+                f"[1Mesh] Vertex buffer already exists: {hex(self._vb.value if hasattr(self._vb, 'value') else 0)}")
 
         # 2️⃣ Создаём index buffer (если нужен) - отдельный буфер!
         if self.indices is not None and self._ib is None:
-            logger.info(f"[Mesh] Creating index buffer for {self.name}")
+            logger.info(f"[1Mesh] Creating index buffer for {self.name}")
             index_data = self.indices.tobytes()
-            logger.info(f"[Mesh] Index data size: {len(index_data)} bytes")
-            logger.info(f"[Mesh] First indices: {self.indices[:6]}")
+            logger.info(f"[1Mesh] Index data size: {len(index_data)} bytes")
+            logger.info(f"[1Mesh] First indices: {self.indices[:6]}")
 
             self._ib = backend.create_buffer(index_data, usage="index")
 
             if self._ib and hasattr(self._ib, 'value'):
-                logger.info(f"[Mesh] Index buffer created: {hex(self._ib.value)}")
+                logger.info(f"[1Mesh] Index buffer created: {hex(self._ib.value)}")
             else:
-                logger.error(f"[Mesh] FAILED to create index buffer for {self.name}")
+                logger.error(f"[1Mesh] FAILED to create index buffer for {self.name}")
 
         # 3️⃣ Привязываем буферы
         if self._vb:
@@ -130,32 +130,32 @@ class Mesh(Node):
             if self._ib:
                 ib_val = self._ib.value if hasattr(self._ib, 'value') else int(self._ib)
                 if vb_val == ib_val:
-                    logger.error(f"[Mesh] Vertex and index buffers have same address: 0x{vb_val:X}")
+                    logger.error(f"[1Mesh] Vertex and index buffers have same address: 0x{vb_val:X}")
                     return
 
-            logger.info(f"[Mesh] Setting vertex buffers")
+            logger.info(f"[1Mesh] Setting vertex buffers")
             backend.set_vertex_buffers(self._vb, self._ib if self.indices is not None else None)
 
             # 4️⃣ Выполняем draw call
             if self.indices is not None and self._ib:
-                logger.info(f"[Mesh] Drawing INDEXED: {len(self.indices)} indices")
+                logger.info(f"[1Mesh] Drawing INDEXED: {len(self.indices)} indices")
                 result = backend.draw_indexed(
                     len(self.indices),
                     start_index=0,
                     base_vertex=0,
                     instance_count=1
                 )
-                logger.info(f"[Mesh] Indexed draw result: {result}")
+                logger.info(f"[1Mesh] Indexed draw result: {result}")
             else:
-                logger.info(f"[Mesh] Drawing NON-INDEXED: {len(self.vertices)} vertices")
+                logger.info(f"[1Mesh] Drawing NON-INDEXED: {len(self.vertices)} vertices")
                 result = backend.draw(
                     len(self.vertices),
                     start_vertex=0,
                     instance_count=1
                 )
-                logger.info(f"[Mesh] Non-indexed draw result: {result}")
+                logger.info(f"[1Mesh] Non-indexed draw result: {result}")
         else:
-            logger.error(f"[Mesh] No vertex buffer for {self.name}")
+            logger.error(f"[1Mesh] No vertex buffer for {self.name}")
 
     def get_world_matrix(self):
         return super().get_world_matrix()
