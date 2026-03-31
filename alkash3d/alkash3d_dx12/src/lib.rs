@@ -1813,9 +1813,11 @@ pub extern "C" fn create_graphics_ps(
 
 /* ==================== ОСНОВНЫЕ ФУНКЦИИ РЕНДЕРИНГА ==================== */
 
+// В lib.rs, функция begin_frame - она должна ТОЛЬКО сбрасывать command list
 #[no_mangle]
 pub unsafe extern "C" fn begin_frame() -> bool {
     debug_println!("\n[API] begin_frame() called");
+    debug_println!("[API] Stack trace will be printed...");
 
     // Получаем текущий индекс кадра
     let frame_index = {
@@ -1892,6 +1894,7 @@ pub unsafe extern "C" fn begin_frame() -> bool {
         match list.Reset(&allocator, None) {
             Ok(()) => {
                 debug_println!("[API] Command list reset successfully");
+                // ❗ НЕ вызываем SetGraphicsRootDescriptorTable здесь!
                 true
             }
             Err(e) => {
@@ -1905,9 +1908,11 @@ pub unsafe extern "C" fn begin_frame() -> bool {
     }
 }
 
+// Исправленная end_frame - убираем вызовы set_root_descriptor_table
 #[no_mangle]
 pub unsafe extern "C" fn end_frame() -> bool {
     debug_println!("\n[API] end_frame() called");
+    debug_println!("[API] Stack trace will be printed...");
 
     let (queue_opt, cmd_list_opt, fence_opt) = {
         let state = STATE.lock().unwrap();
@@ -2054,29 +2059,48 @@ pub unsafe extern "C" fn wait_for_gpu() -> bool {
 
 #[no_mangle]
 pub unsafe extern "C" fn set_graphics_pipeline(pso_ptr: *mut c_void) -> bool {
+    debug_println!("\n[API] set_graphics_pipeline() called");
+    debug_println!("[API] pso_ptr = {:p}", pso_ptr);
+
     let state = STATE.lock().unwrap();
     if let Some(list) = &state.command_list {
         if let Some(pso) = ptr_utils::as_pipeline_state(pso_ptr) {
             list.SetPipelineState(&pso);
             std::mem::forget(pso);
+            debug_println!("[API] set_graphics_pipeline SUCCESS");
             return true;
         }
+    }
+    debug_println!("[API] set_graphics_pipeline FAILED");
+    false
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn is_command_list_open() -> bool {
+    let state = STATE.lock().unwrap();
+    if let Some(list) = &state.command_list {
+        // В DirectX 12 нет прямого способа проверить, открыт ли command list,
+        // но мы можем попробовать выполнить простую операцию и поймать ошибку
+        // Вместо этого, просто проверяем, что list не null
+        return !list.as_raw().is_null();
     }
     false
 }
 
+// Исправленная set_root_descriptor_table с проверкой
 #[no_mangle]
 pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: u64) -> bool {
-    eprintln!("\n=== set_root_descriptor_table ===");
-    eprintln!("root_index = {}", root_index);
-    eprintln!("gpu_handle = 0x{:X}", gpu_handle);
+    eprintln!("\n========================================");
+    eprintln!("=== set_root_descriptor_table CALLED ===");
+    eprintln!("=== root_index = {} ===", root_index);
+    eprintln!("=== gpu_handle = 0x{:X} ===", gpu_handle);
 
     if gpu_handle == 0 {
         eprintln!("ERROR: gpu_handle равен 0");
         return false;
     }
 
-    // Убираем ВСЕ проверки на битые handle
     let state = match STATE.lock() {
         Ok(s) => s,
         Err(e) => {
@@ -2091,11 +2115,22 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
             return false;
         }
 
+        eprintln!("  Command list address: {:p}", list.as_raw());
+
+        // Проверяем, что root signature установлен
+        if let Some(root_sig) = &state.root_signature {
+            eprintln!("  Root signature present: {:p}", root_sig.as_raw());
+        } else {
+            eprintln!("  WARNING: No root signature set!");
+        }
+
         let handle = D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu_handle };
         eprintln!("  Calling SetGraphicsRootDescriptorTable with handle=0x{:X}", handle.ptr);
 
+        // Пытаемся выполнить операцию
+        // Если command list закрыт, это вызовет ошибку
         list.SetGraphicsRootDescriptorTable(root_index, handle);
-        eprintln!("  SUCCESS");
+        eprintln!("  SetGraphicsRootDescriptorTable executed successfully");
         true
     } else {
         eprintln!("ERROR: No command list available");

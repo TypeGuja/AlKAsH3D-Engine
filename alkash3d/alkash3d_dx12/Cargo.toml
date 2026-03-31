@@ -19,3 +19,4 @@ windows = { version = "0.62.2", features = [
 ] }
 windows-core = "0.62.2"
 lazy_static = "1.5.0"
+backtrace = "0.3.76"
