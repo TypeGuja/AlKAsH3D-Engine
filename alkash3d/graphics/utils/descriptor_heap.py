@@ -87,7 +87,19 @@ class DescriptorHeap:
             raise RuntimeError("GPU handle requested for non-shader-visible heap")
         if index >= self.num_descriptors:
             raise IndexError(f"Index {index} out of range")
-        return self.gpu_start + (index * self.increment_size)
+
+        result = self.gpu_start + (index * self.increment_size)
+
+        print(f"[DescriptorHeap] get_gpu_handle({index}):")
+        print(f"  gpu_start: 0x{self.gpu_start:X}")
+        print(f"  increment: {self.increment_size}")
+        print(f"  result: 0x{result:X}")
+
+        # Проверяем, что handle в разумных пределах
+        if result < 0x10000 or result > 0x7FFFFFFFFFFFF:
+            print(f"  WARNING: Suspicious GPU handle!")
+
+        return result
 
     def next_free(self) -> int:
         if self._current_index >= self.num_descriptors:
