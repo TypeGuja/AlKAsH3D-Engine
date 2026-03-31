@@ -30,7 +30,7 @@ class ForwardRenderer:
         # Создаём белую текстуру
         self._create_white_placeholder()
 
-        # Флаг, что heap уже установлен
+        # Флаги
         self._heap_set = False
 
     # ------------------------------------------------------------------
@@ -73,6 +73,7 @@ class ForwardRenderer:
     # ------------------------------------------------------------------
     def render(self, scene, camera):
         try:
+            # 1. Устанавливаем дескрипторные хипы (один раз)
             if not self._heap_set and hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
                 heap = self.backend.cbv_srv_uav_heap
                 heap_ptr = heap.heap_ptr
@@ -81,10 +82,12 @@ class ForwardRenderer:
                     self.backend.set_descriptor_heaps([heap_ptr])
                     self._heap_set = True
 
+            # 2. Начинаем кадр
             if not self.backend.begin_frame():
                 logger.error("[ForwardRenderer] begin_frame failed")
                 return
 
+            # 3. Устанавливаем render target
             if (hasattr(self.backend, "rtv_heap") and self.backend.rtv_heap
                     and self.backend.rtv_heap.num_descriptors > 0):
                 frame_idx = self.backend.get_frame_index() % dx.SWAP_CHAIN_BUFFER_COUNT
@@ -92,11 +95,13 @@ class ForwardRenderer:
                 self.backend.set_render_target(back_rtv)
                 self.backend.clear_render_target(back_rtv, (0.2, 0.3, 0.4, 1.0))
 
+            # 4. Устанавливаем PSO и descriptor table
             if not self.shader.use():
                 logger.error("[ForwardRenderer] shader.use() failed")
                 self.backend.end_frame()
                 return
 
+            # 5. Обновляем uniform'ы
             aspect = self.window.width / max(self.window.height, 1.0)
             view = camera.get_view_matrix()
             proj = camera.get_projection_matrix(aspect)
@@ -104,7 +109,7 @@ class ForwardRenderer:
             self.shader.set_uniform_mat4("uProj", proj)
             self.shader.set_uniform_vec4("uTint", (1.0, 1.0, 1.0, 1.0))
 
-            # Отрисовка всех узлов
+            # 6. Отрисовка всех узлов
             for node in scene.traverse():
                 if not hasattr(node, "draw"):
                     continue
@@ -114,13 +119,22 @@ class ForwardRenderer:
                 model = node.get_world_matrix()
                 self.shader.set_uniform_mat4("uModel", model.to_gl())
 
-                # 👇 КЛЮЧЕВОЙ МОМЕНТ: отправляем данные в GPU перед отрисовкой
+                # Только обновляем буфер
                 self.shader.flush()
 
                 node.draw(self.backend)
 
+            # 7. Завершаем кадр
             if not self.backend.end_frame():
                 logger.error("[ForwardRenderer] end_frame failed")
+                return
+
+            # 8. Сбрасываем флаг для следующего кадра
+            self.shader.reset_descriptor_table_flag()
+
+            # 9. Отображаем кадр
+            if hasattr(self.backend, 'present'):
+                self.backend.present()
 
         except Exception as e:
             logger.error(f"[ForwardRenderer] render error: {e}")
