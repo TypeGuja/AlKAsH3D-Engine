@@ -348,7 +348,24 @@ class DX12Backend(GraphicsBackend):
         return dx.create_constant_buffer_view(self.device, resource, cpu_handle)
 
     def set_root_descriptor_table(self, root_index: int, gpu_handle: int) -> bool:
-        return dx.set_root_descriptor_table(root_index, gpu_handle)
+        """Устанавливает root descriptor table."""
+        import traceback
+        print(f"\n[PYTHON] set_root_descriptor_table called:")
+        print(f"  root_index={root_index}, gpu_handle=0x{gpu_handle:X}")
+        print(f"  Call stack:")
+        traceback.print_stack()
+
+        if not gpu_handle:
+            logger.error("[DX12Backend] set_root_descriptor_table: invalid gpu_handle")
+            return False
+
+        try:
+            result = dx.set_root_descriptor_table(root_index, gpu_handle)
+            print(f"[PYTHON] set_root_descriptor_table result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[DX12Backend] set_root_descriptor_table failed: {e}")
+            return False
 
     def set_descriptor_heaps(self, heaps: Sequence[Any]) -> bool:
         """Устанавливает дескрипторные хипы."""
@@ -453,15 +470,14 @@ class DX12Backend(GraphicsBackend):
             self.rtv_heap.reset()
         if self.cbv_srv_uav_heap:
             self.cbv_srv_uav_heap.reset()
-            # Убираем set_descriptor_heaps отсюда - он вызывается в render один раз
+        # ❗ НЕ вызываем set_root_descriptor_table здесь!
         return dx.begin_frame()
 
     def end_frame(self) -> bool:
         if not self._initialized:
             return False
         ok = dx.end_frame()
-        if ok and self.swap_chain:
-            self.present(1 if self._vsync_enabled else 0)
+        # Убираем present отсюда - он вызывается в forward.py
         return ok
 
     def wait_for_gpu(self) -> bool:
