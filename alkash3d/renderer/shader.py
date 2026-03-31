@@ -51,22 +51,47 @@ class Shader:
         if not backend.create_constant_buffer_view(self._frame_cb, cb_cpu):
             raise RuntimeError("Failed to create constant buffer view")
 
-        # ✅ ВАЖНО: для root descriptor table нужен GPU handle!
+        # Получаем GPU handle для дескрипторной таблицы
         self._descriptor_table_handle = backend.cbv_srv_uav_heap.get_gpu_handle(self._cb_slot)
         logger.info(f"[Shader] Descriptor table GPU handle: 0x{self._descriptor_table_handle:X}")
 
         self._frame_data = bytearray(self._CB_SIZE)
         self._dirty = False
+        self._descriptor_table_set = False
 
     def use(self) -> bool:
         if not self.pso:
             logger.error("[Shader] No valid PSO")
             return False
         try:
-            return self.backend.set_graphics_pipeline(self.pso)
+            import traceback
+            print(f"\n[PYTHON] Shader.use() called")
+            print(f"  descriptor_table_set = {self._descriptor_table_set}")
+            print(f"  Call stack:")
+            traceback.print_stack()
+
+            # Сначала устанавливаем PSO
+            result = self.backend.set_graphics_pipeline(self.pso)
+            print(f"[PYTHON] set_graphics_pipeline result: {result}")
+
+            # Затем устанавливаем descriptor table (только если не установлена)
+            if result and not self._descriptor_table_set:
+                print(f"[PYTHON] Setting descriptor table with handle 0x{self._descriptor_table_handle:X}")
+                if not self.backend.set_root_descriptor_table(0, self._descriptor_table_handle):
+                    logger.error("[Shader] Failed to set root descriptor table")
+                    return False
+                self._descriptor_table_set = True
+
+            return result
         except Exception as e:
             logger.error(f"[Shader] use error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+
+    def reset_descriptor_table_flag(self) -> None:
+        """Сбрасывает флаг для следующего кадра"""
+        self._descriptor_table_set = False
 
     def _write_to_cb(self, offset: int, data_bytes: bytes) -> None:
         end = offset + len(data_bytes)
@@ -102,28 +127,17 @@ class Shader:
             logger.error(f"[Shader] set_uniform_vec4({name}) error: {e}")
 
     def flush(self) -> None:
-        """Отправляет данные в GPU."""
+        """Только обновляет constant buffer"""
         if not self._dirty:
-            logger.debug("[Shader] No dirty data, skipping flush")
             return
 
-        logger.info(f"[Shader] Flushing {self._CB_SIZE} bytes, dirty={self._dirty}")
+        logger.debug(f"[Shader] Flushing {self._CB_SIZE} bytes")
 
-        # Обновляем constant buffer
         if not self.backend.update_buffer(self._frame_cb, bytes(self._frame_data)):
             logger.error("[Shader] Failed to update constant buffer")
             return
 
-        # Проверяем, что command list существует и не закрыт
-        # Устанавливаем descriptor table (root parameter 0 = CBV)
-        logger.info(f"[Shader] Setting root descriptor table with handle 0x{self._descriptor_table_handle:X}")
-
-        if not self.backend.set_root_descriptor_table(0, self._descriptor_table_handle):
-            logger.error("[Shader] Failed to set descriptor table")
-            return
-
         self._dirty = False
-        logger.debug("[Shader] Flush completed")
 
     @property
     def cb_slot(self) -> int:
@@ -132,6 +146,10 @@ class Shader:
     @property
     def tex_slot(self) -> int:
         return self._tex_slot
+
+    @property
+    def descriptor_table_handle(self) -> int:
+        return self._descriptor_table_handle
 
     def __repr__(self) -> str:
         return f"Shader(vs={os.path.basename(self.vertex_path)}, ps={os.path.basename(self.fragment_path)}, pso=0x{self.pso:x})"
