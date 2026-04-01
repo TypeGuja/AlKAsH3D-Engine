@@ -14,7 +14,7 @@ from alkash3d.graphics.utils import d3d12_wrapper as dx
 from alkash3d.graphics.utils.descriptor_heap import DescriptorHeap
 from alkash3d.utils.logger import logger
 
-DEBUG = True
+DEBUG = False
 
 
 def debug_print(*args, **kwargs):
@@ -59,6 +59,7 @@ class DX12Backend(GraphicsBackend):
 
         self._current_frame = 0
         self._initialized = False
+        self._is_warp = False  # Флаг WARP драйвера
 
     def _reset_viewport_and_scissor(self, w: int, h: int) -> bool:
         debug_print(f"_reset_viewport_and_scissor({w}x{h})")
@@ -145,6 +146,30 @@ class DX12Backend(GraphicsBackend):
         time.sleep(0.1)
         debug_print("  cleanup finished")
 
+    def _check_warp_driver(self) -> bool:
+        """Проверяет, используется ли WARP драйвер."""
+        try:
+            # Создаём тестовую кучу
+            if not self.device:
+                return True
+
+            test_heap = DescriptorHeap(self.device, 1, "cbv_srv_uav", True)
+            gpu_handle = test_heap.get_gpu_handle(0)
+
+            # Освобождаем тестовую кучу
+            dx.release_resource(test_heap.heap_ptr)
+
+            # Проверяем на битые handle
+            BROKEN_HANDLES = [0, 0x15678A00110000, 0x25678A00120000]
+            if gpu_handle in BROKEN_HANDLES:
+                logger.warning("[DX12Backend] WARP driver detected (broken GPU handles)")
+                return True
+
+            return False
+        except Exception as e:
+            logger.error(f"[DX12Backend] Error checking WARP: {e}")
+            return True
+
     def init_device(self, hwnd: int, width: int, height: int) -> None:
         debug_print(f"init_device(hwnd={hex(hwnd)}, {width}x{height})")
         self._hwnd = hwnd
@@ -185,11 +210,17 @@ class DX12Backend(GraphicsBackend):
         )
         debug_print("  RTV heap created")
 
+        # Проверяем WARP драйвер
+        self._is_warp = self._check_warp_driver()
+
+        # Для WARP используем CPU-видимые кучи
+        shader_visible = not self._is_warp
+
         self.cbv_srv_uav_heap = DescriptorHeap(
             device=self.device,
             num_descriptors=1024,
             heap_type="cbv_srv_uav",
-            shader_visible=True,
+            shader_visible=shader_visible,
         )
         debug_print("  CBV/SRV/UAV heap created")
 
@@ -199,7 +230,7 @@ class DX12Backend(GraphicsBackend):
 
         self._initialized = True
         self._current_frame = self.get_frame_index()
-        logger.info("[DX12Backend] Device initialised successfully")
+        logger.info(f"[DX12Backend] Device initialised successfully (WARP={self._is_warp})")
 
     def resize(self, width: int, height: int) -> bool:
         debug_print(f"resize({width}x{height})")
@@ -253,7 +284,6 @@ class DX12Backend(GraphicsBackend):
             raise ValueError("Invalid PSO")
         return dx.set_graphics_pipeline(ctypes.c_void_p(pso))
 
-    # alkash3d/graphics/dx12_backend.py - добавим проверку в create_buffer
     def create_buffer(self, data: bytes, usage: str = "default") -> ctypes.c_void_p:
         """Создаёт буфер (vertex, index или constant)."""
         if not self.device or not self.device.value:
@@ -264,21 +294,16 @@ class DX12Backend(GraphicsBackend):
         size = len(data)
         logger.info(f"[DX12Backend] Creating buffer: size={size}, usage={usage}")
 
-        # Создаём буфер
         buf = dx.create_buffer(self.device, size, usage)
         if not buf or not buf.value:
             raise RuntimeError(f"Failed to create buffer of size {size}")
 
         logger.info(f"[DX12Backend] Buffer created at 0x{buf.value:X}")
 
-        # Обновляем данные
         if not self.update_buffer(buf, data):
             raise RuntimeError("Failed to update buffer data")
 
-        # Сохраняем в список для последующей очистки
         self._resources.append(buf)
-
-        # ⚠️ ВАЖНО: возвращаем ОРИГИНАЛЬНЫЙ объект, а не копию!
         return buf
 
     def update_buffer(self, buffer: ctypes.c_void_p, data: bytes) -> bool:
@@ -291,7 +316,6 @@ class DX12Backend(GraphicsBackend):
             return False
 
         try:
-            # buffer уже должен быть ctypes.c_void_p
             result = dx.update_subresource(buffer, data)
             if not result:
                 logger.error(f"update_buffer: update_subresource returned False for size {len(data)}")
@@ -324,6 +348,12 @@ class DX12Backend(GraphicsBackend):
                                shader_visible: bool = True) -> DescriptorHeap:
         if not self.device or not self.device.value:
             raise RuntimeError("Device is null")
+
+        # Для WARP принудительно используем CPU-видимые кучи
+        if self._is_warp and shader_visible:
+            logger.warning("[DX12Backend] WARP detected: forcing CPU-visible heap")
+            shader_visible = False
+
         return DescriptorHeap(self.device, num_descriptors, heap_type, shader_visible)
 
     def get_cpu_handle(self, heap: DescriptorHeap, index: int) -> int:
@@ -349,19 +379,16 @@ class DX12Backend(GraphicsBackend):
 
     def set_root_descriptor_table(self, root_index: int, gpu_handle: int) -> bool:
         """Устанавливает root descriptor table."""
-        import traceback
-        print(f"\n[PYTHON] set_root_descriptor_table called:")
-        print(f"  root_index={root_index}, gpu_handle=0x{gpu_handle:X}")
-        print(f"  Call stack:")
-        traceback.print_stack()
+        logger.debug(f"[DX12Backend] set_root_descriptor_table(root={root_index}, handle=0x{gpu_handle:X})")
 
-        if not gpu_handle:
-            logger.error("[DX12Backend] set_root_descriptor_table: invalid gpu_handle")
+        if gpu_handle == 0:
+            logger.error("[DX12Backend] set_root_descriptor_table: invalid gpu_handle (0)")
             return False
 
         try:
             result = dx.set_root_descriptor_table(root_index, gpu_handle)
-            print(f"[PYTHON] set_root_descriptor_table result: {result}")
+            if not result:
+                logger.error("[DX12Backend] Native set_root_descriptor_table returned False")
             return result
         except Exception as e:
             logger.error(f"[DX12Backend] set_root_descriptor_table failed: {e}")
@@ -369,7 +396,6 @@ class DX12Backend(GraphicsBackend):
 
     def set_descriptor_heaps(self, heaps: Sequence[Any]) -> bool:
         """Устанавливает дескрипторные хипы."""
-        # Преобразуем в список c_void_p
         heap_ptrs = []
         for h in heaps:
             if h is None:
@@ -377,6 +403,8 @@ class DX12Backend(GraphicsBackend):
             if isinstance(h, ctypes.c_void_p):
                 if h.value:
                     heap_ptrs.append(h)
+            elif hasattr(h, 'heap_ptr') and h.heap_ptr:
+                heap_ptrs.append(h.heap_ptr)
             elif hasattr(h, 'value'):
                 if h.value:
                     heap_ptrs.append(ctypes.c_void_p(h.value))
@@ -388,7 +416,7 @@ class DX12Backend(GraphicsBackend):
             logger.error("[DX12Backend] No valid heaps to set")
             return False
 
-        logger.info(f"[DX12Backend] Setting {len(heap_ptrs)} heaps, first: 0x{heap_ptrs[0].value:X}")
+        logger.debug(f"[DX12Backend] Setting {len(heap_ptrs)} heaps")
         return dx.set_descriptor_heaps(heap_ptrs)
 
     def set_render_target(self, rtv: int) -> bool:
@@ -408,7 +436,6 @@ class DX12Backend(GraphicsBackend):
         self.scissor = (left, top, right, bottom)
         return dx.set_scissor_rect(left, top, right, bottom)
 
-    # alkash3d/graphics/dx12_backend.py
     def set_vertex_buffers(self, vertex_buffer: ctypes.c_void_p,
                            index_buffer: Optional[ctypes.c_void_p] = None) -> bool:
         """Устанавливает vertex и index буферы."""
@@ -422,20 +449,17 @@ class DX12Backend(GraphicsBackend):
                 logger.error("[DX12Backend] set_vertex_buffers: vertex buffer value is 0")
                 return False
 
-            # Проверяем, что буферы разные
-            ib_val = 0
+            vb = ctypes.c_void_p(vb_val)
+            ib = ctypes.c_void_p(0)
+
             if index_buffer:
                 ib_val = index_buffer.value if hasattr(index_buffer, 'value') else int(index_buffer)
-                if ib_val and vb_val == ib_val:
-                    logger.error(f"[DX12Backend] Vertex and index buffers have same address: 0x{vb_val:X}")
-                    return False
-
-            vb = ctypes.c_void_p(vb_val)
-            ib = ctypes.c_void_p(ib_val) if ib_val else ctypes.c_void_p(0)
+                if ib_val:
+                    ib = ctypes.c_void_p(ib_val)
 
             logger.debug(f"[DX12Backend] Setting vertex buffer: 0x{vb_val:X}")
-            if ib_val:
-                logger.debug(f"[DX12Backend] Setting index buffer: 0x{ib_val:X}")
+            if ib.value:
+                logger.debug(f"[DX12Backend] Setting index buffer: 0x{ib.value:X}")
 
             result = dx.set_vertex_buffers(vb, ib)
             if not result:
@@ -470,20 +494,29 @@ class DX12Backend(GraphicsBackend):
             self.rtv_heap.reset()
         if self.cbv_srv_uav_heap:
             self.cbv_srv_uav_heap.reset()
-        # ❗ НЕ вызываем set_root_descriptor_table здесь!
-        return dx.begin_frame()
+        try:
+            return dx.begin_frame()
+        except Exception as e:
+            logger.error(f"[DX12Backend] begin_frame exception: {e}")
+            return False
 
     def end_frame(self) -> bool:
         if not self._initialized:
             return False
-        ok = dx.end_frame()
-        # Убираем present отсюда - он вызывается в forward.py
-        return ok
+        try:
+            return dx.end_frame()
+        except Exception as e:
+            logger.error(f"[DX12Backend] end_frame exception: {e}")
+            return False
 
     def wait_for_gpu(self) -> bool:
         if not self.command_queue:
             return False
-        return dx.wait_for_gpu()
+        try:
+            return dx.wait_for_gpu()
+        except Exception as e:
+            logger.error(f"[DX12Backend] wait_for_gpu exception: {e}")
+            return False
 
     def enable_depth_test(self, enable: bool) -> None:
         self._depth_test_enabled = enable
