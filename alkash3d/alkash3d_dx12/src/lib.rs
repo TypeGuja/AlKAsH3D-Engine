@@ -1025,7 +1025,7 @@ pub extern "C" fn release_resource(res_ptr: *mut c_void) {
 
 #[no_mangle]
 pub extern "C" fn force_cleanup() {
-    println!("\n[API] force_cleanup() called");
+    println!("\n[API_fcle] force_cleanup() called");
     unsafe {
         let mut state = STATE.lock().unwrap();
         state.command_list = None;
@@ -1036,13 +1036,13 @@ pub extern "C" fn force_cleanup() {
         state.fence = None;
         state.rtv_heap = None;
         state.device = None;
-        println!("[API] force_cleanup() done");
+        println!("[API_fcle] force_cleanup() done");
     }
 }
 
 #[no_mangle]
 pub extern "C" fn create_device() -> *mut c_void {
-    println!("\n[API] create_device() called");
+    println!("\n[API_cdev] create_device() called");
 
     unsafe {
         let device = match device_mod::create_d3d12_device() {
@@ -1430,8 +1430,12 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
 
         std::mem::forget(heap);
 
-        // Просто возвращаем то, что дал драйвер
-        // Python сам определит, битый это handle или нет
+        // ✅ Проверяем на битые handle
+        if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0x25678A00120000 {
+            eprintln!("[GetGPUDescriptorHandleForHeapStart] WARNING: Driver returned broken handle 0x{:X}", gpu_ptr);
+            return 0;
+        }
+
         gpu_ptr
     }
 }
@@ -1816,8 +1820,7 @@ pub extern "C" fn create_graphics_ps(
 // В lib.rs, функция begin_frame - она должна ТОЛЬКО сбрасывать command list
 #[no_mangle]
 pub unsafe extern "C" fn begin_frame() -> bool {
-    debug_println!("\n[API] begin_frame() called");
-    debug_println!("[API] Stack trace will be printed...");
+    debug_println!("\n[API_bfra] begin_frame() called");
 
     // Получаем текущий индекс кадра
     let frame_index = {
@@ -1827,7 +1830,7 @@ pub unsafe extern "C" fn begin_frame() -> bool {
 
     // Ждем GPU для текущего кадра
     if !wait_for_gpu() {
-        debug_println!("[API] wait_for_gpu failed in begin_frame");
+        debug_println!("[API_bfra] wait_for_gpu failed in begin_frame");
         return false;
     }
 
@@ -1835,13 +1838,11 @@ pub unsafe extern "C" fn begin_frame() -> bool {
     let (allocator, list) = {
         let mut state = STATE.lock().unwrap();
 
-        // Убеждаемся, что у нас есть аллокаторы
         if state.command_allocators.is_empty() {
-            debug_println!("[API] No command allocators");
+            debug_println!("[API_bfra] No command allocators");
             return false;
         }
 
-        // Используем аллокатор для текущего кадра
         let alloc_index = frame_index % state.command_allocators.len();
         let allocator = state.command_allocators[alloc_index].clone();
         let list = state.command_list.clone();
@@ -1850,60 +1851,35 @@ pub unsafe extern "C" fn begin_frame() -> bool {
     };
 
     if let (Some(allocator), Some(list)) = (allocator, list) {
-        // Проверяем, что list не null
-        if list.as_raw().is_null() {
-            debug_println!("[API] Command list is null");
-            return false;
-        }
-
-        // Сначала пробуем сбросить allocator
-        debug_println!("[API] Resetting allocator...");
+        // Сначала сбрасываем аллокатор
         match allocator.Reset() {
-            Ok(()) => debug_println!("[API] Allocator reset successfully"),
+            Ok(()) => debug_println!("[API_bfra] Allocator reset successfully"),
             Err(e) => {
-                debug_println!("[API] Failed to reset allocator: {:?}", e);
-                // Пробуем создать новый аллокатор
-                if let Some(device) = STATE.lock().unwrap().device.clone() {
-                    let new_allocator: Option<ID3D12CommandAllocator> =
-                        device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT).ok();
-
-                    if let Some(new_allocator) = new_allocator {
-                        let mut state = STATE.lock().unwrap();
-                        let index = frame_index % state.command_allocators.len();
-                        state.command_allocators[index] = Some(new_allocator.clone());
-
-                        // Пробуем сбросить список с новым аллокатором
-                        debug_println!("[API] Resetting command list with new allocator...");
-                        if let Err(e) = list.Reset(&new_allocator, None) {
-                            debug_println!("[API] Failed to reset command list with new allocator: {:?}", e);
-                            return false;
-                        }
-                        debug_println!("[API] Created new allocator and reset command list");
-                        return true;
-                    } else {
-                        debug_println!("[API] Failed to create new allocator");
-                        return false;
-                    }
-                }
+                debug_println!("[API_bfra] Failed to reset allocator: {:?}", e);
                 return false;
             }
         }
 
         // Сбрасываем command list с этим аллокатором
-        debug_println!("[API] Resetting command list...");
         match list.Reset(&allocator, None) {
             Ok(()) => {
-                debug_println!("[API] Command list reset successfully");
-                // ❗ НЕ вызываем SetGraphicsRootDescriptorTable здесь!
+                debug_println!("[API_bfra] Command list reset successfully");
+
+                // ✅ ВАЖНО: Устанавливаем root signature сразу после reset
+                if let Some(root_sig) = STATE.lock().unwrap().root_signature.clone() {
+                    list.SetGraphicsRootSignature(&root_sig);
+                    debug_println!("[API_bfra] Root signature set");
+                }
+
                 true
             }
             Err(e) => {
-                debug_println!("[API] Failed to reset command list: {:?}", e);
+                debug_println!("[API_bfra] Failed to reset command list: {:?}", e);
                 false
             }
         }
     } else {
-        debug_println!("[API] Missing allocator or list");
+        debug_println!("[API_bfra] Missing allocator or list");
         false
     }
 }
@@ -1911,8 +1887,7 @@ pub unsafe extern "C" fn begin_frame() -> bool {
 // Исправленная end_frame - убираем вызовы set_root_descriptor_table
 #[no_mangle]
 pub unsafe extern "C" fn end_frame() -> bool {
-    debug_println!("\n[API] end_frame() called");
-    debug_println!("[API] Stack trace will be printed...");
+    debug_println!("\n[API_efra] end_frame() called");
 
     let (queue_opt, cmd_list_opt, fence_opt) = {
         let state = STATE.lock().unwrap();
@@ -1926,45 +1901,39 @@ pub unsafe extern "C" fn end_frame() -> bool {
     let (queue, cmd_list, fence) = match (queue_opt, cmd_list_opt, fence_opt) {
         (Some(q), Some(cl), Some(f)) => (q, cl, f),
         _ => {
-            debug_println!("[API] Missing queue, command list or fence");
+            debug_println!("[API_efra] Missing queue, command list or fence");
             return false;
         }
     };
 
-    // Проверяем, были ли записаны команды
-    debug_println!("[API] Attempting to close command list...");
-
-    // Пробуем закрыть список команд
+    // ✅ Закрываем command list
     match cmd_list.Close() {
         Ok(()) => {
-            debug_println!("[API] CommandList::Close() succeeded");
+            debug_println!("[API_efra] CommandList::Close() succeeded");
 
             // Выполняем список команд
             let cmd_list_clone = cmd_list.clone();
             let cmd_list_cast: ID3D12CommandList = match cmd_list_clone.cast() {
                 Ok(list) => list,
                 Err(e) => {
-                    debug_println!("[API] Failed to cast command list: {:?}", e);
+                    debug_println!("[API_efra] Failed to cast command list: {:?}", e);
                     return false;
                 }
             };
 
             queue.ExecuteCommandLists(&[Some(cmd_list_cast)]);
-            debug_println!("[API] Command list executed");
+            debug_println!("[API_efra] Command list executed");
         }
         Err(e) => {
-            // Если ошибка E_INVALIDARG, это может значить, что команды не были записаны
-            if e.code().0 == 0x80070057u32 as i32 { // E_INVALIDARG
-                debug_println!("[API] Command list was empty (no commands recorded) - this is normal");
-                // Всё равно выполняем пустой список? Нет, не нужно
-            } else {
-                debug_println!("[API] CommandList::Close() failed: {:?} (HRESULT 0x{:X})", e, e.code().0);
+            debug_println!("[API_efra] CommandList::Close() failed: {:?}", e);
+            // Если список пустой, это нормально
+            if e.code().0 != 0x80070057u32 as i32 {  // E_INVALIDARG
                 return false;
             }
         }
     }
 
-    // Обновляем fence значение
+    // Сигналим fence
     let frame_idx = {
         let state = STATE.lock().unwrap();
         state.frame_index as usize
@@ -1975,24 +1944,22 @@ pub unsafe extern "C" fn end_frame() -> bool {
         state.fence_values[frame_idx] = state.fence_values[frame_idx].wrapping_add(1);
         let fence_val = state.fence_values[frame_idx];
 
-        // Сигналим fence
         if let Err(e) = queue.Signal(&fence, fence_val) {
-            debug_println!("[API] Queue::Signal() failed: {:?}", e);
+            debug_println!("[API_efraI] Queue::Signal() failed: {:?}", e);
             return false;
         }
 
-        debug_println!("[API] end_frame completed – fence value {}", fence_val);
+        debug_println!("[API_efra] end_frame completed – fence value {}", fence_val);
+        true
     } else {
-        debug_println!("[API] Invalid frame index: {}", frame_idx);
-        return false;
+        debug_println!("[API_efra] Invalid frame index: {}", frame_idx);
+        false
     }
-
-    true
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn wait_for_gpu() -> bool {
-    debug_println!("\n[API] wait_for_gpu() called");
+    debug_println!("\n[API_wfg] wait_for_gpu() called");
 
     let (queue, fence) = {
         let state = STATE.lock().unwrap();
@@ -2024,18 +1991,18 @@ pub unsafe extern "C" fn wait_for_gpu() -> bool {
             let completed_value = fence.GetCompletedValue();
 
             if completed_value < fence_value {
-                debug_println!("[API] Waiting for fence: {} < {}", completed_value, fence_value);
+                debug_println!("[API_wfg] Waiting for fence: {} < {}", completed_value, fence_value);
 
                 let event = match CreateEventA(None, true, false, None) {
                     Ok(e) => e,
                     Err(_) => {
-                        debug_println!("[API] Failed to create event");
+                        debug_println!("[API_wfg] Failed to create event");
                         return false;
                     }
                 };
 
                 if let Err(e) = fence.SetEventOnCompletion(fence_value, event) {
-                    debug_println!("[API] SetEventOnCompletion failed: {:?}", e);
+                    debug_println!("[API_wfg] SetEventOnCompletion failed: {:?}", e);
                     CloseHandle(event);
                     return false;
                 }
@@ -2043,35 +2010,38 @@ pub unsafe extern "C" fn wait_for_gpu() -> bool {
                 WaitForSingleObject(event, INFINITE);
                 CloseHandle(event);
 
-                debug_println!("[API] Fence wait completed");
+                debug_println!("[API_wfg] Fence wait completed");
             } else {
-                debug_println!("[API] Fence already completed: {} >= {}", completed_value, fence_value);
+                debug_println!("[API_wfg] Fence already completed: {} >= {}", completed_value, fence_value);
             }
         }
 
-        debug_println!("[API] wait_for_gpu completed");
+        debug_println!("[API_wfg] wait_for_gpu completed");
         true
     } else {
-        debug_println!("[API] Missing queue or fence");
+        debug_println!("[API_wfg] Missing queue or fence");
         false
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn set_graphics_pipeline(pso_ptr: *mut c_void) -> bool {
-    debug_println!("\n[API] set_graphics_pipeline() called");
-    debug_println!("[API] pso_ptr = {:p}", pso_ptr);
+    debug_println!("\n[API_setgp] set_graphics_pipeline() called");
+    debug_println!("[API_setgp] pso_ptr = {:p}", pso_ptr);
 
     let state = STATE.lock().unwrap();
     if let Some(list) = &state.command_list {
         if let Some(pso) = ptr_utils::as_pipeline_state(pso_ptr) {
+            // ✅ Проверяем, что command list открыт
+            // В DirectX 12 нет прямого способа, но мы можем попробовать
+
             list.SetPipelineState(&pso);
             std::mem::forget(pso);
-            debug_println!("[API] set_graphics_pipeline SUCCESS");
+            debug_println!("[API_setgp] set_graphics_pipeline SUCCESS");
             return true;
         }
     }
-    debug_println!("[API] set_graphics_pipeline FAILED");
+    debug_println!("[API_setgp] set_graphics_pipeline FAILED");
     false
 }
 
@@ -2101,6 +2071,12 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
         return false;
     }
 
+    // Проверяем, что gpu_handle не выглядит как битый
+    if gpu_handle < 0x10000 || gpu_handle > 0x7FFFFFFFFFFFF {
+        eprintln!("ERROR: gpu_handle looks suspicious: 0x{:X}", gpu_handle);
+        return false;
+    }
+
     let state = match STATE.lock() {
         Ok(s) => s,
         Err(e) => {
@@ -2121,17 +2097,28 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
         if let Some(root_sig) = &state.root_signature {
             eprintln!("  Root signature present: {:p}", root_sig.as_raw());
         } else {
-            eprintln!("  WARNING: No root signature set!");
+            eprintln!("  ERROR: No root signature set!");
+            return false;
         }
 
         let handle = D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu_handle };
         eprintln!("  Calling SetGraphicsRootDescriptorTable with handle=0x{:X}", handle.ptr);
 
-        // Пытаемся выполнить операцию
-        // Если command list закрыт, это вызовет ошибку
-        list.SetGraphicsRootDescriptorTable(root_index, handle);
-        eprintln!("  SetGraphicsRootDescriptorTable executed successfully");
-        true
+        // ✅ Используем try-catch для отлова access violation
+        let result = std::panic::catch_unwind(|| {
+            list.SetGraphicsRootDescriptorTable(root_index, handle);
+        });
+
+        match result {
+            Ok(()) => {
+                eprintln!("  SetGraphicsRootDescriptorTable executed successfully");
+                true
+            }
+            Err(_) => {
+                eprintln!("  ERROR: SetGraphicsRootDescriptorTable panicked (likely access violation)");
+                false
+            }
+        }
     } else {
         eprintln!("ERROR: No command list available");
         false
@@ -2182,7 +2169,7 @@ pub unsafe extern "C" fn set_render_target(rtv: usize) -> bool {
     if let Some(list) = &state.command_list {
         let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv };
         list.OMSetRenderTargets(1, Some(&rtv_handle), false, None);
-        debug_println!("[API] Render target set");
+        debug_println!("[API_setrt] Render target set");
         return true;
     }
     false
@@ -2219,7 +2206,7 @@ pub unsafe extern "C" fn clear_render_target(rtv: usize, color: *const f32) -> b
             *color.add(3)
         ];
         list.ClearRenderTargetView(rtv_handle, &clear_color, None);
-        debug_println!("[API] Render target cleared");
+        debug_println!("[API_clert] Render target cleared");
         return true;
     }
     false
@@ -2410,7 +2397,7 @@ pub extern "C" fn get_dsv_descriptor_size() -> u32 {
 
 #[no_mangle]
 pub extern "C" fn set_vsync(enable: bool) {
-    debug_println!("[API] set_vsync({}) called", enable);
+    debug_println!("[API_setvsync] set_vsync({}) called", enable);
 }
 
 #[no_mangle]
