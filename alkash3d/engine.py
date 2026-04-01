@@ -34,9 +34,14 @@ class Engine:
 
         # 1️⃣ Выбор и инициализация графического бэкенда
         self.backend = select_backend(backend_name)
-        self.backend.init_device(self.window.hwnd,
-                                 self.window.width,
-                                 self.window.height)
+
+        try:
+            self.backend.init_device(self.window.hwnd,
+                                     self.window.width,
+                                     self.window.height)
+        except Exception as e:
+            logger.error(f"[Engine] Failed to initialize backend: {e}")
+            raise
 
         # привязываем бекенд к окну
         self.window.backend = self.backend
@@ -58,16 +63,24 @@ class Engine:
         # ---------------------------------------------------------
         # 4️⃣ Выбор рендера
         # ---------------------------------------------------------
-        if renderer == "forward":
-            self.renderer = ForwardRenderer(self.window, self.backend)
-        elif renderer == "deferred":
-            self.renderer = DeferredRenderer(self.window, self.backend)
-        elif renderer == "hybrid":
-            self.renderer = HybridRenderer(self.window, self.backend)
-        elif renderer == "rtx":
-            self.renderer = RTXRenderer(self.window, self.backend)
-        else:
-            raise ValueError(f"Unknown renderer mode: {renderer}")
+        try:
+            if renderer == "forward":
+                from alkash3d.renderer.pipelines.forward import ForwardRenderer
+                self.renderer = ForwardRenderer(self.window, self.backend)
+            elif renderer == "deferred":
+                from alkash3d.renderer.pipelines.deferred import DeferredRenderer
+                self.renderer = DeferredRenderer(self.window, self.backend)
+            elif renderer == "hybrid":
+                from alkash3d.renderer.pipelines.hybrid import HybridRenderer
+                self.renderer = HybridRenderer(self.window, self.backend)
+            elif renderer == "rtx":
+                from alkash3d.renderer.pipelines.rtx_renderer import RTXRenderer
+                self.renderer = RTXRenderer(self.window, self.backend)
+            else:
+                raise ValueError(f"Unknown renderer mode: {renderer}")
+        except Exception as e:
+            logger.error(f"[Engine] Failed to create renderer: {e}")
+            raise
 
         # ---------------------------------------------------------
         # 5️⃣ Пост‑процессинг
