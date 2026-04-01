@@ -21,7 +21,7 @@ from alkash3d.utils import logger
 if not hasattr(ctypes, "c_uintptr"):
     ctypes.c_uintptr = ctypes.c_void_p
 
-DEBUG = True
+DEBUG = False  # Отключаем отладочный вывод для производительности
 
 
 def debug_print(*args, **kwargs):
@@ -47,6 +47,10 @@ _PTR_CACHE_LOCK = threading.RLock()
 _TEMP_BUFFERS = []
 _TEMP_BUFFERS_LOCK = threading.RLock()
 
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
 
 def _get_cached_void_p(ptr_value: int) -> ctypes.c_void_p:
     """Возвращает кэшированный ctypes.c_void_p для указателя."""
@@ -126,6 +130,19 @@ def _load_func(name, restype, argtypes, required=False):
         if required:
             raise RuntimeError(f"Required function '{name}' missing")
         return None
+
+
+def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
+    if ptr is None:
+        return ctypes.c_void_p()
+    if isinstance(ptr, ctypes.c_void_p):
+        return ptr
+    if isinstance(ptr, int):
+        return _get_cached_void_p(ptr)
+    try:
+        return _get_cached_void_p(int(ptr))
+    except Exception:
+        return ctypes.c_void_p()
 
 
 # ----------------------------------------------------------------------
@@ -215,17 +232,6 @@ _get_rtv_descriptor_size = _load_func("get_rtv_descriptor_size", ctypes.c_uint32
 _get_dsv_descriptor_size = _load_func("get_dsv_descriptor_size", ctypes.c_uint32, [], required=True)
 _set_vsync = _load_func("set_vsync", None, [ctypes.c_bool], required=False)
 
-def _to_cvoid(ptr: Any) -> ctypes.c_void_p:
-    if ptr is None:
-        return ctypes.c_void_p()
-    if isinstance(ptr, ctypes.c_void_p):
-        return ptr
-    if isinstance(ptr, int):
-        return _get_cached_void_p(ptr)
-    try:
-        return _get_cached_void_p(int(ptr))
-    except Exception:
-        return ctypes.c_void_p()
 
 # ----------------------------------------------------------------------
 # Public API
@@ -249,6 +255,7 @@ def create_swap_chain(queue: ctypes.c_void_p, hwnd: int, width: int, height: int
         ctypes.c_uint32(height),
     )
     return _get_cached_void_p(ptr_val)
+
 
 def swap_chain_get_buffer(swap: ctypes.c_void_p, idx: int) -> ctypes.c_void_p:
     return _to_cvoid(_swap_chain_get_buffer(_to_cvoid(swap), ctypes.c_uint32(idx)))
@@ -322,7 +329,6 @@ def create_buffer(device: ctypes.c_void_p, size: int, usage: str = "default") ->
         ctypes.c_size_t(size),
         ctypes.cast(usage_bytes, ctypes.c_void_p)
     )
-    # result - это int (указатель)
     return _get_cached_void_p(result)
 
 
@@ -330,7 +336,6 @@ def update_subresource(buffer: ctypes.c_void_p, data: bytes) -> bool:
     if not data:
         return False
 
-    # Создаём копию данных
     data_buffer = ctypes.create_string_buffer(data, len(data))
     data_ptr = ctypes.addressof(data_buffer)
 
@@ -347,6 +352,7 @@ def update_subresource(buffer: ctypes.c_void_p, data: bytes) -> bool:
     except Exception as e:
         logger.error(f"[d3d12_wrapper] update_subresource exception: {e}")
         return False
+
 
 def create_texture_from_memory(
         device: ctypes.c_void_p,
@@ -414,7 +420,21 @@ def GetCPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
 
 
 def GetGPUDescriptorHandleForHeapStart(heap: ctypes.c_void_p) -> int:
-    return _GetGPUDescriptorHandleForHeapStart(_to_cvoid(heap))
+    """Получает GPU handle с проверкой на битые значения."""
+    try:
+        result = _GetGPUDescriptorHandleForHeapStart(_to_cvoid(heap))
+
+        # Проверяем на битые handle от WARP драйвера
+        BROKEN_HANDLES = [0, 0x15678A00110000, 0x25678A00120000, 0x35678A00130000, 0x45678A00140000]
+
+        if result in BROKEN_HANDLES:
+            logger.warning(f"[d3d12_wrapper] Driver returned broken GPU handle: 0x{result:X}")
+            return 0
+
+        return result
+    except Exception as e:
+        logger.error(f"[d3d12_wrapper] GetGPUDescriptorHandleForHeapStart exception: {e}")
+        return 0
 
 
 def offset_descriptor_handle(base: int, index: int) -> int:
@@ -457,8 +477,33 @@ def create_constant_buffer_view(
     ))
 
 
+def is_gpu_handle_valid(handle: int) -> bool:
+    """Проверяет валидность GPU handle."""
+    if handle == 0:
+        return False
+
+    BROKEN_HANDLES = [0x15678A00110000, 0x25678A00120000, 0x35678A00130000]
+    if handle in BROKEN_HANDLES:
+        return False
+
+    if handle < 0x10000:
+        return False
+
+    return True
+
+
 def set_root_descriptor_table(root_index: int, gpu_handle: int) -> bool:
-    return bool(_set_root_descriptor_table(ctypes.c_uint32(root_index), ctypes.c_uint64(gpu_handle)))
+    """Устанавливает root descriptor table с проверкой handle."""
+    if not is_gpu_handle_valid(gpu_handle):
+        logger.error(f"[d3d12_wrapper] Invalid GPU handle: 0x{gpu_handle:X}")
+        return False
+
+    try:
+        result = _set_root_descriptor_table(ctypes.c_uint32(root_index), ctypes.c_uint64(gpu_handle))
+        return bool(result)
+    except Exception as e:
+        logger.error(f"[d3d12_wrapper] set_root_descriptor_table exception: {e}")
+        return False
 
 
 def set_descriptor_heaps(heaps: Sequence[Any]) -> bool:
@@ -492,12 +537,13 @@ def set_descriptor_heaps(heaps: Sequence[Any]) -> bool:
 
     try:
         arr = (ctypes.c_void_p * len(ptrs))(*ptrs)
-        logger.info(f"[d3d12_wrapper] Setting {len(ptrs)} heaps")
+        logger.debug(f"[d3d12_wrapper] Setting {len(ptrs)} heaps")
         result = _set_descriptor_heaps(ctypes.c_size_t(len(ptrs)), arr)
         return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_descriptor_heaps failed: {e}")
         return False
+
 
 def set_render_target(rtv: int) -> bool:
     if _set_render_target is not None:
@@ -556,10 +602,7 @@ def set_vertex_buffers(vertex_buffer: ctypes.c_void_p, index_buffer: Optional[ct
         raise RuntimeError("set_vertex_buffers not available")
 
     try:
-        # Получаем значение указателя как int
         vb_val = vertex_buffer.value if hasattr(vertex_buffer, 'value') else int(vertex_buffer)
-
-        # Создаём ctypes.c_void_p с правильным значением
         vb_ptr = ctypes.c_void_p(vb_val)
         ib_ptr = ctypes.c_void_p(0)
 
@@ -569,12 +612,12 @@ def set_vertex_buffers(vertex_buffer: ctypes.c_void_p, index_buffer: Optional[ct
 
         logger.debug(f"[d3d12_wrapper] set_vertex_buffers: vb=0x{vb_val:X}, ib=0x{ib_val if index_buffer else 0:X}")
 
-        # Передаём указатели напрямую
         result = _set_vertex_buffers(vb_ptr, ib_ptr)
         return bool(result)
     except Exception as e:
         logger.error(f"[d3d12_wrapper] set_vertex_buffers failed: {e}")
         return False
+
 
 def draw_instanced(
         vertex_count: int,
