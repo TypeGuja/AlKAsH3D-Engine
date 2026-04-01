@@ -1,142 +1,104 @@
 # alkash3d/renderer/pipelines/forward.py
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
+import os
+from typing import Optional
 from alkash3d.renderer.shader import Shader
 from alkash3d.utils import logger
-from alkash3d.graphics import select_backend
-from alkash3d.graphics.utils import d3d12_wrapper as dx
 
 
 class ForwardRenderer:
-    """Простой forward‑pipeline."""
+    """Forward rendering pipeline."""
 
-    def __init__(self, window, backend=None):
+    def __init__(self, window, backend):
         self.window = window
-        self.backend = backend or select_backend("dx12")
-        self.width, self.height = window.width, window.height
+        self.backend = backend
+        self.shader: Optional[Shader] = None
 
-        # Шейдеры
-        vs_path = str(window.resource_path("shaders/forward_vert.hlsl"))
-        fs_path = str(window.resource_path("shaders/forward_frag.hlsl"))
+        # Пути к шейдерам
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        vs_path = os.path.join(base_dir, "resources", "shaders", "forward_vert.hlsl")
+        fs_path = os.path.join(base_dir, "resources", "shaders", "forward_frag.hlsl")
 
         logger.info(f"[ForwardRenderer] Loading shaders: {vs_path}, {fs_path}")
 
+        # Создаём шейдер с правильными именами параметров
         self.shader = Shader(
-            vertex_path=vs_path,
-            fragment_path=fs_path,
             backend=self.backend,
+            vs_path=vs_path,
+            ps_path=fs_path
         )
 
-        # Создаём белую текстуру
-        self._create_white_placeholder()
+        if not self.shader.compile():
+            raise RuntimeError("Failed to compile shaders")
 
-        # Флаги
-        self._heap_set = False
+        logger.info("[ForwardRenderer] Initialized successfully")
 
-    # ------------------------------------------------------------------
-    def _create_white_placeholder(self):
-        """Создаёт 1×1‑белую текстуру и SRV в слоте TEXTURE"""
-        try:
-            logger.info("[ForwardRenderer] Creating white placeholder texture")
-
-            white_pixel = b'\xff\xff\xff\xff'
-
-            # Создаём текстуру
-            self.white_tex = self.backend.create_texture(
-                data=white_pixel,
-                w=1,
-                h=1,
-                fmt="RGBA8"
-            )
-
-            if not self.white_tex or not self.white_tex.ptr:
-                raise RuntimeError("Failed to create white texture")
-
-            # Создаём SRV для текстуры в слоте TEXTURE
-            tex_cpu = self.backend.cbv_srv_uav_heap.get_cpu_handle(self.shader.tex_slot)
-
-            if not self.backend.create_shader_resource_view(self.white_tex, tex_cpu):
-                raise RuntimeError("Failed to create SRV for white texture")
-
-            logger.info(f"[ForwardRenderer] White texture SRV created at slot {self.shader.tex_slot}")
-
-        except Exception as e:
-            logger.error(f"[ForwardRenderer] white placeholder error: {e}")
-            raise
-
-    # ------------------------------------------------------------------
-    def resize(self, w: int, h: int) -> None:
-        logger.debug(f"[ForwardRenderer] resize({w}, {h})")
-        self.backend.set_viewport(0, 0, w, h)
-        self.backend.set_scissor_rect(0, 0, w, h)
-
-    # ------------------------------------------------------------------
     def render(self, scene, camera):
-        try:
-            # 1. Устанавливаем дескрипторные хипы (один раз)
-            if not self._heap_set and hasattr(self.backend, "cbv_srv_uav_heap") and self.backend.cbv_srv_uav_heap:
-                heap = self.backend.cbv_srv_uav_heap
-                heap_ptr = heap.heap_ptr
-                if heap_ptr and heap_ptr.value:
-                    logger.info(f"[ForwardRenderer] Setting descriptor heap once: 0x{heap_ptr.value:X}")
-                    self.backend.set_descriptor_heaps([heap_ptr])
-                    self._heap_set = True
+        """Рендерит сцену."""
+        if not self.shader or not self.shader.use():
+            logger.error("[ForwardRenderer] shader.use() failed")
+            return
 
-            # 2. Начинаем кадр
-            if not self.backend.begin_frame():
-                logger.error("[ForwardRenderer] begin_frame failed")
-                return
+        # Получаем RTV для текущего кадра
+        frame_index = self.backend.get_frame_index()
+        if frame_index >= len(self.backend._rtv_cpu_handles):
+            logger.error(f"[ForwardRenderer] Invalid frame index: {frame_index}")
+            return
 
-            # 3. Устанавливаем render target
-            if (hasattr(self.backend, "rtv_heap") and self.backend.rtv_heap
-                    and self.backend.rtv_heap.num_descriptors > 0):
-                frame_idx = self.backend.get_frame_index() % dx.SWAP_CHAIN_BUFFER_COUNT
-                back_rtv = self.backend.rtv_heap.get_cpu_handle(frame_idx)
-                self.backend.set_render_target(back_rtv)
-                self.backend.clear_render_target(back_rtv, (0.2, 0.3, 0.4, 1.0))
+        rtv = self.backend._rtv_cpu_handles[frame_index]
 
-            # 4. Устанавливаем PSO и descriptor table
-            if not self.shader.use():
-                logger.error("[ForwardRenderer] shader.use() failed")
-                self.backend.end_frame()
-                return
+        # Устанавливаем render target
+        if not self.backend.set_render_target(rtv):
+            logger.error("[ForwardRenderer] Failed to set render target")
+            return
 
-            # 5. Обновляем uniform'ы
-            aspect = self.window.width / max(self.window.height, 1.0)
-            view = camera.get_view_matrix()
-            proj = camera.get_projection_matrix(aspect)
-            self.shader.set_uniform_mat4("uView", view)
-            self.shader.set_uniform_mat4("uProj", proj)
-            self.shader.set_uniform_vec4("uTint", (1.0, 1.0, 1.0, 1.0))
+        # Очищаем экран
+        clear_color = (0.2, 0.3, 0.5, 1.0)
+        if not self.backend.clear_render_target(rtv, clear_color):
+            logger.error("[ForwardRenderer] Failed to clear render target")
+            return
 
-            # 6. Отрисовка всех узлов
-            for node in scene.traverse():
-                if not hasattr(node, "draw"):
-                    continue
-                if hasattr(node, "visible") and node.visible is False:
-                    continue
+        # Устанавливаем viewport и scissor
+        self.backend.set_viewport(0, 0, self.window.width, self.window.height)
+        self.backend.set_scissor_rect(0, 0, self.window.width, self.window.height)
 
-                model = node.get_world_matrix()
-                self.shader.set_uniform_mat4("uModel", model.to_gl())
+        # Получаем видимые узлы
+        visible_nodes = scene.visible_nodes(camera)
 
-                # Только обновляем буфер
-                self.shader.flush()
+        # Отрисовываем каждый видимый меш
+        drawn = 0
+        for node in visible_nodes:
+            if hasattr(node, 'draw'):
+                try:
+                    node.draw(self.backend)
+                    drawn += 1
+                except Exception as e:
+                    logger.error(f"[ForwardRenderer] Error drawing {node.name}: {e}")
 
-                node.draw(self.backend)
+        logger.debug(f"[ForwardRenderer] Drawn {drawn} nodes")
 
-            # 7. Завершаем кадр
-            if not self.backend.end_frame():
-                logger.error("[ForwardRenderer] end_frame failed")
-                return
+        # Завершаем кадр
+        if not self.backend.end_frame():
+            logger.error("[ForwardRenderer] end_frame failed")
+            return
 
-            # 8. Сбрасываем флаг для следующего кадра
-            self.shader.reset_descriptor_table_flag()
+        # Презентуем
+        sync_interval = 1 if self.backend._vsync_enabled else 0
+        if not self.backend.present(sync_interval):
+            logger.error("[ForwardRenderer] present failed")
 
-            # 9. Отображаем кадр
-            if hasattr(self.backend, 'present'):
-                self.backend.present()
+    def resize(self, width: int, height: int):
+        """Обрабатывает изменение размера окна."""
+        self.window.width = width
+        self.window.height = height
+        # Шейдер не требует пересоздания при resize
+        logger.debug(f"[ForwardRenderer] Resized to {width}x{height}")
 
-        except Exception as e:
-            logger.error(f"[ForwardRenderer] render error: {e}")
-            import traceback
-            traceback.print_exc()
+    def cleanup(self):
+        """Освобождает ресурсы."""
+        if self.shader:
+            self.shader.cleanup()
+            self.shader = None
+        logger.info("[ForwardRenderer] Cleaned up")

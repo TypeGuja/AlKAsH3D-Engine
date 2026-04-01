@@ -1,155 +1,203 @@
 # alkash3d/renderer/shader.py
 # -*- coding: utf-8 -*-
 
-import os
-import numpy as np
-from typing import Any, Tuple
-
+from __future__ import annotations
+import ctypes
+import traceback
+from typing import Any, Optional
 from alkash3d.utils import logger
-from alkash3d.graphics.dx12_backend import DX12Backend
 
 
 class Shader:
-    _CB_SIZE = 256
+    """Управляет шейдерной программой и дескрипторной таблицей."""
 
-    def __init__(
-            self,
-            vertex_path: str,
-            fragment_path: str,
-            backend: DX12Backend,
-            vs_entry: str = "VSMain",
-            ps_entry: str = "PSMain",
-    ):
+    def __init__(self, backend, vs_path: str, ps_path: str):
+        """
+        Инициализирует шейдер.
+
+        Args:
+            backend: Графический бэкенд
+            vs_path: Путь к вершинному шейдеру
+            ps_path: Путь к пиксельному шейдеру
+        """
         self.backend = backend
-        self.vertex_path = vertex_path
-        self.fragment_path = fragment_path
-
-        logger.info(
-            f"[Shader] Loading VS={os.path.basename(vertex_path)}  "
-            f"PS={os.path.basename(fragment_path)}"
-        )
-
-        self.vs_blob = backend.compile_shader("vs", vertex_path, entry_point=vs_entry)
-        self.ps_blob = backend.compile_shader("ps", fragment_path, entry_point=ps_entry)
-
-        self.pso = backend.create_graphics_ps(self.vs_blob, self.ps_blob)
-        logger.info(f"[Shader] PSO created: 0x{self.pso:x}")
-
-        self._cb_slot = backend.cbv_srv_uav_heap.next_free()
-        self._tex_slot = backend.cbv_srv_uav_heap.next_free()
-
-        logger.info(f"[Shader] CB slot: {self._cb_slot}, Texture slot: {self._tex_slot}")
-
-        # Создаём constant buffer
-        self._frame_cb = backend.create_constant_buffer(b"\x00" * self._CB_SIZE)
-
-        if not self._frame_cb or not getattr(self._frame_cb, "value", 0):
-            raise RuntimeError("Failed to create constant buffer")
-
-        # Создаём CBV (Constant Buffer View) в heap
-        cb_cpu = backend.cbv_srv_uav_heap.get_cpu_handle(self._cb_slot)
-        if not backend.create_constant_buffer_view(self._frame_cb, cb_cpu):
-            raise RuntimeError("Failed to create constant buffer view")
-
-        # Получаем GPU handle для дескрипторной таблицы
-        self._descriptor_table_handle = backend.cbv_srv_uav_heap.get_gpu_handle(self._cb_slot)
-        logger.info(f"[Shader] Descriptor table GPU handle: 0x{self._descriptor_table_handle:X}")
-
-        self._frame_data = bytearray(self._CB_SIZE)
-        self._dirty = False
+        self.vs_path = vs_path
+        self.ps_path = ps_path
+        self.pso = None
+        self.heap = None
+        self.cb_buffer = None
+        self._descriptor_table_handle = 0
         self._descriptor_table_set = False
 
-    def use(self) -> bool:
-        if not self.pso:
-            logger.error("[Shader] No valid PSO")
-            return False
+    def compile(self) -> bool:
+        """Компилирует шейдеры и создаёт PSO."""
         try:
-            import traceback
-            print(f"\n[PYTHON] Shader.use() called")
-            print(f"  descriptor_table_set = {self._descriptor_table_set}")
-            print(f"  Call stack:")
-            traceback.print_stack()
+            logger.info(f"[Shader] Loading VS={self.vs_path} PS={self.ps_path}")
 
-            # Сначала устанавливаем PSO
-            result = self.backend.set_graphics_pipeline(self.pso)
-            print(f"[PYTHON] set_graphics_pipeline result: {result}")
+            # Проверяем существование файлов
+            if not os.path.exists(self.vs_path):
+                logger.error(f"[Shader] Vertex shader not found: {self.vs_path}")
+                return False
+            if not os.path.exists(self.ps_path):
+                logger.error(f"[Shader] Pixel shader not found: {self.ps_path}")
+                return False
 
-            # Затем устанавливаем descriptor table (только если не установлена)
-            if result and not self._descriptor_table_set:
-                print(f"[PYTHON] Setting descriptor table with handle 0x{self._descriptor_table_handle:X}")
-                if not self.backend.set_root_descriptor_table(0, self._descriptor_table_handle):
-                    logger.error("[Shader] Failed to set root descriptor table")
-                    return False
-                self._descriptor_table_set = True
+            # Компилируем шейдеры
+            vs_blob = self.backend.compile_shader("vs", self.vs_path, "VSMain")
+            ps_blob = self.backend.compile_shader("ps", self.ps_path, "PSMain")
 
-            return result
+            if not vs_blob or not ps_blob:
+                logger.error("[Shader] Failed to compile shaders")
+                return False
+
+            # Создаём PSO
+            self.pso = self.backend.create_graphics_ps(vs_blob, ps_blob)
+
+            if not self.pso:
+                logger.error("[Shader] Failed to create PSO")
+                return False
+
+            logger.info(f"[Shader] PSO created: {hex(self.pso)}")
+
+            # Создаём дескрипторную кучу
+            self.heap = self.backend.create_descriptor_heap(
+                num_descriptors=1024,
+                heap_type="cbv_srv_uav",
+                shader_visible=True
+            )
+
+            if not self.heap:
+                logger.error("[Shader] Failed to create descriptor heap")
+                return False
+
+            # Создаём константный буфер
+            self._setup_constant_buffer()
+
+            # Создаём текстуру-заглушку
+            self._setup_texture()
+
+            # Получаем GPU handle для дескрипторной таблицы
+            self._descriptor_table_handle = self.heap.get_gpu_handle(0)
+            logger.info(f"[Shader] Descriptor table GPU handle: 0x{self._descriptor_table_handle:X}")
+
+            return True
+
         except Exception as e:
-            logger.error(f"[Shader] use error: {e}")
-            import traceback
+            logger.error(f"[Shader] Compilation error: {e}")
             traceback.print_exc()
             return False
 
-    def reset_descriptor_table_flag(self) -> None:
-        """Сбрасывает флаг для следующего кадра"""
+    def _setup_constant_buffer(self):
+        """Создаёт константный буфер и view."""
+        try:
+            # Создаём константный буфер (256 байт)
+            cb_data = bytes(256)
+            self.cb_buffer = self.backend.create_constant_buffer(cb_data)
+
+            if self.cb_buffer:
+                # Создаём CBV в куче (слот 0)
+                cpu_handle = self.heap.get_cpu_handle(0)
+                if not self.backend.create_constant_buffer_view(self.cb_buffer, cpu_handle):
+                    logger.error("[Shader] Failed to create constant buffer view")
+                else:
+                    logger.info("[Shader] Constant buffer view created at slot 0")
+        except Exception as e:
+            logger.error(f"[Shader] Error setting up constant buffer: {e}")
+
+    def _setup_texture(self):
+        """Создаёт белую текстуру-заглушку."""
+        try:
+            # Создаём текстуру 1x1 белого цвета
+            white_data = bytes([255, 255, 255, 255])  # RGBA
+            texture = self.backend.create_texture(white_data, 1, 1, "RGBA8")
+
+            if texture:
+                # Создаём SRV в куче (слот 1)
+                cpu_handle = self.heap.get_cpu_handle(1)
+                if not self.backend.create_shader_resource_view(texture, cpu_handle):
+                    logger.error("[Shader] Failed to create texture SRV")
+                else:
+                    logger.info("[Shader] White texture SRV created at slot 1")
+        except Exception as e:
+            logger.error(f"[Shader] Error setting up texture: {e}")
+
+    def use(self) -> bool:
+        """Активирует шейдерную программу."""
+        if not self.pso:
+            logger.error("[Shader] No PSO available")
+            return False
+
+        logger.debug("[Shader] use() called")
+
+        # 1. Начинаем кадр
+        if not self.backend.begin_frame():
+            logger.error("[Shader] begin_frame failed")
+            return False
+
+        # 2. Устанавливаем PSO
+        if not self.backend.set_graphics_pipeline(self.pso):
+            logger.error("[Shader] set_graphics_pipeline failed")
+            return False
+
+        # 3. Устанавливаем дескрипторные кучи
+        if not self.backend.set_descriptor_heaps([self.heap.heap_ptr]):
+            logger.error("[Shader] set_descriptor_heaps failed")
+            return False
+
+        # 4. Устанавливаем root descriptor table
+        gpu_handle = self._descriptor_table_handle
+
+        # Проверяем валидность handle
+        if gpu_handle == 0:
+            logger.error("[Shader] GPU handle is 0 - cannot set descriptor table")
+            # Пробуем использовать CPU handle как fallback
+            gpu_handle = self.heap.get_cpu_handle(0)
+            logger.warning(f"[Shader] Using CPU handle as fallback: 0x{gpu_handle:X}")
+
+        try:
+            result = self.backend.set_root_descriptor_table(0, gpu_handle)
+            if not result:
+                logger.error("[Shader] set_root_descriptor_table failed")
+                return False
+        except Exception as e:
+            logger.error(f"[Shader] set_root_descriptor_table exception: {e}")
+            return False
+
+        self._descriptor_table_set = True
+        logger.debug("[Shader] Successfully activated")
+        return True
+
+    def set_constant_buffer_data(self, data: bytes) -> bool:
+        """Обновляет данные в константном буфере."""
+        if not self.cb_buffer:
+            logger.error("[Shader] No constant buffer")
+            return False
+
+        return self.backend.update_buffer(self.cb_buffer, data)
+
+    def cleanup(self):
+        """Освобождает ресурсы."""
+        if self.cb_buffer:
+            try:
+                self.backend.release_resource(self.cb_buffer)
+            except Exception as e:
+                logger.error(f"[Shader] Error releasing constant buffer: {e}")
+            self.cb_buffer = None
+
+        if self.heap:
+            try:
+                self.backend.release_resource(self.heap.heap_ptr)
+            except Exception as e:
+                logger.error(f"[Shader] Error releasing descriptor heap: {e}")
+            self.heap = None
+
         self._descriptor_table_set = False
+        logger.debug("[Shader] Cleaned up")
 
-    def _write_to_cb(self, offset: int, data_bytes: bytes) -> None:
-        end = offset + len(data_bytes)
-        if end > self._CB_SIZE:
-            logger.warning(f"Data too large: {end} > {self._CB_SIZE}")
-            return
-        if self._frame_data[offset:end] != data_bytes:
-            self._frame_data[offset:end] = data_bytes
-            self._dirty = True
+    def __del__(self):
+        """Деструктор."""
+        self.cleanup()
 
-    def set_uniform_mat4(self, name: str, mat: Any) -> None:
-        offsets = {"uView": 0, "uProj": 64, "uModel": 128}
-        offset = offsets.get(name)
-        if offset is None:
-            logger.warning(f"[Shader] Unknown mat4 uniform: {name}")
-            return
-        try:
-            arr = np.asarray(mat, dtype=np.float32).reshape(16)
-            self._write_to_cb(offset, arr.tobytes())
-        except Exception as e:
-            logger.error(f"[Shader] set_uniform_mat4({name}) error: {e}")
 
-    def set_uniform_vec4(self, name: str, value: Tuple[float, float, float, float]) -> None:
-        offsets = {"uTint": 192}
-        offset = offsets.get(name)
-        if offset is None:
-            logger.warning(f"[Shader] Unknown vec4 uniform: {name}")
-            return
-        try:
-            arr = np.array(value, dtype=np.float32)
-            self._write_to_cb(offset, arr.tobytes())
-        except Exception as e:
-            logger.error(f"[Shader] set_uniform_vec4({name}) error: {e}")
-
-    def flush(self) -> None:
-        """Только обновляет constant buffer"""
-        if not self._dirty:
-            return
-
-        logger.debug(f"[Shader] Flushing {self._CB_SIZE} bytes")
-
-        if not self.backend.update_buffer(self._frame_cb, bytes(self._frame_data)):
-            logger.error("[Shader] Failed to update constant buffer")
-            return
-
-        self._dirty = False
-
-    @property
-    def cb_slot(self) -> int:
-        return self._cb_slot
-
-    @property
-    def tex_slot(self) -> int:
-        return self._tex_slot
-
-    @property
-    def descriptor_table_handle(self) -> int:
-        return self._descriptor_table_handle
-
-    def __repr__(self) -> str:
-        return f"Shader(vs={os.path.basename(self.vertex_path)}, ps={os.path.basename(self.fragment_path)}, pso=0x{self.pso:x})"
+# Добавляем импорт os, который используется в методе compile
+import os
