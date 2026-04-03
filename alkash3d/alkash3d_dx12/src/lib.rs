@@ -1419,24 +1419,25 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
         let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
         let desc = heap.GetDesc();
 
-        // Если куча не шейдер-видимая, возвращаем 0
+        // ✅ Проверяем, что куча шейдер-видимая
         if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+            eprintln!("[GetGPUDescriptorHandleForHeapStart] Heap is not shader-visible! Flags={:?}", desc.Flags);
+            std::mem::forget(heap);
+            return 0; // Возвращаем 0 вместо битого значения
+        }
+
+        let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
+        let result = gpu_handle.ptr as u64;
+
+        // Дополнительная проверка на битые значения
+        if result == 0x15678A00110000 || result == 0x25678A00120000 {
+            eprintln!("[GetGPUDescriptorHandleForHeapStart] WARNING: Driver returned broken handle 0x{:X}", result);
             std::mem::forget(heap);
             return 0;
         }
 
-        let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
-        let gpu_ptr = gpu_handle.ptr as u64;
-
         std::mem::forget(heap);
-
-        // ✅ Проверяем на битые handle
-        if gpu_ptr == 0x15678A00110000 || gpu_ptr == 0x25678A00120000 {
-            eprintln!("[GetGPUDescriptorHandleForHeapStart] WARNING: Driver returned broken handle 0x{:X}", gpu_ptr);
-            return 0;
-        }
-
-        gpu_ptr
+        result
     }
 }
 unsafe fn get_device_from_heap(heap: &ID3D12DescriptorHeap) -> Option<ID3D12Device> {
