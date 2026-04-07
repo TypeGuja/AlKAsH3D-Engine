@@ -3,6 +3,8 @@
 
 ## !WARNING!
 
+this engine will soon be rewritten in pure RUST, but it will be possible to use Python for objects as in Unity
+
 <img width="1724" height="835" alt="image" src="https://github.com/user-attachments/assets/07df3f78-05d3-4a98-a3cf-b4b5c44836ad" />
 ( _for an unknown reason, there is no image when running any of the example games_ ) 
 ~a broken part of the engine was found, the problem is in the dx12_backend, d3d12_wrapper, and lib.rs (alkash3d_dx12.dll) files~
