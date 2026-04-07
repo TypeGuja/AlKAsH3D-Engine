@@ -230,6 +230,7 @@ _draw_indexed_instanced = _load_func("draw_indexed_instanced", ctypes.c_bool,
                                       ctypes.c_uint32], required=True)
 _get_rtv_descriptor_size = _load_func("get_rtv_descriptor_size", ctypes.c_uint32, [], required=True)
 _get_dsv_descriptor_size = _load_func("get_dsv_descriptor_size", ctypes.c_uint32, [], required=True)
+_get_cbv_srv_uav_descriptor_size = _load_func("get_cbv_srv_uav_descriptor_size", ctypes.c_uint32, [], required=False)
 _set_vsync = _load_func("set_vsync", None, [ctypes.c_bool], required=False)
 
 
@@ -240,6 +241,13 @@ _set_vsync = _load_func("set_vsync", None, [ctypes.c_bool], required=False)
 def create_device() -> ctypes.c_void_p:
     ptr_val = _create_device()
     return _get_cached_void_p(ptr_val)
+
+def get_cbv_srv_uav_descriptor_size() -> int:
+    """Возвращает размер дескриптора CBV/SRV/UAV."""
+    if _get_cbv_srv_uav_descriptor_size is None:
+        # Fallback на RTV размер (обычно 32)
+        return 32
+    return _get_cbv_srv_uav_descriptor_size()
 
 
 def create_command_queue(device: ctypes.c_void_p) -> ctypes.c_void_p:
@@ -256,6 +264,33 @@ def create_swap_chain(queue: ctypes.c_void_p, hwnd: int, width: int, height: int
     )
     return _get_cached_void_p(ptr_val)
 
+
+def check_warp_driver(device_ptr: ctypes.c_void_p) -> bool:
+    """Проверяет, используется ли WARP драйвер. Если да - выбрасывает исключение."""
+    try:
+        # Пытаемся создать тестовую дескрипторную кучу
+        test_heap = create_descriptor_heap(device_ptr, 1, 2, True)
+        if not test_heap or not test_heap.value:
+            return True
+
+        gpu_handle = GetGPUDescriptorHandleForHeapStart(test_heap)
+
+        # Освобождаем тестовую кучу
+        release_resource(test_heap)
+
+        # Проверяем на битые handle от WARP
+        BROKEN_HANDLES = [0, 0x15678A00110000, 0x25678A00120000,
+                          0x35678A00130000, 0x45678A00140000]
+
+        if gpu_handle in BROKEN_HANDLES:
+            raise RuntimeError(
+                "WARP software renderer detected! This engine requires a real GPU with DirectX 12 support.")
+
+        return False
+    except Exception as e:
+        if "WARP" in str(e):
+            raise
+        return True
 
 def swap_chain_get_buffer(swap: ctypes.c_void_p, idx: int) -> ctypes.c_void_p:
     return _to_cvoid(_swap_chain_get_buffer(_to_cvoid(swap), ctypes.c_uint32(idx)))
