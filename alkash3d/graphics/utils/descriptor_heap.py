@@ -30,6 +30,9 @@ class DescriptorHeap:
             'cbv_srv_uav': self.HEAP_TYPE_CBV_SRV_UAV,
         }.get(heap_type.lower(), self.HEAP_TYPE_CBV_SRV_UAV)
 
+        logger.info(f"[DescriptorHeap] Creating heap: type={self.heap_type}, "
+                    f"num={self.num_descriptors}, shader_visible={self.shader_visible}")
+
         # Создаём кучу
         self.heap_ptr = dx.create_descriptor_heap(
             self.device,
@@ -41,65 +44,50 @@ class DescriptorHeap:
         if not self.heap_ptr or not self.heap_ptr.value:
             raise RuntimeError("Failed to create descriptor heap")
 
-        # Получаем CPU handle (всегда правильный)
+        # Получаем CPU handle
         self.cpu_start = dx.GetCPUDescriptorHandleForHeapStart(self.heap_ptr)
         if self.cpu_start == 0:
             raise RuntimeError("Failed to get CPU handle")
 
-        # Получаем GPU handle
-        self.gpu_start = 0
-        self.use_cpu_fallback = False
+        logger.info(f"[DescriptorHeap] CPU start: 0x{self.cpu_start:X}")
 
+        # Получаем GPU handle - ОБЯЗАТЕЛЬНО для шейдер-видимых куч
         if self.shader_visible:
-            raw_gpu_start = dx.GetGPUDescriptorHandleForHeapStart(self.heap_ptr)
+            self.gpu_start = dx.GetGPUDescriptorHandleForHeapStart(self.heap_ptr)
 
-            # Проверка на битые handle от WARP драйвера
-            BROKEN_HANDLES = [0, 0x15678A00110000, 0x25678A00120000, 0x35678A00130000, 0x45678A00140000]
-
-            if raw_gpu_start in BROKEN_HANDLES:
-                logger.warning(f"[DescriptorHeap] WARP/broken GPU handle detected: 0x{raw_gpu_start:X}")
-
-                # Пытаемся пересоздать кучу без шейдерной видимости
-                logger.info("[DescriptorHeap] Attempting to recreate heap without shader visibility")
-
-                # Освобождаем старую кучу
-                dx.release_resource(self.heap_ptr)
-
-                # Создаём новую кучу без шейдерной видимости
-                self.shader_visible = False
-                self.heap_ptr = dx.create_descriptor_heap(
-                    self.device,
-                    self.num_descriptors,
-                    self.heap_type,
-                    False
+            # ПРОВЕРКА: если GPU handle = 0 или битый - это FAIL
+            if self.gpu_start == 0:
+                raise RuntimeError(
+                    f"Failed to get GPU handle for shader-visible heap! "
+                    f"This usually means:\n"
+                    f"1. No real GPU detected (WARP software renderer)\n"
+                    f"2. Driver issues\n"
+                    f"3. Running in VM without GPU passthrough"
                 )
 
-                if not self.heap_ptr or not self.heap_ptr.value:
-                    raise RuntimeError("Failed to recreate descriptor heap without shader visibility")
+            # Проверка на известные битые значения
+            BROKEN_HANDLES = [0x15678A00110000, 0x25678A00120000,
+                              0x35678A00130000, 0x45678A00140000]
+            if self.gpu_start in BROKEN_HANDLES:
+                raise RuntimeError(
+                    f"WARP software renderer detected (invalid GPU handle: 0x{self.gpu_start:X})!\n"
+                    f"This engine requires a real GPU with DirectX 12 support."
+                )
 
-                # Получаем новый CPU handle
-                self.cpu_start = dx.GetCPUDescriptorHandleForHeapStart(self.heap_ptr)
-                if self.cpu_start == 0:
-                    raise RuntimeError("Failed to get CPU handle for recreated heap")
-
-                self.gpu_start = 0
-                self.use_cpu_fallback = True
-                logger.warning("[DescriptorHeap] Using CPU-only fallback mode (no GPU handles)")
-            else:
-                self.gpu_start = raw_gpu_start
-                self.use_cpu_fallback = False
-                logger.info(f"[DescriptorHeap] GPU start: 0x{self.gpu_start:X}")
+            logger.info(f"[DescriptorHeap] GPU start: 0x{self.gpu_start:X}")
+            self.use_cpu_fallback = False
         else:
+            logger.info("[DescriptorHeap] Heap not shader-visible, GPU handle not available")
             self.gpu_start = 0
             self.use_cpu_fallback = True
 
-        # Размер дескриптора
+        # Получаем размер дескриптора
         if self.heap_type == self.HEAP_TYPE_RTV:
             self.increment_size = dx.get_rtv_descriptor_size()
         elif self.heap_type == self.HEAP_TYPE_DSV:
             self.increment_size = dx.get_dsv_descriptor_size()
         else:
-            self.increment_size = dx.get_rtv_descriptor_size()
+            self.increment_size = dx.get_cbv_srv_uav_descriptor_size()
 
         if self.increment_size == 0:
             self.increment_size = 32
@@ -109,7 +97,7 @@ class DescriptorHeap:
 
         logger.info(f"[DescriptorHeap] Created: type={self.heap_type_str}, "
                     f"size={self.num_descriptors}, shader_visible={self.shader_visible}, "
-                    f"cpu_start=0x{self.cpu_start:X}, gpu_start=0x{self.gpu_start:X}")
+                    f"increment={self.increment_size}")
 
     def get_cpu_handle(self, index: int) -> int:
         """Возвращает CPU handle для дескриптора."""
@@ -117,14 +105,12 @@ class DescriptorHeap:
             raise IndexError(f"Index {index} out of range (max {self.num_descriptors})")
 
         handle = self.cpu_start + (index * self.increment_size)
-        logger.debug(f"[DescriptorHeap] get_cpu_handle({index}): 0x{handle:X}")
         return handle
 
     def get_gpu_handle(self, index: int) -> int:
         """Возвращает GPU handle для дескриптора."""
         if not self.shader_visible:
             logger.warning("[DescriptorHeap] GPU handle requested for non-shader-visible heap")
-            # Возвращаем CPU handle как fallback
             return self.get_cpu_handle(index)
 
         if index >= self.num_descriptors:
@@ -133,17 +119,16 @@ class DescriptorHeap:
         if self.use_cpu_fallback or self.gpu_start == 0:
             # В режиме fallback используем CPU handle
             cpu_handle = self.get_cpu_handle(index)
-            logger.debug(f"[DescriptorHeap] Fallback mode: returning CPU handle as GPU handle: 0x{cpu_handle:X}")
+            logger.debug(f"[DescriptorHeap] Fallback mode: returning CPU handle: 0x{cpu_handle:X}")
             return cpu_handle
 
         result = self.gpu_start + (index * self.increment_size)
 
         # Проверяем, что handle в разумных пределах
-        if result < 0x10000 or result > 0x7FFFFFFFFFFFF:
+        if result < 0x10000:
             logger.warning(f"[DescriptorHeap] Suspicious GPU handle: 0x{result:X}, using CPU fallback")
             return self.get_cpu_handle(index)
 
-        logger.debug(f"[DescriptorHeap] get_gpu_handle({index}): 0x{result:X}")
         return result
 
     def next_free(self) -> int:
@@ -152,13 +137,11 @@ class DescriptorHeap:
             raise RuntimeError(f"Descriptor heap overflow: {self._current_index} >= {self.num_descriptors}")
         idx = self._current_index
         self._current_index += 1
-        logger.debug(f"[DescriptorHeap] next_free: {idx}")
         return idx
 
     def reset(self) -> None:
         """Сбрасывает счётчик дескрипторов."""
         self._current_index = 0
-        logger.debug("[DescriptorHeap] Reset")
 
     def __repr__(self) -> str:
         return f"DescriptorHeap(type={self.heap_type_str}, size={self.num_descriptors}, used={self._current_index})"
