@@ -25,12 +25,30 @@ def debug_print(*args, **kwargs):
 class DX12Texture:
     __slots__ = ("ptr", "_srv_gpu", "width", "height", "format")
 
-    def __init__(self, ptr: ctypes.c_void_p, width: int = 0, height: int = 0, fmt: str = ""):
-        self.ptr = ptr
-        self._srv_gpu: Optional[int] = None
-        self.width = width
-        self.height = height
-        self.format = fmt
+    def __init__(self) -> None:
+        debug_print("DX12Backend.__init__()")
+        self.device: Optional[ctypes.c_void_p] = None
+        self.command_queue: Optional[ctypes.c_void_p] = None
+        self.swap_chain: Optional[ctypes.c_void_p] = None
+
+        self.viewport: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        self.scissor: Tuple[int, int, int, int] = (0, 0, 0, 0)
+
+        self.rtv_heap: Optional[DescriptorHeap] = None
+        self.cbv_srv_uav_heap: Optional[DescriptorHeap] = None
+
+        self._rtv_cpu_handles: list[int] = []
+        self._resources: list[Any] = []  # ← ЭТА СТРОЧКА БЫЛА ПРОПУЩЕНА
+        self._released_resources = set()
+        self._depth_test_enabled: bool = False
+
+        self._hwnd: int = 0
+        self._width: int = 0
+        self._height: int = 0
+        self._vsync_enabled: bool = True
+
+        self._current_frame = 0
+        self._initialized = False
 
 
 class DX12Backend(GraphicsBackend):
@@ -48,8 +66,8 @@ class DX12Backend(GraphicsBackend):
         self.cbv_srv_uav_heap: Optional[DescriptorHeap] = None
 
         self._rtv_cpu_handles: list[int] = []
-        self._resources: list[Any] = []
-        self._released_resources = set()
+        self._resources: list[Any] = []           # ← ДОБАВЬТЕ ЭТУ СТРОКУ
+        self._released_resources: set = set()     # ← ДОБАВЬТЕ ЭТУ СТРОКУ
         self._depth_test_enabled: bool = False
 
         self._hwnd: int = 0
@@ -59,7 +77,75 @@ class DX12Backend(GraphicsBackend):
 
         self._current_frame = 0
         self._initialized = False
-        self._is_warp = False  # Флаг WARP драйвера
+        self._is_warp = False  # ← ЕСЛИ ЭТОЙ СТРОКИ НЕТ, ТОЖЕ ДОБАВЬТЕ
+
+    def init_device(self, hwnd: int, width: int, height: int) -> None:
+        debug_print(f"init_device(hwnd={hex(hwnd)}, {width}x{height})")
+        self._hwnd = hwnd
+        self._width = width
+        self._height = height
+        self._initialized = False
+
+        self._cleanup_resources()
+
+        dev = dx.create_device()
+        if not dev or not dev.value:
+            raise RuntimeError("Failed to create DX12 device")
+        self.device = dev
+        debug_print(f"  Device ptr = {hex(self.device.value)}")
+
+        # ПРОВЕРКА НА WARP - ЕСЛИ WARP, ВЫБРАСЫВАЕМ ОШИБКУ
+        if dx.check_warp_driver(self.device):
+            raise RuntimeError(
+                "WARP software renderer detected!\n"
+                "This engine requires a real GPU with DirectX 12 support.\n"
+                "Please make sure you have:\n"
+                "1. A dedicated or integrated GPU with DX12 support\n"
+                "2. Latest GPU drivers installed\n"
+                "3. Not running in a virtual machine without GPU passthrough"
+            )
+
+        cq = dx.create_command_queue(self.device)
+        if not cq or not cq.value:
+            raise RuntimeError("Failed to create command queue")
+        self.command_queue = cq
+        debug_print(f"  Queue ptr = {hex(self.command_queue.value)}")
+
+        if hwnd:
+            sc = dx.create_swap_chain(self.command_queue, hwnd, width, height)
+            if not sc or not sc.value:
+                raise RuntimeError("Failed to create swap chain")
+            self.swap_chain = sc
+            debug_print(f"  SwapChain ptr = {hex(self.swap_chain.value)}")
+        else:
+            debug_print("  No HWND supplied → headless mode")
+
+        self._reset_viewport_and_scissor(width, height)
+
+        self.rtv_heap = DescriptorHeap(
+            device=self.device,
+            num_descriptors=2,
+            heap_type="rtv",
+            shader_visible=False,
+        )
+        debug_print("  RTV heap created")
+
+        # ВСЕГДА используем шейдер-видимые кучи (никакого WARP fallback)
+        self.cbv_srv_uav_heap = DescriptorHeap(
+            device=self.device,
+            num_descriptors=10,
+            heap_type="cbv_srv_uav",
+            shader_visible=True,  # Всегда True
+        )
+        debug_print("  CBV/SRV/UAV heap created")
+
+        if self.swap_chain:
+            if not self._create_swapchain_rtv():
+                raise RuntimeError("Failed to create RTVs")
+
+        self._initialized = True
+        self._current_frame = self.get_frame_index()
+        logger.info(f"[DX12Backend] Device initialised successfully on REAL GPU")
 
     def _reset_viewport_and_scissor(self, w: int, h: int) -> bool:
         debug_print(f"_reset_viewport_and_scissor({w}x{h})")
@@ -146,30 +232,6 @@ class DX12Backend(GraphicsBackend):
         time.sleep(0.1)
         debug_print("  cleanup finished")
 
-    def _check_warp_driver(self) -> bool:
-        """Проверяет, используется ли WARP драйвер."""
-        try:
-            # Создаём тестовую кучу
-            if not self.device:
-                return True
-
-            test_heap = DescriptorHeap(self.device, 1, "cbv_srv_uav", True)
-            gpu_handle = test_heap.get_gpu_handle(0)
-
-            # Освобождаем тестовую кучу
-            dx.release_resource(test_heap.heap_ptr)
-
-            # Проверяем на битые handle
-            BROKEN_HANDLES = [0, 0x15678A00110000, 0x25678A00120000]
-            if gpu_handle in BROKEN_HANDLES:
-                logger.warning("[DX12Backend] WARP driver detected (broken GPU handles)")
-                return True
-
-            return False
-        except Exception as e:
-            logger.error(f"[DX12Backend] Error checking WARP: {e}")
-            return True
-
     def init_device(self, hwnd: int, width: int, height: int) -> None:
         debug_print(f"init_device(hwnd={hex(hwnd)}, {width}x{height})")
         self._hwnd = hwnd
@@ -204,7 +266,7 @@ class DX12Backend(GraphicsBackend):
 
         self.rtv_heap = DescriptorHeap(
             device=self.device,
-            num_descriptors=dx.SWAP_CHAIN_BUFFER_COUNT + 4,
+            num_descriptors=2,
             heap_type="rtv",
             shader_visible=False,
         )
@@ -218,9 +280,9 @@ class DX12Backend(GraphicsBackend):
 
         self.cbv_srv_uav_heap = DescriptorHeap(
             device=self.device,
-            num_descriptors=1024,
+            num_descriptors=10,
             heap_type="cbv_srv_uav",
-            shader_visible=shader_visible,
+            shader_visible=True,
         )
         debug_print("  CBV/SRV/UAV heap created")
 
@@ -349,11 +411,12 @@ class DX12Backend(GraphicsBackend):
         if not self.device or not self.device.value:
             raise RuntimeError("Device is null")
 
-        # Для WARP принудительно используем CPU-видимые кучи
-        if self._is_warp and shader_visible:
-            logger.warning("[DX12Backend] WARP detected: forcing CPU-visible heap")
-            shader_visible = False
+        # УДАЛИТЬ ЭТУ ПРОВЕРКУ:
+        # if self._is_warp and shader_visible:
+        #     logger.warning("[DX12Backend] WARP detected: forcing CPU-visible heap")
+        #     shader_visible = False
 
+        # Всегда используем shader_visible как есть
         return DescriptorHeap(self.device, num_descriptors, heap_type, shader_visible)
 
     def get_cpu_handle(self, heap: DescriptorHeap, index: int) -> int:
@@ -504,9 +567,38 @@ class DX12Backend(GraphicsBackend):
         if not self._initialized:
             return False
         try:
-            return dx.end_frame()
+            result = dx.end_frame()
+
+            # Для WARP принудительно синхронизируем каждый кадр
+            if self._is_warp and result:
+                dx.wait_for_gpu()
+                # Небольшая задержка для WARP
+                import time
+                time.sleep(0.001)
+
+            return result
         except Exception as e:
             logger.error(f"[DX12Backend] end_frame exception: {e}")
+            return False
+
+    def begin_frame(self) -> bool:
+        if not self._initialized:
+            return False
+        if self.rtv_heap:
+            self.rtv_heap.reset()
+        if self.cbv_srv_uav_heap:
+            self.cbv_srv_uav_heap.reset()
+        try:
+            result = dx.begin_frame()
+
+            # Для WARP добавляем задержку между кадрами
+            if self._is_warp and result:
+                import time
+                time.sleep(0.001)
+
+            return result
+        except Exception as e:
+            logger.error(f"[DX12Backend] begin_frame exception: {e}")
             return False
 
     def wait_for_gpu(self) -> bool:

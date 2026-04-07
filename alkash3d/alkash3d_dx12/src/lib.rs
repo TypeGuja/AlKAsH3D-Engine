@@ -27,6 +27,7 @@ use windows::{
     },
 };
 use windows_core::{Interface, IUnknown};
+
 static RESOURCES: LazyLock<Mutex<Vec<ID3D12Resource>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 // Флаг отладки
@@ -57,6 +58,9 @@ struct GlobalState {
     fence_values: Vec<u64>,
     rtv_heap: Option<ID3D12DescriptorHeap>,
     rtv_handle_size: u32,
+    // Добавляем хранение дескрипторных куч
+    descriptor_heaps: Vec<ID3D12DescriptorHeap>,
+    command_list_open: bool,
 }
 
 impl GlobalState {
@@ -74,9 +78,11 @@ impl GlobalState {
             cbv_srv_uav_descriptor_size: 0,
             frame_index: 0,
             fence: None,
-            fence_values: vec![0; 4], // Для 4 кадров
+            fence_values: vec![0; 4],
             rtv_heap: None,
             rtv_handle_size: 0,
+            descriptor_heaps: Vec::new(),
+            command_list_open: true,
         }
     }
 }
@@ -136,7 +142,6 @@ mod ptr_utils {
             return None;
         }
 
-        // Проверяем на известные заглушки
         if ptr_val == 0xDEADBEEF || ptr_val == 0xDEADF00D ||
             ptr_val == 0xFEEDC0DE || ptr_val == 0x12345678 ||
             ptr_val == 0x87654321 {
@@ -144,21 +149,17 @@ mod ptr_utils {
             return None;
         }
 
-        // Попытка преобразования через IUnknown
         let unknown = IUnknown::from_raw(ptr);
         if unknown.as_raw().is_null() {
             eprintln!("[as_resource] unknown.as_raw() is null");
             return None;
         }
 
-        // Пробуем получить интерфейс ID3D12Resource
         match unknown.cast::<ID3D12Resource>() {
             Ok(resource) => {
                 let desc = resource.GetDesc();
                 eprintln!("[as_resource] resource desc: Dimension={:?}, Width={}",
                           desc.Dimension, desc.Width);
-
-                // Не проверяем на буфер - может быть текстура!
                 Some(resource)
             }
             Err(e) => {
@@ -399,7 +400,6 @@ mod command_mod {
             Ok(list) => {
                 debug_println!("[command] create_command_list: SUCCESS");
 
-                // Закрываем сразу – это обязательное требование DirectX 12.
                 if let Err(e) = list.Close() {
                     debug_println!(
                         "[command] initial Close() failed: HRESULT 0x{:X}",
@@ -559,7 +559,7 @@ mod heap_mod {
 
         match device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&desc) {
             Ok(heap) => {
-                eprintln!("[heap] Created at {:p}", heap.as_raw());
+                eprintln!("[heap] Created at {:p}, shader_visible={}", heap.as_raw(), shader_visible);
                 Some(heap)
             },
             Err(e) => {
@@ -634,20 +634,17 @@ mod buffer_mod {
             return false;
         }
 
-        // Проверяем, что размер не превышает размер буфера
         let desc = resource.GetDesc();
         if (desc.Width as usize) < size {
             debug_println!("[buffer] Data size {} exceeds buffer size {}", size, desc.Width);
             return false;
         }
 
-        // Создаем диапазон для маппинга
-        let read_range = D3D12_RANGE { Begin: 0, End: 0 }; // Не читаем CPU
+        let read_range = D3D12_RANGE { Begin: 0, End: 0 };
         let mut mapped: *mut c_void = ptr::null_mut();
 
         debug_println!("[buffer] Mapping resource...");
 
-        // Пытаемся замапить ресурс
         match resource.Map(0, Some(&read_range), Some(&mut mapped)) {
             Ok(()) => {
                 if mapped.is_null() {
@@ -657,10 +654,8 @@ mod buffer_mod {
 
                 debug_println!("[buffer] Resource mapped at {:p}, copying {} bytes", mapped, size);
 
-                // Копируем данные с проверкой на переполнение
                 std::ptr::copy_nonoverlapping(data as *const u8, mapped as *mut u8, size);
 
-                // Анмаппим с указанием записанного диапазона
                 let written_range = D3D12_RANGE { Begin: 0, End: size };
                 resource.Unmap(0, Some(&written_range));
 
@@ -686,8 +681,6 @@ mod texture_mod {
         format: DXGI_FORMAT,
         _upload: bool,
     ) -> Option<ID3D12Resource> {
-        // Нельзя создавать TEXTURE2D на UPLOAD heap (часто даёт E_INVALIDARG).
-        // Всегда создаём DEFAULT ресурс. Аплоад (CopyTextureRegion) можно добавить позже.
         let heap_type = D3D12_HEAP_TYPE_DEFAULT;
 
         let heap_props = D3D12_HEAP_PROPERTIES {
@@ -892,7 +885,6 @@ mod pso_mod {
 
         let mut pso_desc = std::mem::zeroed::<D3D12_GRAPHICS_PIPELINE_STATE_DESC>();
 
-        // Правильно: передаем живой указатель
         pso_desc.pRootSignature = ManuallyDrop::new(Some(root_sig.clone()));
         pso_desc.VS = vs_bc;
         pso_desc.PS = ps_bc;
@@ -1036,6 +1028,8 @@ pub extern "C" fn force_cleanup() {
         state.fence = None;
         state.rtv_heap = None;
         state.device = None;
+        state.descriptor_heaps.clear();
+        state.command_list_open = false;  // НОВОЕ - сброс флага
         println!("[API_fcle] force_cleanup() done");
     }
 }
@@ -1246,7 +1240,6 @@ pub unsafe extern "C" fn create_constant_buffer_view(
         return false;
     }
 
-    // Получаем device правильным способом
     let device: ID3D12Device = match std::panic::catch_unwind(|| {
         std::mem::transmute_copy::<_, ID3D12Device>(&device_ptr)
     }) {
@@ -1288,21 +1281,12 @@ pub unsafe extern "C" fn create_constant_buffer_view(
         return false;
     }
 
-    // Размер должен быть выровнен по 256 байт для CBV
     let size = ((desc.Width + 255) & !255) as u32;
     eprintln!("Выровненный размер: {}", size);
 
-    // Проверяем выравнивание CPU handle
     let increment = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     if increment > 0 && (cpu_handle as u32) % increment != 0 {
         eprintln!("WARNING: CPU handle not aligned to {} bytes", increment);
-    }
-
-    // Проверяем, не является ли CPU handle битым
-    if cpu_handle == 0x15678A00110000 {
-        eprintln!("ERROR: CPU handle appears to be corrupted (broken GPU handle pattern)");
-        eprintln!("This is a fallback from a non-shader-visible heap. Please use shader-visible heap.");
-        return false;
     }
 
     let cbv_desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
@@ -1312,7 +1296,6 @@ pub unsafe extern "C" fn create_constant_buffer_view(
 
     let handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle };
 
-    // Добавляем проверку через catch_unwind
     let result = std::panic::catch_unwind(|| {
         device.CreateConstantBufferView(Some(&cbv_desc), handle);
     });
@@ -1328,6 +1311,7 @@ pub unsafe extern "C" fn create_constant_buffer_view(
     }
 }
 
+// ГЛАВНОЕ ИСПРАВЛЕНИЕ - функция создания дескрипторной кучи
 #[no_mangle]
 pub extern "C" fn create_descriptor_heap(
     device_ptr: *mut c_void,
@@ -1347,6 +1331,12 @@ pub extern "C" fn create_descriptor_heap(
         eprintln!("num_descriptors={}, heap_type={}, shader_visible={}",
                   num_descriptors, heap_type, shader_visible);
 
+        // Проверяем, что для шейдер-видимой кучи используется правильный тип
+        if shader_visible && heap_type != 2 {
+            eprintln!("ERROR: Only CBV/SRV/UAV heaps (type 2) can be shader-visible!");
+            eprintln!("  Forcing heap_type to 2 (CBV/SRV/UAV)");
+        }
+
         let heap_ty = match heap_type {
             0 => D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
             1 => D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
@@ -1357,16 +1347,13 @@ pub extern "C" fn create_descriptor_heap(
             }
         };
 
-        if shader_visible && heap_ty != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV {
-            eprintln!("ERROR: Only CBV/SRV/UAV heaps can be shader-visible!");
-            return ptr::null_mut();
-        }
-
-        let flags = if shader_visible {
+        let flags = if shader_visible && heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV {
             D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
         } else {
             D3D12_DESCRIPTOR_HEAP_FLAG_NONE
         };
+
+        eprintln!("Using flags: {:?}", flags);
 
         let desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: heap_ty,
@@ -1378,8 +1365,23 @@ pub extern "C" fn create_descriptor_heap(
         match device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&desc) {
             Ok(heap) => {
                 eprintln!("[heap] Created at {:p}", heap.as_raw());
+
                 let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
                 eprintln!("CPU handle: 0x{:X}", cpu_handle.ptr);
+
+                let gpu_handle = if flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+                    let handle = heap.GetGPUDescriptorHandleForHeapStart();
+                    eprintln!("GPU handle: 0x{:X}", handle.ptr);
+                    Some(handle.ptr)
+                } else {
+                    eprintln!("GPU handle: NOT AVAILABLE (heap not shader-visible)");
+                    None
+                };
+
+                // Сохраняем кучу в глобальном состоянии
+                if let Ok(mut state) = STATE.lock() {
+                    state.descriptor_heaps.push(heap.clone());
+                }
 
                 let raw_ptr = heap.as_raw();
                 std::mem::forget(heap);
@@ -1390,6 +1392,65 @@ pub extern "C" fn create_descriptor_heap(
                 ptr::null_mut()
             }
         }
+    }
+}
+
+// ИСПРАВЛЕННАЯ функция получения GPU handle
+#[no_mangle]
+pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u64 {
+    if heap_ptr.is_null() {
+        eprintln!("[GetGPUDescriptorHandleForHeapStart] heap_ptr is NULL");
+        return 0;
+    }
+
+    unsafe {
+        eprintln!("\n=== GetGPUDescriptorHandleForHeapStart ===");
+        eprintln!("heap_ptr = {:p}", heap_ptr);
+
+        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
+        let desc = heap.GetDesc();
+
+        eprintln!("Heap Type: {:?}", desc.Type);
+        eprintln!("NumDescriptors: {}", desc.NumDescriptors);
+        eprintln!("Flags: {:?}", desc.Flags);
+
+        // КРИТИЧЕСКАЯ ПРОВЕРКА: куча должна быть шейдер-видимой
+        if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+            eprintln!("ERROR: Heap is NOT shader-visible!");
+            eprintln!("  Flags = {:?}, expected SHADER_VISIBLE", desc.Flags);
+            eprintln!("  Make sure to create heap with shader_visible=true");
+            std::mem::forget(heap);
+            return 0;
+        }
+
+        let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
+        let result = gpu_handle.ptr as u64;
+
+        eprintln!("GPU handle: 0x{:X}", result);
+
+        // Проверка на валидность
+        if result == 0 {
+            eprintln!("ERROR: GPU handle is 0");
+            std::mem::forget(heap);
+            return 0;
+        }
+
+        if result < 0x10000 {
+            eprintln!("WARNING: GPU handle is suspiciously small: 0x{:X}", result);
+        }
+
+        // Проверка на известные битые значения от WARP драйвера
+        if result == 0x15678A00110000 || result == 0x25678A00120000 ||
+            result == 0x35678A00130000 || result == 0x45678A00140000 {
+            eprintln!("WARNING: WARP driver detected - fake GPU handle: 0x{:X}", result);
+            eprintln!("  This usually means no real GPU is available or heap is not shader-visible");
+            std::mem::forget(heap);
+            return 0;
+        }
+
+        eprintln!("✅ GPU handle is VALID");
+        std::mem::forget(heap);
+        result
     }
 }
 
@@ -1408,59 +1469,50 @@ pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
     }
 }
 
-// В функции GetGPUDescriptorHandleForHeapStart, убрать блок с вычислением:
 #[no_mangle]
-pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u64 {
+pub extern "C" fn debug_descriptor_heap(heap_ptr: *mut c_void) {
     if heap_ptr.is_null() {
-        return 0;
+        eprintln!("[debug_descriptor_heap] heap_ptr is NULL");
+        return;
     }
 
     unsafe {
         let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
         let desc = heap.GetDesc();
+        eprintln!("\n=== DESCRIPTOR HEAP DEBUG ===");
+        eprintln!("Heap pointer: {:p}", heap.as_raw());
+        eprintln!("Type: {:?}", desc.Type);
+        eprintln!("NumDescriptors: {}", desc.NumDescriptors);
+        eprintln!("Flags: {:?}", desc.Flags);
+        eprintln!("Is Shader Visible: {}",
+                  desc.Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 
-        // ✅ Проверяем, что куча шейдер-видимая
-        if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
-            eprintln!("[GetGPUDescriptorHandleForHeapStart] Heap is not shader-visible! Flags={:?}", desc.Flags);
-            std::mem::forget(heap);
-            return 0; // Возвращаем 0 вместо битого значения
+        let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
+        eprintln!("CPU handle start: 0x{:X}", cpu_handle.ptr);
+
+        if desc.Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+            let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
+            eprintln!("GPU handle start: 0x{:X}", gpu_handle.ptr);
+        } else {
+            eprintln!("GPU handle: NOT AVAILABLE (heap not shader-visible)");
         }
-
-        let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
-        let result = gpu_handle.ptr as u64;
-
-        // Дополнительная проверка на битые значения
-        if result == 0x15678A00110000 || result == 0x25678A00120000 {
-            eprintln!("[GetGPUDescriptorHandleForHeapStart] WARNING: Driver returned broken handle 0x{:X}", result);
-            std::mem::forget(heap);
-            return 0;
-        }
-
+        eprintln!("============================\n");
         std::mem::forget(heap);
-        result
     }
-}
-unsafe fn get_device_from_heap(heap: &ID3D12DescriptorHeap) -> Option<ID3D12Device> {
-    use windows::Win32::Graphics::Direct3D12::ID3D12Device;
-    use windows_core::Interface;
-
-    // Пытаемся получить устройство через QueryInterface
-    if let Ok(device) = heap.cast::<ID3D12Device>() {
-        return Some(device);
-    }
-
-    None
 }
 
 #[no_mangle]
 pub extern "C" fn is_gpu_handle_valid(handle: u64) -> bool {
-    // Проверяем на известные проблемные значения
-    if handle == 0 || handle == 0x15678A00110000 {
+    if handle == 0 {
         return false;
     }
 
-    // Проверяем на разумные границы
-    if handle < 0x10000 || handle > 0x7FFFFFFFFFFF {
+    if handle < 0x10000 {
+        return false;
+    }
+
+    if handle == 0x15678A00110000 || handle == 0x25678A00120000 ||
+        handle == 0x35678A00130000 || handle == 0x45678A00140000 {
         return false;
     }
 
@@ -1497,9 +1549,8 @@ pub extern "C" fn create_buffer(
         let raw_ptr = buffer.as_raw();
         eprintln!("[create_buffer] Created buffer at {:p}, size: {} bytes", raw_ptr, desc.Width);
 
-        // Сохраняем ОРИГИНАЛЬНЫЙ буфер, не клон!
         if let Ok(mut resources) = RESOURCES.lock() {
-            resources.push(buffer);  // перемещаем buffer в вектор
+            resources.push(buffer);
             eprintln!("[create_buffer] RESOURCES count: {}", resources.len());
         }
 
@@ -1543,7 +1594,6 @@ pub extern "C" fn update_subresource(
             return false;
         }
 
-        // Восстанавливаем COM-объект из указателя (увеличивает счётчик ссылок)
         let buffer = match ID3D12Resource::from_raw(buffer_ptr) {
             b if !b.as_raw().is_null() => b,
             _ => {
@@ -1557,14 +1607,12 @@ pub extern "C" fn update_subresource(
 
         if (desc.Width as usize) < size {
             eprintln!("ERROR: buffer too small: {} < {}", desc.Width, size);
-            std::mem::forget(buffer); // Не забываем освободить
+            std::mem::forget(buffer);
             return false;
         }
 
-        // Создаём локальную копию данных
         let local_buffer = std::slice::from_raw_parts(data_ptr as *const u8, size);
 
-        // Маппим ресурс
         let mut mapped: *mut c_void = std::ptr::null_mut();
         let read_range = D3D12_RANGE { Begin: 0, End: 0 };
 
@@ -1579,16 +1627,12 @@ pub extern "C" fn update_subresource(
 
                 eprintln!("Mapped at {:p}, copying {} bytes", mapped, size);
 
-                // Копируем данные
                 std::ptr::copy_nonoverlapping(local_buffer.as_ptr(), mapped as *mut u8, size);
 
-                // Указываем, что данные были записаны
                 let written_range = D3D12_RANGE { Begin: 0, End: size };
                 buffer.Unmap(0, Some(&written_range));
 
                 eprintln!("SUCCESS");
-
-                // Забываем буфер, чтобы он не уничтожился (Python будет управлять)
                 std::mem::forget(buffer);
                 true
             }
@@ -1636,8 +1680,6 @@ pub extern "C" fn create_texture_from_memory(
             Some(t) => t,
             None => return ptr::null_mut(),
         };
-
-        // Пока не делаем CPU->GPU upload для DEFAULT texture (нужен upload buffer + copy).
 
         let raw = tex.as_raw();
         std::mem::forget(tex);
@@ -1783,7 +1825,6 @@ pub extern "C" fn create_graphics_ps(
             }
         };
 
-        // Проверяем размеры шейдеров
         if vs_blob.GetBufferSize() == 0 || ps_blob.GetBufferSize() == 0 {
             eprintln!("[create_graphics_ps] Shader blob size is zero");
             return ptr::null_mut();
@@ -1818,26 +1859,25 @@ pub extern "C" fn create_graphics_ps(
 
 /* ==================== ОСНОВНЫЕ ФУНКЦИИ РЕНДЕРИНГА ==================== */
 
-// В lib.rs, функция begin_frame - она должна ТОЛЬКО сбрасывать command list
 #[no_mangle]
 pub unsafe extern "C" fn begin_frame() -> bool {
     debug_println!("\n[API_bfra] begin_frame() called");
 
-    // Получаем текущий индекс кадра
     let frame_index = {
         let state = STATE.lock().unwrap();
         state.frame_index as usize
     };
 
-    // Ждем GPU для текущего кадра
     if !wait_for_gpu() {
         debug_println!("[API_bfra] wait_for_gpu failed in begin_frame");
         return false;
     }
 
-    // Получаем аллокатор для текущего кадра
     let (allocator, list) = {
         let mut state = STATE.lock().unwrap();
+
+        // Сбрасываем флаг перед началом нового кадра
+        state.command_list_open = false;
 
         if state.command_allocators.is_empty() {
             debug_println!("[API_bfra] No command allocators");
@@ -1852,7 +1892,6 @@ pub unsafe extern "C" fn begin_frame() -> bool {
     };
 
     if let (Some(allocator), Some(list)) = (allocator, list) {
-        // Сначала сбрасываем аллокатор
         match allocator.Reset() {
             Ok(()) => debug_println!("[API_bfra] Allocator reset successfully"),
             Err(e) => {
@@ -1861,12 +1900,17 @@ pub unsafe extern "C" fn begin_frame() -> bool {
             }
         }
 
-        // Сбрасываем command list с этим аллокатором
         match list.Reset(&allocator, None) {
             Ok(()) => {
                 debug_println!("[API_bfra] Command list reset successfully");
 
-                // ✅ ВАЖНО: Устанавливаем root signature сразу после reset
+                // Устанавливаем флаг, что командный лист теперь открыт
+                {
+                    let mut state = STATE.lock().unwrap();
+                    state.command_list_open = true;
+                    debug_println!("[API_bfra] Command list is now OPEN (flag set to true)");
+                }
+
                 if let Some(root_sig) = STATE.lock().unwrap().root_signature.clone() {
                     list.SetGraphicsRootSignature(&root_sig);
                     debug_println!("[API_bfra] Root signature set");
@@ -1885,10 +1929,20 @@ pub unsafe extern "C" fn begin_frame() -> bool {
     }
 }
 
-// Исправленная end_frame - убираем вызовы set_root_descriptor_table
 #[no_mangle]
 pub unsafe extern "C" fn end_frame() -> bool {
     debug_println!("\n[API_efra] end_frame() called");
+
+    // Проверяем, открыт ли командный лист
+    let is_open = {
+        let state = STATE.lock().unwrap();
+        state.command_list_open
+    };
+
+    if !is_open {
+        debug_println!("[API_efra] Command list is already closed, skipping close operation");
+        // Пропускаем закрытие, но продолжаем с fence сигналом
+    }
 
     let (queue_opt, cmd_list_opt, fence_opt) = {
         let state = STATE.lock().unwrap();
@@ -1907,34 +1961,50 @@ pub unsafe extern "C" fn end_frame() -> bool {
         }
     };
 
-    // ✅ Закрываем command list
-    match cmd_list.Close() {
-        Ok(()) => {
-            debug_println!("[API_efra] CommandList::Close() succeeded");
+    // Закрываем командный лист только если он открыт
+    if is_open {
+        match cmd_list.Close() {
+            Ok(()) => {
+                debug_println!("[API_efra] CommandList::Close() succeeded");
 
-            // Выполняем список команд
-            let cmd_list_clone = cmd_list.clone();
-            let cmd_list_cast: ID3D12CommandList = match cmd_list_clone.cast() {
-                Ok(list) => list,
-                Err(e) => {
-                    debug_println!("[API_efra] Failed to cast command list: {:?}", e);
+                let cmd_list_clone = cmd_list.clone();
+                let cmd_list_cast: ID3D12CommandList = match cmd_list_clone.cast() {
+                    Ok(list) => list,
+                    Err(e) => {
+                        debug_println!("[API_efra] Failed to cast command list: {:?}", e);
+                        return false;
+                    }
+                };
+
+                queue.ExecuteCommandLists(&[Some(cmd_list_cast)]);
+                debug_println!("[API_efra] Command list executed");
+
+                // Сбрасываем флаг, так как лист теперь закрыт
+                {
+                    let mut state = STATE.lock().unwrap();
+                    state.command_list_open = false;
+                    debug_println!("[API_efra] Command list flag set to CLOSED");
+                }
+            }
+            Err(e) => {
+                // E_FAIL (0x80004005) часто означает, что список уже закрыт
+                if e.code().0 == 0x80004005u32 as i32 {
+                    debug_println!("[API_efra] Command list already closed (E_FAIL), continuing...");
+                    // Сбрасываем флаг на всякий случай
+                    {
+                        let mut state = STATE.lock().unwrap();
+                        state.command_list_open = false;
+                    }
+                } else {
+                    debug_println!("[API_efra] CommandList::Close() failed: {:?}", e);
                     return false;
                 }
-            };
-
-            queue.ExecuteCommandLists(&[Some(cmd_list_cast)]);
-            debug_println!("[API_efra] Command list executed");
-        }
-        Err(e) => {
-            debug_println!("[API_efra] CommandList::Close() failed: {:?}", e);
-            // Если список пустой, это нормально
-            if e.code().0 != 0x80070057u32 as i32 {  // E_INVALIDARG
-                return false;
             }
         }
+    } else {
+        debug_println!("[API_efra] Command list was already closed, skipping Close()");
     }
 
-    // Сигналим fence
     let frame_idx = {
         let state = STATE.lock().unwrap();
         state.frame_index as usize
@@ -1946,7 +2016,7 @@ pub unsafe extern "C" fn end_frame() -> bool {
         let fence_val = state.fence_values[frame_idx];
 
         if let Err(e) = queue.Signal(&fence, fence_val) {
-            debug_println!("[API_efraI] Queue::Signal() failed: {:?}", e);
+            debug_println!("[API_efra] Queue::Signal() failed: {:?}", e);
             return false;
         }
 
@@ -1971,13 +2041,11 @@ pub unsafe extern "C" fn wait_for_gpu() -> bool {
     };
 
     if let (Some(_queue), Some(fence)) = (queue, fence) {
-        // Получаем текущий кадр
         let frame_idx = {
             let state = STATE.lock().unwrap();
             state.frame_index as usize
         };
 
-        // Получаем значение fence для этого кадра
         let fence_value = {
             let state = STATE.lock().unwrap();
             if frame_idx < state.fence_values.len() {
@@ -1988,7 +2056,6 @@ pub unsafe extern "C" fn wait_for_gpu() -> bool {
         };
 
         if fence_value > 0 {
-            // Проверяем текущее значение
             let completed_value = fence.GetCompletedValue();
 
             if completed_value < fence_value {
@@ -2033,9 +2100,6 @@ pub unsafe extern "C" fn set_graphics_pipeline(pso_ptr: *mut c_void) -> bool {
     let state = STATE.lock().unwrap();
     if let Some(list) = &state.command_list {
         if let Some(pso) = ptr_utils::as_pipeline_state(pso_ptr) {
-            // ✅ Проверяем, что command list открыт
-            // В DirectX 12 нет прямого способа, но мы можем попробовать
-
             list.SetPipelineState(&pso);
             std::mem::forget(pso);
             debug_println!("[API_setgp] set_graphics_pipeline SUCCESS");
@@ -2046,20 +2110,15 @@ pub unsafe extern "C" fn set_graphics_pipeline(pso_ptr: *mut c_void) -> bool {
     false
 }
 
-
 #[no_mangle]
 pub unsafe extern "C" fn is_command_list_open() -> bool {
     let state = STATE.lock().unwrap();
     if let Some(list) = &state.command_list {
-        // В DirectX 12 нет прямого способа проверить, открыт ли command list,
-        // но мы можем попробовать выполнить простую операцию и поймать ошибку
-        // Вместо этого, просто проверяем, что list не null
         return !list.as_raw().is_null();
     }
     false
 }
 
-// Исправленная set_root_descriptor_table с проверкой
 #[no_mangle]
 pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: u64) -> bool {
     eprintln!("\n========================================");
@@ -2072,7 +2131,6 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
         return false;
     }
 
-    // Проверяем, что gpu_handle не выглядит как битый
     if gpu_handle < 0x10000 || gpu_handle > 0x7FFFFFFFFFFFF {
         eprintln!("ERROR: gpu_handle looks suspicious: 0x{:X}", gpu_handle);
         return false;
@@ -2094,7 +2152,6 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
 
         eprintln!("  Command list address: {:p}", list.as_raw());
 
-        // Проверяем, что root signature установлен
         if let Some(root_sig) = &state.root_signature {
             eprintln!("  Root signature present: {:p}", root_sig.as_raw());
         } else {
@@ -2105,7 +2162,6 @@ pub unsafe extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: 
         let handle = D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu_handle };
         eprintln!("  Calling SetGraphicsRootDescriptorTable with handle=0x{:X}", handle.ptr);
 
-        // ✅ Используем try-catch для отлова access violation
         let result = std::panic::catch_unwind(|| {
             list.SetGraphicsRootDescriptorTable(root_index, handle);
         });
@@ -2142,12 +2198,16 @@ pub unsafe extern "C" fn set_descriptor_heaps(count: usize, heaps: *const *mut c
             let heap_ptr = *heaps.add(i);
             eprintln!("heap_ptr[{}] = {:p}", i, heap_ptr);
             if !heap_ptr.is_null() {
-                // Используем IUnknown для безопасного преобразования
                 let unknown = IUnknown::from_raw(heap_ptr);
                 match unknown.cast::<ID3D12DescriptorHeap>() {
                     Ok(heap) => {
-                        eprintln!("  Successfully cast to ID3D12DescriptorHeap: {:p}", heap.as_raw());
-                        heap_ptrs.push(Some(heap));
+                        let desc = heap.GetDesc();
+                        if desc.Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
+                            eprintln!("  Successfully cast to ID3D12DescriptorHeap: {:p}", heap.as_raw());
+                            heap_ptrs.push(Some(heap));
+                        } else {
+                            eprintln!("  WARNING: Heap is not shader-visible, skipping");
+                        }
                     }
                     Err(e) => {
                         eprintln!("  Failed to cast to ID3D12DescriptorHeap: {:?}", e);
@@ -2252,7 +2312,6 @@ pub unsafe extern "C" fn set_vertex_buffers(
     eprintln!("vertex_buffer ptr: {:p}", vertex_buffer);
     eprintln!("index_buffer ptr: {:p}", index_buffer);
 
-    // Проверяем, что указатели разные
     if vertex_buffer == index_buffer && !vertex_buffer.is_null() {
         eprintln!("ERROR: Vertex and index buffers point to the same address!");
         return false;
@@ -2260,11 +2319,9 @@ pub unsafe extern "C" fn set_vertex_buffers(
 
     let state = STATE.lock().unwrap();
     if let Some(list) = &state.command_list {
-        // Vertex buffer
         if !vertex_buffer.is_null() {
             eprintln!("Processing vertex buffer...");
 
-            // Пробуем получить ресурс через from_raw
             let buffer = ID3D12Resource::from_raw(vertex_buffer);
             if buffer.as_raw().is_null() {
                 eprintln!("ERROR: Failed to get vertex buffer resource");
@@ -2294,7 +2351,7 @@ pub unsafe extern "C" fn set_vertex_buffers(
             let view = D3D12_VERTEX_BUFFER_VIEW {
                 BufferLocation: gpu_va,
                 SizeInBytes: desc.Width as u32,
-                StrideInBytes: 12,  // 3 floats * 4 bytes
+                StrideInBytes: 12,
             };
             list.IASetVertexBuffers(0, Some(&[view]));
             eprintln!("Vertex buffer set successfully");
@@ -2302,7 +2359,6 @@ pub unsafe extern "C" fn set_vertex_buffers(
             std::mem::forget(buffer);
         }
 
-        // Index buffer
         if !index_buffer.is_null() && index_buffer != vertex_buffer {
             eprintln!("Processing index buffer...");
 
