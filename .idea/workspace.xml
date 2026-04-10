@@ -41,24 +41,70 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="ef9bb2be-dc37-40fd-9b98-968926a06cfa" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/1.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/Cargo.lock" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/Cargo.toml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/alkash3d_rs.dll" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/buffer.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/command.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/device.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/heap.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/lib.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/pso.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/queue.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/render.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/shader.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/swap_chain.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/texture.rs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/alkash3d-rust/src/utils.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/.rustc_info.json" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d/alkash3d_dx12/target/.rustc_info.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/1.py" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/1.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/alkash3d_rs.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/alkash3d_rs.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/src/command.rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/src/command.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/.rustc_info.json" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/.rustc_info.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-36efd79e354be66a/dep-test-lib-alkash3d_rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-36efd79e354be66a/dep-test-lib-alkash3d_rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-36efd79e354be66a/output-test-lib-alkash3d_rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-36efd79e354be66a/output-test-lib-alkash3d_rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-41066b7a320e1fdd/dep-lib-alkash3d_rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-41066b7a320e1fdd/dep-lib-alkash3d_rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-41066b7a320e1fdd/output-lib-alkash3d_rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/.fingerprint/alkash3d_rs-41066b7a320e1fdd/output-lib-alkash3d_rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build-script-build.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build_script_build-14c436feccda2a72.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build_script_build-14c436feccda2a72.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build_script_build-14c436feccda2a72.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build_script_build-14c436feccda2a72.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/proc-macro2-14c436feccda2a72/build_script_build.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build-script-build.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build_script_build-880138076a3cb7cd.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build_script_build-880138076a3cb7cd.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build_script_build-880138076a3cb7cd.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build_script_build-880138076a3cb7cd.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/quote-880138076a3cb7cd/build_script_build.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build-script-build.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build-757516019e19758b.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/build/windows_x86_64_msvc-757516019e19758b/build_script_build.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_implement-0623db2bd3665711.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_implement-0623db2bd3665711.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_implement-0623db2bd3665711.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_implement-0623db2bd3665711.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_implement-0623db2bd3665711.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_implement-0623db2bd3665711.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_interface-77d1a0def202da79.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_interface-77d1a0def202da79.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_interface-77d1a0def202da79.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_interface-77d1a0def202da79.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_interface-77d1a0def202da79.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/debug/deps/windows_interface-77d1a0def202da79.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0ef29t79odzl2/s-hhgbzrlpzc-0xtmfoc-bqnb4cuopmcvhyavu1ryzzx79/dep-graph.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0ef29t79odzl2/s-hhgbzrlpzc-0xtmfoc-bqnb4cuopmcvhyavu1ryzzx79/query-cache.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0ef29t79odzl2/s-hhgbzrlpzc-0xtmfoc-bqnb4cuopmcvhyavu1ryzzx79/work-products.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0ef29t79odzl2/s-hhgbzrlpzc-0xtmfoc.lock" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0hept5mjvrvzs/s-hhgbzrln5d-0fpxlzv-39hp6un1bv3rlfn1otcltoy4m/dep-graph.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0hept5mjvrvzs/s-hhgbzrln5d-0fpxlzv-39hp6un1bv3rlfn1otcltoy4m/query-cache.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0hept5mjvrvzs/s-hhgbzrln5d-0fpxlzv-39hp6un1bv3rlfn1otcltoy4m/work-products.bin" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/debug/incremental/alkash3d_rs-0hept5mjvrvzs/s-hhgbzrln5d-0fpxlzv.lock" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/.fingerprint/alkash3d_rs-05e97efde83444df/dep-lib-alkash3d_rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/.fingerprint/alkash3d_rs-05e97efde83444df/dep-lib-alkash3d_rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/.fingerprint/alkash3d_rs-05e97efde83444df/output-lib-alkash3d_rs" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/.fingerprint/alkash3d_rs-05e97efde83444df/output-lib-alkash3d_rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.dll.lib" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.dll.lib" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/alkash3d_rs.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build-script-build.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build_script_build-0a751879c6dff614.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build_script_build-0a751879c6dff614.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build_script_build-0a751879c6dff614.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build_script_build-0a751879c6dff614.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/proc-macro2-0a751879c6dff614/build_script_build.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build-script-build.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build_script_build-b6f4f2c0f9f25cd8.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build_script_build-b6f4f2c0f9f25cd8.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build_script_build-b6f4f2c0f9f25cd8.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build_script_build-b6f4f2c0f9f25cd8.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/quote-b6f4f2c0f9f25cd8/build_script_build.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build-script-build.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build-script-build.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build_script_build-37e5614496473f5e.exe" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build_script_build-37e5614496473f5e.exe" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build_script_build-37e5614496473f5e.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build_script_build-37e5614496473f5e.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build_script_build.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/build/windows_x86_64_msvc-37e5614496473f5e/build_script_build.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.dll.lib" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.dll.lib" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/alkash3d_rs.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_implement-16768bba67a0664d.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_implement-16768bba67a0664d.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_implement-16768bba67a0664d.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_implement-16768bba67a0664d.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_implement-16768bba67a0664d.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_implement-16768bba67a0664d.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_interface-f0a175620f3ea9ef.dll" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_interface-f0a175620f3ea9ef.dll" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_interface-f0a175620f3ea9ef.dll.exp" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_interface-f0a175620f3ea9ef.dll.exp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_interface-f0a175620f3ea9ef.pdb" beforeDir="false" afterPath="$PROJECT_DIR$/alkash3d-rust/target/release/deps/windows_interface-f0a175620f3ea9ef.pdb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/inspect.py" beforeDir="false" afterPath="$PROJECT_DIR$/inspect.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -327,6 +373,28 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
+    <configuration name="inspect" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="AlKAsH3D-Engine" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/inspect.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <configuration name="simple_game" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AlKAsH3D-Engine" />
       <option name="ENV_FILES" value="" />
@@ -349,42 +417,20 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="window" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="AlKAsH3D-Engine" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/alkash3d" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/alkash3d/window.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
     <list>
+      <item itemvalue="Python.inspect" />
       <item itemvalue="Python.1" />
       <item itemvalue="Python.2" />
       <item itemvalue="Python.__init__" />
       <item itemvalue="Python.simple_game" />
-      <item itemvalue="Python.window" />
     </list>
     <recent_temporary>
       <list>
         <item itemvalue="Python.1" />
+        <item itemvalue="Python.inspect" />
         <item itemvalue="Python.simple_game" />
         <item itemvalue="Python.2" />
         <item itemvalue="Python.__init__" />
-        <item itemvalue="Python.window" />
       </list>
     </recent_temporary>
   </component>
