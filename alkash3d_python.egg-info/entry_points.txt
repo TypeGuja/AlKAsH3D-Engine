@@ -1,2 +1,0 @@
-[console_scripts]
-alkash3d-run = alkash3d.runner:main
