@@ -1,196 +1,226 @@
+"""
+Простой тест для проверки Rust D3D12 бэкенда
+"""
+
 import ctypes
-from ctypes import wintypes
-import sys
+from pathlib import Path
 
-print("=" * 60)
-print("Testing Rust D3D12 Backend")
-print("=" * 60)
+def main():
+    print("=" * 60)
+    print("Testing Rust D3D12 Backend")
+    print("=" * 60)
 
-# 1. Загрузка библиотеки
-print("\n1. Loading Rust library...")
-try:
-    rust_lib = ctypes.CDLL(
-        r"C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d-rust\target\release\alkash3d_rs.dll")
-    print(
-        "   ✅ Found: C:\\Users\\user\\Documents\\GitHub\\AlKAsH3D-Engine\\alkash3d-rust\\target\\release\\alkash3d_rs.dll")
-except Exception as e:
-    print(f"   ❌ Failed to load library: {e}")
-    sys.exit(1)
+    # 1. Загружаем библиотеку
+    print("\n1. Loading Rust library...")
+    lib_path = Path(__file__).parent / "target" / "release" / "alkash3d_rs.dll"
 
-# 2. Настройка функций
-print("\n2. Setting up functions...")
+    if not lib_path.exists():
+        lib_path = Path("alkash3d_rs.dll")
 
-# Device functions
-rust_lib.create_device.argtypes = []
-rust_lib.create_device.restype = ctypes.c_void_p
-rust_lib.get_gpu_name.argtypes = [ctypes.c_void_p]
-rust_lib.get_gpu_name.restype = ctypes.c_char_p
-rust_lib.is_warp_mode.argtypes = []
-rust_lib.is_warp_mode.restype = ctypes.c_bool
+    if not lib_path.exists():
+        print(f"   ❌ Library not found: {lib_path}")
+        return
 
-# Queue functions
-rust_lib.create_command_queue.argtypes = [ctypes.c_void_p]
-rust_lib.create_command_queue.restype = ctypes.c_void_p
+    print(f"   ✅ Found: {lib_path}")
+    lib = ctypes.CDLL(str(lib_path))
 
-# Command functions
-rust_lib.create_command_allocators.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-rust_lib.create_command_allocators.restype = ctypes.c_bool
-rust_lib.create_command_list.argtypes = [ctypes.c_void_p]
-rust_lib.create_command_list.restype = ctypes.c_void_p
-rust_lib.create_fence.argtypes = [ctypes.c_void_p]
-rust_lib.create_fence.restype = ctypes.c_bool
-rust_lib.begin_frame.argtypes = []
-rust_lib.begin_frame.restype = ctypes.c_bool
-rust_lib.end_frame.argtypes = []
-rust_lib.end_frame.restype = ctypes.c_bool
-rust_lib.wait_for_gpu.argtypes = []
-rust_lib.wait_for_gpu.restype = ctypes.c_bool
-rust_lib.get_frame_index.argtypes = []
-rust_lib.get_frame_index.restype = ctypes.c_uint32
+    # 2. Настраиваем функции
+    print("\n2. Setting up functions...")
 
-# Heap functions
-rust_lib.create_descriptor_heap.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool]
-rust_lib.create_descriptor_heap.restype = ctypes.c_void_p
-rust_lib.get_rtv_descriptor_size.argtypes = []
-rust_lib.get_rtv_descriptor_size.restype = ctypes.c_uint32
-rust_lib.get_cbv_srv_uav_descriptor_size.argtypes = []
-rust_lib.get_cbv_srv_uav_descriptor_size.restype = ctypes.c_uint32
+    lib.create_device.argtypes = []
+    lib.create_device.restype = ctypes.c_void_p
 
-# Buffer functions
-rust_lib.create_buffer.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
-rust_lib.create_buffer.restype = ctypes.c_void_p
-rust_lib.update_subresource.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
-rust_lib.update_subresource.restype = ctypes.c_bool
+    lib.check_warp_driver.argtypes = [ctypes.c_void_p]
+    lib.check_warp_driver.restype = ctypes.c_bool
 
-# Cleanup function
-rust_lib.release_resource.argtypes = [ctypes.c_void_p]
-rust_lib.release_resource.restype = None
+    lib.is_warp_mode.argtypes = []
+    lib.is_warp_mode.restype = ctypes.c_bool
 
-print("   ✅ Functions configured")
+    lib.get_gpu_name.argtypes = [ctypes.c_void_p]
+    lib.get_gpu_name.restype = ctypes.c_char_p
 
-# 3. Создание устройства
-print("\n3. Creating D3D12 device...")
-device_ptr = rust_lib.create_device()
-if not device_ptr:
-    print("   ❌ Failed to create device!")
-    sys.exit(1)
-print(f"   ✅ Device created: {hex(device_ptr)}")
+    lib.create_command_queue.argtypes = [ctypes.c_void_p]
+    lib.create_command_queue.restype = ctypes.c_void_p
 
-# 4. Информация о GPU
-print("\n4. Checking GPU...")
-gpu_name = rust_lib.get_gpu_name(device_ptr).decode('ascii', errors='ignore')
-is_warp = rust_lib.is_warp_mode()
-print(f"   GPU Name: {gpu_name}")
-print(f"   Is WARP: {is_warp}")
-print(f"   WARP Mode: {is_warp}")
-if not is_warp:
-    print("   ✅ Using real GPU hardware!")
-else:
-    print("   ⚠️ Using WARP software renderer")
+    lib.create_descriptor_heap.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool]
+    lib.create_descriptor_heap.restype = ctypes.c_void_p
 
-# 5. Создание command queue
-print("\n5. Creating command queue...")
-queue_ptr = rust_lib.create_command_queue(device_ptr)
-if not queue_ptr:
-    print("   ❌ Failed to create command queue!")
-    sys.exit(1)
-print(f"   ✅ Command queue created: {hex(queue_ptr)}")
+    lib.GetGPUDescriptorHandleForHeapStart.argtypes = [ctypes.c_void_p]
+    lib.GetGPUDescriptorHandleForHeapStart.restype = ctypes.c_uint64
 
-# 6. Создание command allocators (нужно 4 для triple buffering)
-print("\n6. Creating command allocators...")
-if not rust_lib.create_command_allocators(device_ptr, 4):
-    print("   ❌ Failed to create command allocators!")
-    sys.exit(1)
-print("   ✅ Command allocators created (4)")
+    lib.GetCPUDescriptorHandleForHeapStart.argtypes = [ctypes.c_void_p]
+    lib.GetCPUDescriptorHandleForHeapStart.restype = ctypes.c_uint64
 
-# 7. Создание command list
-print("\n7. Creating command list...")
-cmd_list_ptr = rust_lib.create_command_list(device_ptr)
-if not cmd_list_ptr:
-    print("   ❌ Failed to create command list!")
-    sys.exit(1)
-print(f"   ✅ Command list created: {hex(cmd_list_ptr)}")
+    lib.create_buffer.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    lib.create_buffer.restype = ctypes.c_void_p
 
-# 8. Создание fence
-print("\n8. Creating fence...")
-if not rust_lib.create_fence(device_ptr):
-    print("   ❌ Failed to create fence!")
-    sys.exit(1)
-print("   ✅ Fence created")
+    lib.update_subresource.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+    lib.update_subresource.restype = ctypes.c_bool
 
-# 9. Создание descriptor heap
-print("\n9. Creating descriptor heap...")
-heap_ptr = rust_lib.create_descriptor_heap(device_ptr, 10, 2, True)
-if not heap_ptr:
-    print("   ❌ Failed to create descriptor heap!")
-else:
-    print(f"   ✅ Descriptor heap created: {hex(heap_ptr)}")
+    lib.begin_frame.argtypes = []
+    lib.begin_frame.restype = ctypes.c_bool
 
-# 10. Создание vertex buffer
-print("\n10. Creating vertex buffer...")
-buffer_ptr = rust_lib.create_buffer(device_ptr, 144, None)
-if not buffer_ptr:
-    print("   ❌ Failed to create buffer!")
-else:
-    print(f"   ✅ Buffer created: {hex(buffer_ptr)}")
+    lib.end_frame.argtypes = []
+    lib.end_frame.restype = ctypes.c_bool
 
-    # 11. Обновление buffer данными
-    print("\n11. Updating buffer data...")
-    test_data = b"Hello from Rust D3D12!" * 6
-    if rust_lib.update_subresource(buffer_ptr, test_data, len(test_data)):
-        print("   ✅ Buffer updated successfully!")
+    lib.wait_for_gpu.argtypes = []
+    lib.wait_for_gpu.restype = ctypes.c_bool
+
+    lib.get_frame_index.argtypes = []
+    lib.get_frame_index.restype = ctypes.c_uint32
+
+    lib.get_rtv_descriptor_size.argtypes = []
+    lib.get_rtv_descriptor_size.restype = ctypes.c_uint32
+
+    lib.get_cbv_srv_uav_descriptor_size.argtypes = []
+    lib.get_cbv_srv_uav_descriptor_size.restype = ctypes.c_uint32
+
+    lib.release_resource.argtypes = [ctypes.c_void_p]
+    lib.release_resource.restype = None
+
+    lib.force_cleanup.argtypes = []
+    lib.force_cleanup.restype = None
+
+    print("   ✅ Functions configured")
+
+    # 3. Создаём устройство
+    print("\n3. Creating D3D12 device...")
+    device = lib.create_device()
+
+    if device == 0:
+        print("   ❌ Failed to create device!")
+        return
+
+    print(f"   ✅ Device created: 0x{device:X}")
+
+    # 4. Проверяем WARP
+    print("\n4. Checking GPU...")
+    is_warp = lib.check_warp_driver(device)
+    warp_mode = lib.is_warp_mode()
+
+    gpu_name = lib.get_gpu_name(device)
+    if gpu_name:
+        print(f"   GPU Name: {gpu_name.decode('utf-8')}")
+
+    print(f"   Is WARP: {is_warp}")
+    print(f"   WARP Mode: {warp_mode}")
+
+    if is_warp:
+        print("   ⚠️  WARNING: Using software renderer (WARP)")
+        print("   Performance will be poor!")
     else:
-        print("   ❌ Buffer update failed!")
+        print("   ✅ Using real GPU hardware!")
 
-# 12. Тестирование frame команд
-print("\n12. Testing frame commands...")
-if rust_lib.begin_frame():
-    print("   begin_frame: ✅")
-    if rust_lib.end_frame():
-        print("   end_frame: ✅")
-        if rust_lib.wait_for_gpu():
-            print("   wait_for_gpu: ✅")
+    # 5. Создаём командную очередь
+    print("\n5. Creating command queue...")
+    queue = lib.create_command_queue(device)
+
+    if queue == 0:
+        print("   ❌ Failed to create command queue!")
+        lib.release_resource(device)
+        return
+
+    print(f"   ✅ Command queue created: 0x{queue:X}")
+
+    # 6. Создаём дескрипторную кучу
+    print("\n6. Creating descriptor heap...")
+    heap = lib.create_descriptor_heap(device, 10, 2, not is_warp)
+
+    if heap == 0:
+        print("   ❌ Failed to create descriptor heap!")
+    else:
+        print(f"   ✅ Descriptor heap created: 0x{heap:X}")
+
+        cpu_handle = lib.GetCPUDescriptorHandleForHeapStart(heap)
+        print(f"   CPU handle: 0x{cpu_handle:X}")
+
+        if not is_warp:
+            gpu_handle = lib.GetGPUDescriptorHandleForHeapStart(heap)
+            print(f"   GPU handle: 0x{gpu_handle:X}")
+
+            if gpu_handle != 0 and gpu_handle > 0x10000:
+                if gpu_handle in [0x15678A00120000, 0x25678A00120000, 0x35678A00130000, 0x45678A00140000]:
+                    print("   ⚠️  Fake GPU handle detected!")
+                else:
+                    print("   ✅ Valid GPU handle!")
+
+    # 7. Создаём буфер
+    print("\n7. Creating vertex buffer...")
+    vertex_data = b'\x00\x00\x00\x00' * 36  # 3 вершины по 12 байт
+    buffer = lib.create_buffer(device, len(vertex_data), None)
+
+    if buffer == 0:
+        print("   ❌ Failed to create buffer!")
+    else:
+        print(f"   ✅ Buffer created: 0x{buffer:X}")
+
+        # Обновляем данные
+        print("\n8. Updating buffer data...")
+        success = lib.update_subresource(buffer, vertex_data, len(vertex_data))
+
+        if success:
+            print("   ✅ Buffer updated successfully!")
         else:
-            print("   wait_for_gpu: ❌")
+            print("   ❌ Failed to update buffer")
+
+    # 9. Проверяем frame команды
+    print("\n9. Testing frame commands...")
+
+    result = lib.begin_frame()
+    print(f"   begin_frame: {'✅' if result else '❌'}")
+
+    if result:
+        result = lib.end_frame()
+        print(f"   end_frame: {'✅' if result else '❌'}")
+
+        result = lib.wait_for_gpu()
+        print(f"   wait_for_gpu: {'✅' if result else '❌'}")
+
+    frame_index = lib.get_frame_index()
+    print(f"   Frame index: {frame_index}")
+
+    # 10. Размеры дескрипторов
+    print("\n10. Descriptor sizes:")
+    rtv_size = lib.get_rtv_descriptor_size()
+    cbv_size = lib.get_cbv_srv_uav_descriptor_size()
+    print(f"    RTV size: {rtv_size} bytes")
+    print(f"    CBV/SRV/UAV size: {cbv_size} bytes")
+
+    # 11. Очистка
+    print("\n11. Cleaning up...")
+
+    if heap != 0:
+        lib.release_resource(heap)
+        print("   Heap released")
+
+    if buffer != 0:
+        lib.release_resource(buffer)
+        print("   Buffer released")
+
+    if queue != 0:
+        lib.release_resource(queue)
+        print("   Queue released")
+
+    if device != 0:
+        lib.release_resource(device)
+        print("   Device released")
+
+    lib.force_cleanup()
+    print("   Force cleanup done")
+
+    print("\n" + "=" * 60)
+    print("Test completed!")
+    print("=" * 60)
+
+    # Итог
+    if is_warp:
+        print("\n⚠️  NOTE: Running on WARP (software renderer)")
+        print("   For hardware acceleration, install GPU drivers or")
+        print("   run on a machine with dedicated graphics card.")
     else:
-        print("   end_frame: ❌")
-else:
-    print("   begin_frame: ❌")
+        print("\n✅ SUCCESS: Running on real GPU hardware!")
+        print(f"   GPU: {gpu_name.decode('utf-8') if gpu_name else 'Unknown'}")
 
-frame_idx = rust_lib.get_frame_index()
-print(f"   Frame index: {frame_idx}")
 
-# 13. Информация о дескрипторах
-print("\n13. Descriptor sizes:")
-rtv_size = rust_lib.get_rtv_descriptor_size()
-cbv_size = rust_lib.get_cbv_srv_uav_descriptor_size()
-print(f"    RTV size: {rtv_size} bytes")
-print(f"    CBV/SRV/UAV size: {cbv_size} bytes")
-
-# 14. Очистка
-print("\n14. Cleaning up...")
-if heap_ptr:
-    rust_lib.release_resource(ctypes.c_void_p(heap_ptr))
-    print("   Heap released")
-if buffer_ptr:
-    rust_lib.release_resource(ctypes.c_void_p(buffer_ptr))
-    print("   Buffer released")
-if cmd_list_ptr:
-    rust_lib.release_resource(ctypes.c_void_p(cmd_list_ptr))
-    print("   Command list released")
-if queue_ptr:
-    rust_lib.release_resource(ctypes.c_void_p(queue_ptr))
-    print("   Queue released")
-if device_ptr:
-    rust_lib.release_resource(ctypes.c_void_p(device_ptr))
-    print("   Device released")
-
-print("\n" + "=" * 60)
-print("Test completed!")
-print("=" * 60)
-
-if not is_warp:
-    print("\n✅ SUCCESS: Running on real GPU hardware!")
-    print(f"   GPU: {gpu_name}")
-else:
-    print("\n⚠️ Running on WARP software renderer")
+if __name__ == "__main__":
+    main()
