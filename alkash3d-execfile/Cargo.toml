@@ -1,0 +1,12 @@
+[package]
+name = "alkash3d_viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winapi = { version = "0.3", features = ["winuser", "windef", "minwindef", "libloaderapi", "errhandlingapi"] }
+libloading = "0.8"
+
+[[bin]]
+name = "alkash3d_execfile"
+path = "src/main.rs"
