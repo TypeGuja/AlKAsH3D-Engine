@@ -4,23 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "alkash3d_rs"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "triangle_demo"
+path = "src/bin/main.rs"
 
 [dependencies]
-windows = { version = "0.58", features = [
-    "Win32_Foundation",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Threading",
-    "Win32_System_Com",
-    "Win32_Graphics_Direct3D12",
-    "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-    "Win32_Security",
-]}
+windows = { version = "0.58", features = ["Win32", "Win32_Foundation", "Win32_System", "Win32_System_LibraryLoader", "Win32_UI", "Win32_UI_WindowsAndMessaging", "Win32_Graphics", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Threading", "Win32_Security", "Win32_Graphics_Gdi"] }
+widestring = "1.0"
 windows-core = "0.58.0"
-
-[profile.release]
-opt-level = 2
-lto = true
