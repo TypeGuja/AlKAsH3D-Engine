@@ -11,6 +11,10 @@ mod pso;
 mod command;
 mod render;
 mod utils;
+mod altex_format;
+mod alfar_format;
+mod alcar_format;
+mod alroute_format;
 
 pub use device::*;
 pub use queue::*;
@@ -22,6 +26,10 @@ pub use shader::*;
 pub use pso::*;
 pub use command::*;
 pub use render::*;
+pub use altex_format::*;
+pub use alfar_format::*;
+pub use alcar_format::*;
+pub use alroute_format::*;
 
 // Глобальное состояние
 static STATE: std::sync::LazyLock<std::sync::Mutex<GlobalState>> =
