@@ -1,0 +1,17 @@
+[package]
+name = "alkash3d_editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alkash3d_rs = { path = "../alkash3d-rust" }
+eframe = "0.27"
+egui = "0.27"
+anyhow = "1.0"
+rfd = "0.14"
+tobj = "4.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 2
