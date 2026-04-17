@@ -30,6 +30,7 @@ pub use altex_format::*;
 pub use alfar_format::*;
 pub use alcar_format::*;
 pub use alroute_format::*;
+pub use utils::*;
 
 // Глобальное состояние
 static STATE: std::sync::LazyLock<std::sync::Mutex<GlobalState>> =

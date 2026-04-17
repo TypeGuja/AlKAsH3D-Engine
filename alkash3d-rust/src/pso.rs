@@ -1,91 +1,215 @@
+// pso.rs - Минимальная рабочая версия
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows_core::{Interface, PCSTR};
-use crate::{STATE, debug_println, utils::ptr_to_device};
+use windows_core::{Interface, s};
+use crate::{debug_println, utils::ptr_to_device, STATE};
 
 #[no_mangle]
-pub extern "C" fn create_root_signature(
-    device_ptr: *mut c_void,
-    _num_params: u32,
-    _param_types: *const u32,
-    _param_visibility: *const u32,
-    _num_descriptors: *const u32,
-) -> *mut c_void {
+pub extern "C" fn create_root_signature(device_ptr: *mut c_void) -> *mut c_void {
     unsafe {
-        debug_println!("\n[create_root_signature] Creating root signature with 1 CBV parameter");
+        debug_println!("\n[create_root_signature] Creating root signature...");
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
             None => return std::ptr::null_mut(),
         };
 
-        // Параметр 0: Constant Buffer View (b0, space0)
-        let root_parameters = [D3D12_ROOT_PARAMETER {
+        // Один root parameter как constant buffer view
+        let root_param = D3D12_ROOT_PARAMETER {
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
             Anonymous: D3D12_ROOT_PARAMETER_0 {
                 Descriptor: D3D12_ROOT_DESCRIPTOR {
-                    ShaderRegister: 0,  // b0
+                    ShaderRegister: 0,
                     RegisterSpace: 0,
                 },
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
-        }];
+        };
 
-        // Root signature без статических сэмплеров
-        let root_desc = D3D12_ROOT_SIGNATURE_DESC {
-            NumParameters: root_parameters.len() as u32,
-            pParameters: root_parameters.as_ptr(),
+        let root_sig_desc = D3D12_ROOT_SIGNATURE_DESC {
+            NumParameters: 1,
+            pParameters: &root_param,
             NumStaticSamplers: 0,
             pStaticSamplers: std::ptr::null(),
             Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
         };
 
-        let mut serialized: Option<ID3DBlob> = None;
+        let mut signature_blob: Option<ID3DBlob> = None;
         let mut error_blob: Option<ID3DBlob> = None;
 
         let hr = D3D12SerializeRootSignature(
-            &root_desc,
+            &root_sig_desc,
             D3D_ROOT_SIGNATURE_VERSION_1,
-            &mut serialized,
+            &mut signature_blob,
             Some(&mut error_blob),
         );
 
         if hr.is_err() {
             if let Some(err) = error_blob {
-                let ptr = err.GetBufferPointer();
-                let size = err.GetBufferSize();
-                let msg = std::slice::from_raw_parts(ptr as *const u8, size);
-                debug_println!("RootSig error: {}", String::from_utf8_lossy(msg));
+                let err_ptr = err.GetBufferPointer();
+                let err_size = err.GetBufferSize();
+                if err_size > 0 {
+                    let err_msg = std::slice::from_raw_parts(err_ptr as *const u8, err_size);
+                    debug_println!("[create_root_signature] ERROR:\n{}", String::from_utf8_lossy(err_msg));
+                }
             }
             return std::ptr::null_mut();
         }
 
-        if let Some(blob) = serialized {
-            let data = std::slice::from_raw_parts(
-                blob.GetBufferPointer() as *const u8,
-                blob.GetBufferSize()
-            );
+        let blob = match signature_blob {
+            Some(b) => b,
+            None => return std::ptr::null_mut(),
+        };
 
-            match device.CreateRootSignature::<ID3D12RootSignature>(0, data) {
-                Ok(rs) => {
-                    let ptr = rs.as_raw();
+        let blob_slice = std::slice::from_raw_parts(
+            blob.GetBufferPointer() as *const u8,
+            blob.GetBufferSize()
+        );
 
-                    // Сохраняем в глобальное состояние
-                    if let Ok(mut state) = STATE.lock() {
-                        state.root_signature = Some(rs.clone());
-                    }
+        match device.CreateRootSignature::<ID3D12RootSignature>(0, blob_slice) {
+            Ok(sig) => {
+                debug_println!("[create_root_signature] ✅ Created");
 
-                    std::mem::forget(rs);
-                    debug_println!("[create_root_signature] ✅ OK");
-                    return ptr as *mut c_void;
+                if let Ok(mut state) = STATE.lock() {
+                    state.root_signature = Some(sig.clone());
                 }
-                Err(e) => debug_println!("[create_root_signature] Failed: {:?}", e),
+
+                let raw_ptr = sig.as_raw();
+                std::mem::forget(sig);
+                raw_ptr as *mut c_void
+            }
+            Err(e) => {
+                debug_println!("[create_root_signature] Failed: {:?}", e);
+                std::ptr::null_mut()
             }
         }
-        std::ptr::null_mut()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn create_root_signature_with_texture(device_ptr: *mut c_void) -> *mut c_void {
+    unsafe {
+        debug_println!("\n[create_root_signature_with_texture] Creating...");
+
+        let device = match ptr_to_device(device_ptr) {
+            Some(d) => d,
+            None => return std::ptr::null_mut(),
+        };
+
+        let descriptor_range = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 8,
+            BaseShaderRegister: 0,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+        };
+
+        let sampler_range = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+            NumDescriptors: 1,
+            BaseShaderRegister: 0,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+        };
+
+        let root_params = [
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR {
+                        ShaderRegister: 0,
+                        RegisterSpace: 0,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            },
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: &descriptor_range,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: &sampler_range,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+        ];
+
+        let static_sampler = D3D12_STATIC_SAMPLER_DESC {
+            Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            AddressU: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+            AddressV: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+            AddressW: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+            MipLODBias: 0.0,
+            MaxAnisotropy: 16,
+            ComparisonFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
+            BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+            MinLOD: 0.0,
+            MaxLOD: D3D12_FLOAT32_MAX,
+            ShaderRegister: 0,
+            RegisterSpace: 0,
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        };
+
+        let root_sig_desc = D3D12_ROOT_SIGNATURE_DESC {
+            NumParameters: 3,
+            pParameters: root_params.as_ptr(),
+            NumStaticSamplers: 1,
+            pStaticSamplers: &static_sampler,
+            Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        };
+
+        let mut signature_blob: Option<ID3DBlob> = None;
+        let mut error_blob: Option<ID3DBlob> = None;
+
+        let hr = D3D12SerializeRootSignature(
+            &root_sig_desc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &mut signature_blob,
+            Some(&mut error_blob),
+        );
+
+        if hr.is_err() {
+            return std::ptr::null_mut();
+        }
+
+        let blob = match signature_blob {
+            Some(b) => b,
+            None => return std::ptr::null_mut(),
+        };
+
+        let blob_slice = std::slice::from_raw_parts(
+            blob.GetBufferPointer() as *const u8,
+            blob.GetBufferSize()
+        );
+
+        match device.CreateRootSignature::<ID3D12RootSignature>(0, blob_slice) {
+            Ok(sig) => {
+                debug_println!("[create_root_signature_with_texture] ✅ Created");
+
+                if let Ok(mut state) = STATE.lock() {
+                    state.root_signature = Some(sig.clone());
+                }
+
+                let raw_ptr = sig.as_raw();
+                std::mem::forget(sig);
+                raw_ptr as *mut c_void
+            }
+            Err(_) => std::ptr::null_mut()
+        }
     }
 }
 
@@ -95,38 +219,26 @@ pub extern "C" fn create_simple_pso(
     root_sig_ptr: *mut c_void,
 ) -> *mut c_void {
     unsafe {
-        debug_println!("\n[create_simple_pso] Compiling shaders from files...");
+        debug_println!("\n[create_simple_pso] Creating PSO...");
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
             None => return std::ptr::null_mut(),
         };
 
-        let root_sig: ID3D12RootSignature = std::mem::transmute_copy(&root_sig_ptr);
-
-        let vs_path = std::ffi::CString::new("shaders/default_vs.hlsl").unwrap();
-        let ps_path = std::ffi::CString::new("shaders/default_ps.hlsl").unwrap();
-        let entry = std::ffi::CString::new("main").unwrap();
-        let vs_profile = std::ffi::CString::new("vs_5_0").unwrap();
-        let ps_profile = std::ffi::CString::new("ps_5_0").unwrap();
-
-        let mut vs_blob_ptr: *mut c_void = std::ptr::null_mut();
-        if !crate::shader::compile_shader_from_file(
-            vs_path.as_ptr(),
-            entry.as_ptr(),
-            vs_profile.as_ptr(),
-            &mut vs_blob_ptr,
-        ) {
+        if root_sig_ptr.is_null() {
+            debug_println!("[create_simple_pso] Root signature is null!");
             return std::ptr::null_mut();
         }
 
-        let mut ps_blob_ptr: *mut c_void = std::ptr::null_mut();
-        if !crate::shader::compile_shader_from_file(
-            ps_path.as_ptr(),
-            entry.as_ptr(),
-            ps_profile.as_ptr(),
-            &mut ps_blob_ptr,
-        ) {
+        let root_sig: ID3D12RootSignature = std::mem::transmute_copy(&root_sig_ptr);
+
+        let vs_blob_ptr = crate::shader::get_builtin_vs_blob();
+        let ps_blob_ptr = crate::shader::get_builtin_ps_blob();
+
+        if vs_blob_ptr.is_null() || ps_blob_ptr.is_null() {
+            debug_println!("[create_simple_pso] Failed to compile shaders");
+            std::mem::forget(root_sig);
             return std::ptr::null_mut();
         }
 
@@ -140,20 +252,9 @@ pub extern "C" fn create_simple_pso(
 
         debug_println!("[create_simple_pso] VS: {} bytes, PS: {} bytes", vs_size, ps_size);
 
-        // ПОЛНЫЙ INPUT LAYOUT для Vertex (80 байт)
-        // Порядок полей в Vertex:
-        // position: [f32; 3]   - 12 байт, смещение 0
-        // normal: [f32; 3]     - 12 байт, смещение 12
-        // tangent: [f32; 3]    - 12 байт, смещение 24
-        // bitangent: [f32; 3]  - 12 байт, смещение 36
-        // uv: [f32; 2]         - 8 байт,  смещение 48
-        // uv2: [f32; 2]        - 8 байт,  смещение 56
-        // color: [f32; 4]      - 16 байт, смещение 64
-        // Всего: 80 байт
-
         let input_elements = [
             D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"POSITION\0".as_ptr()),
+                SemanticName: s!("POSITION"),
                 SemanticIndex: 0,
                 Format: DXGI_FORMAT_R32G32B32_FLOAT,
                 InputSlot: 0,
@@ -162,76 +263,38 @@ pub extern "C" fn create_simple_pso(
                 InstanceDataStepRate: 0,
             },
             D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"NORMAL\0".as_ptr()),
+                SemanticName: s!("COLOR"),
                 SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32_FLOAT,
+                Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
                 InputSlot: 0,
                 AlignedByteOffset: 12,
                 InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
                 InstanceDataStepRate: 0,
             },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"TANGENT\0".as_ptr()),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 24,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"BITANGENT\0".as_ptr()),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 36,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"TEXCOORD\0".as_ptr()),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 48,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"TEXCOORD\0".as_ptr()),
-                SemanticIndex: 1,
-                Format: DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 56,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(b"COLOR\0".as_ptr()),
-                SemanticIndex: 0,
-                Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 64,
-                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
         ];
 
-        // Проверяем общий размер
-        let total_size = 12 + 12 + 12 + 12 + 8 + 8 + 16;
-        debug_println!("[create_simple_pso] Input layout total size: {} bytes", total_size);
-        debug_println!("[create_simple_pso] Vertex size should be: {} bytes", std::mem::size_of::<crate::Vertex>());
+        let default_blend = D3D12_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: false.into(),
+            LogicOpEnable: false.into(),
+            SrcBlend: D3D12_BLEND_ONE,
+            DestBlend: D3D12_BLEND_ZERO,
+            BlendOp: D3D12_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D12_BLEND_ONE,
+            DestBlendAlpha: D3D12_BLEND_ZERO,
+            BlendOpAlpha: D3D12_BLEND_OP_ADD,
+            LogicOp: D3D12_LOGIC_OP_NOOP,
+            RenderTargetWriteMask: 0x0F,
+        };
 
-        // Создаём PSO
         let pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-            pRootSignature: ManuallyDrop::new(Some(root_sig)),
+            pRootSignature: ManuallyDrop::new(Some(root_sig.clone())),
             VS: D3D12_SHADER_BYTECODE {
                 pShaderBytecode: vs_data,
-                BytecodeLength: vs_size,
+                BytecodeLength: vs_size
             },
             PS: D3D12_SHADER_BYTECODE {
                 pShaderBytecode: ps_data,
-                BytecodeLength: ps_size,
+                BytecodeLength: ps_size
             },
             DS: D3D12_SHADER_BYTECODE::default(),
             HS: D3D12_SHADER_BYTECODE::default(),
@@ -240,23 +303,15 @@ pub extern "C" fn create_simple_pso(
             BlendState: D3D12_BLEND_DESC {
                 AlphaToCoverageEnable: false.into(),
                 IndependentBlendEnable: false.into(),
-                RenderTarget: [D3D12_RENDER_TARGET_BLEND_DESC {
-                    BlendEnable: false.into(),
-                    LogicOpEnable: false.into(),
-                    SrcBlend: D3D12_BLEND_ONE,
-                    DestBlend: D3D12_BLEND_ZERO,
-                    BlendOp: D3D12_BLEND_OP_ADD,
-                    SrcBlendAlpha: D3D12_BLEND_ONE,
-                    DestBlendAlpha: D3D12_BLEND_ZERO,
-                    BlendOpAlpha: D3D12_BLEND_OP_ADD,
-                    LogicOp: D3D12_LOGIC_OP_NOOP,
-                    RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
-                }; 8],
+                RenderTarget: [
+                    default_blend, default_blend, default_blend, default_blend,
+                    default_blend, default_blend, default_blend, default_blend,
+                ],
             },
             SampleMask: u32::MAX,
             RasterizerState: D3D12_RASTERIZER_DESC {
                 FillMode: D3D12_FILL_MODE_SOLID,
-                CullMode: D3D12_CULL_MODE_BACK,  // Включаем back-face culling
+                CullMode: D3D12_CULL_MODE_NONE,
                 FrontCounterClockwise: false.into(),
                 DepthBias: 0,
                 DepthBiasClamp: 0.0,
@@ -268,14 +323,24 @@ pub extern "C" fn create_simple_pso(
                 ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
             },
             DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
-                DepthEnable: true.into(),  // Включаем depth test
+                DepthEnable: true.into(),
                 DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
                 DepthFunc: D3D12_COMPARISON_FUNC_LESS,
                 StencilEnable: false.into(),
-                StencilReadMask: 0xFF,
-                StencilWriteMask: 0xFF,
-                FrontFace: D3D12_DEPTH_STENCILOP_DESC::default(),
-                BackFace: D3D12_DEPTH_STENCILOP_DESC::default(),
+                StencilReadMask: 0,
+                StencilWriteMask: 0,
+                FrontFace: D3D12_DEPTH_STENCILOP_DESC {
+                    StencilFailOp: D3D12_STENCIL_OP_KEEP,
+                    StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+                    StencilPassOp: D3D12_STENCIL_OP_KEEP,
+                    StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+                },
+                BackFace: D3D12_DEPTH_STENCILOP_DESC {
+                    StencilFailOp: D3D12_STENCIL_OP_KEEP,
+                    StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+                    StencilPassOp: D3D12_STENCIL_OP_KEEP,
+                    StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+                },
             },
             InputLayout: D3D12_INPUT_LAYOUT_DESC {
                 pInputElementDescs: input_elements.as_ptr(),
@@ -284,8 +349,17 @@ pub extern "C" fn create_simple_pso(
             IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
             NumRenderTargets: 1,
-            RTVFormats: [DXGI_FORMAT_R8G8B8A8_UNORM; 8],
-            DSVFormat: DXGI_FORMAT_D32_FLOAT,  // Добавляем depth-stencil формат
+            RTVFormats: [
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_FORMAT_UNKNOWN,
+                DXGI_FORMAT_UNKNOWN
+            ],
+            DSVFormat: DXGI_FORMAT_D32_FLOAT,
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             NodeMask: 0,
             CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
@@ -294,15 +368,41 @@ pub extern "C" fn create_simple_pso(
 
         match device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&pso_desc) {
             Ok(pso) => {
-                debug_println!("[create_simple_pso] ✅ PSO created successfully!");
+                debug_println!("[create_simple_pso] ✅ PSO created!");
+
+                crate::shader::free_blob(vs_blob_ptr);
+                crate::shader::free_blob(ps_blob_ptr);
+
                 let ptr = pso.as_raw();
                 std::mem::forget(pso);
+                std::mem::forget(root_sig);
                 ptr as *mut c_void
             }
             Err(e) => {
                 debug_println!("[create_simple_pso] Failed: {:?}", e);
+                crate::shader::free_blob(vs_blob_ptr);
+                crate::shader::free_blob(ps_blob_ptr);
+                std::mem::forget(root_sig);
                 std::ptr::null_mut()
             }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_pso(pso_ptr: *mut c_void) {
+    if !pso_ptr.is_null() {
+        unsafe {
+            let _pso: ID3D12PipelineState = std::mem::transmute_copy(&pso_ptr);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_root_signature(root_sig_ptr: *mut c_void) {
+    if !root_sig_ptr.is_null() {
+        unsafe {
+            let _sig: ID3D12RootSignature = std::mem::transmute_copy(&root_sig_ptr);
         }
     }
 }
