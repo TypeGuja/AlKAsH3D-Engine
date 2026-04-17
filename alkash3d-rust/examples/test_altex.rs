@@ -1,16 +1,23 @@
-// examples/test_altex.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ БЕЗ ОШИБОК
+// examples/test_altex_load.rs - Финальная рабочая версия
 use alkash3d_rs::*;
 use std::thread;
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, HINSTANCE};
-use windows::Win32::Graphics::Gdi::{UpdateWindow, HBRUSH};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Direct3D::ID3DBlob;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_D32_FLOAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Gdi::{UpdateWindow, HBRUSH};
 use windows_core::*;
 
-// Используем Vertex из библиотеки
-use alkash3d_rs::Vertex;
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct SimpleVertex {
+    position: [f32; 3],
+    color: [f32; 4],
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -18,252 +25,318 @@ struct MVP {
     mvp: [[f32; 4]; 4],
 }
 
-// Глобальный флаг для выхода
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
+fn create_root_signature_local(device_ptr: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
+    unsafe {
+        println!("      Creating root signature...");
+        let device: ID3D12Device = std::mem::transmute_copy(&device_ptr);
+
+        let root_parameters = [D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Descriptor: D3D12_ROOT_DESCRIPTOR {
+                    ShaderRegister: 0,
+                    RegisterSpace: 0,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+        }];
+
+        let root_desc = D3D12_ROOT_SIGNATURE_DESC {
+            NumParameters: 1,
+            pParameters: root_parameters.as_ptr(),
+            NumStaticSamplers: 0,
+            pStaticSamplers: std::ptr::null(),
+            Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        };
+
+        let mut serialized: Option<ID3DBlob> = None;
+        let mut error_blob: Option<ID3DBlob> = None;
+
+        let hr = D3D12SerializeRootSignature(
+            &root_desc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &mut serialized,
+            Some(&mut error_blob),
+        );
+
+        if hr.is_err() {
+            return std::ptr::null_mut();
+        }
+
+        if let Some(blob) = serialized {
+            let data = std::slice::from_raw_parts(
+                blob.GetBufferPointer() as *const u8,
+                blob.GetBufferSize()
+            );
+
+            match device.CreateRootSignature::<ID3D12RootSignature>(0, data) {
+                Ok(rs) => {
+                    let ptr = rs.as_raw();
+                    std::mem::forget(rs);
+                    ptr as *mut std::ffi::c_void
+                }
+                Err(_) => std::ptr::null_mut(),
+            }
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+}
+
+fn create_depth_buffer(device_ptr: *mut std::ffi::c_void, width: u32, height: u32) -> *mut std::ffi::c_void {
+    unsafe {
+        let device: ID3D12Device = std::mem::transmute_copy(&device_ptr);
+
+        let depth_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: width as u64,
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_D32_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+        };
+
+        let heap_props = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+            CreationNodeMask: 0,
+            VisibleNodeMask: 0,
+        };
+
+        let clear_value = D3D12_CLEAR_VALUE {
+            Format: DXGI_FORMAT_D32_FLOAT,
+            Anonymous: D3D12_CLEAR_VALUE_0 {
+                DepthStencil: D3D12_DEPTH_STENCIL_VALUE { Depth: 1.0, Stencil: 0 }
+            },
+        };
+
+        let mut depth_buffer: Option<ID3D12Resource> = None;
+        match device.CreateCommittedResource(
+            &heap_props,
+            D3D12_HEAP_FLAG_NONE,
+            &depth_desc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            Some(&clear_value),
+            &mut depth_buffer,
+        ) {
+            Ok(_) => {
+                if let Some(buf) = depth_buffer {
+                    let ptr = buf.as_raw();
+                    std::mem::forget(buf);
+                    ptr as *mut std::ffi::c_void
+                } else {
+                    std::ptr::null_mut()
+                }
+            }
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+}
+
 fn main() {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║         AlKAsH3D Engine - .altex Render Test v2.0           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    println!("AlKAsH3D Engine - Loading Cube from .altex\n");
 
-    // 1. Создаём устройство
-    println!("[1/10] Creating D3D12 Device...");
+    // Загружаем .altex файл
+    println!("Loading cube.altex...");
+    let altex = match AltexFile::load("cube.altex") {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Failed to load cube.altex: {}", e);
+            eprintln!("Please run create_cube_altex example first!");
+            return;
+        }
+    };
+
+    println!("Loaded: {} objects, {} meshes, {} vertices, {} indices",
+             altex.objects.len(), altex.meshes.len(), altex.vertices.len(), altex.indices.len());
+
+    let mesh = &altex.meshes[0];
+    let mesh_name = altex.get_string(mesh.name_id);
+    println!("First mesh: '{}' - {} vertices, {} indices",
+             mesh_name, mesh.vertex_count, mesh.index_count);
+
+    let vertices: Vec<SimpleVertex> = altex.vertices[mesh.vertex_offset as usize..(mesh.vertex_offset + mesh.vertex_count) as usize]
+        .iter()
+        .map(|v| SimpleVertex {
+            position: v.position,
+            color: v.color,
+        })
+        .collect();
+
+    let indices: Vec<u32> = altex.indices[mesh.index_offset as usize..(mesh.index_offset + mesh.index_count) as usize]
+        .to_vec();
+
+    println!("Extracted {} vertices, {} indices", vertices.len(), indices.len());
+
+    // Device
     let device = create_device();
-    if device.is_null() {
-        eprintln!("❌ Failed to create device");
-        return;
-    }
-    println!("      ✓ Device created (GPU: {})", get_gpu_name_safe(device));
+    if device.is_null() { eprintln!("Failed to create device"); return; }
+    println!("Device created");
 
-    // 2. Создаём очередь команд
-    println!("[2/10] Creating Command Queue...");
+    // Command Queue
     let queue = create_command_queue(device);
-    if queue.is_null() {
-        eprintln!("❌ Failed to create command queue");
-        return;
-    }
-    println!("      ✓ Command queue created");
+    if queue.is_null() { eprintln!("Failed to create command queue"); return; }
+    println!("Command queue created");
 
-    // 3. Создаём окно
-    println!("[3/10] Creating Window...");
-    let hwnd = create_window(800, 600, "AlKAsH3D Engine - .altex Render Test");
-    if hwnd == 0 {
-        eprintln!("❌ Failed to create window");
-        return;
-    }
-    println!("      ✓ Window created (800x600)");
+    // Window
+    let hwnd = create_window(800, 600, "Altex Cube Test");
+    if hwnd == 0 { eprintln!("Failed to create window"); return; }
+    println!("Window created");
 
-    // 4. Создаём Swap Chain
-    println!("[4/10] Creating Swap Chain...");
+    // Swap Chain
     let swap = create_swap_chain(queue, hwnd, 800, 600);
-    if swap.is_null() {
-        eprintln!("❌ Failed to create swap chain");
-        return;
-    }
-    println!("      ✓ Swap chain created");
+    if swap.is_null() { eprintln!("Failed to create swap chain"); return; }
+    println!("Swap chain created");
 
-    // 5. Создаём RTV heap и views
-    println!("[5/10] Creating Render Target Views...");
+    // RTV
     let rtv_heap = create_descriptor_heap(device, 2, 0, false);
     let rtv_start = GetCPUDescriptorHandleForHeapStart(rtv_heap);
     let rtv_size = get_rtv_descriptor_size();
 
     let mut rtvs = [0u64; 2];
+    let mut back_buffers = [std::ptr::null_mut(); 2];
+
     for i in 0..2 {
         let buf = swap_chain_get_buffer(swap, i as u32);
+        back_buffers[i] = buf;
         let rtv = rtv_start + (i as u64 * rtv_size as u64);
         create_render_target_view(device, buf, rtv);
         rtvs[i as usize] = rtv;
     }
-    println!("      ✓ {} RTVs created", rtvs.len());
+    println!("RTVs created");
 
-    // 6. Командные списки
-    println!("[6/10] Creating Command System...");
-    if !create_command_allocators(device, 3) {
-        eprintln!("❌ Failed to create command allocators");
-        return;
-    }
-    let cmd_list = create_command_list(device);
-    if cmd_list.is_null() {
-        eprintln!("❌ Failed to create command list");
-        return;
-    }
-    if !create_fence(device) {
-        eprintln!("❌ Failed to create fence");
-        return;
-    }
-    println!("      ✓ Command system ready");
+    // Depth Buffer
+    let depth_heap = create_descriptor_heap(device, 1, 1, false);
+    let depth_dsv = GetCPUDescriptorHandleForHeapStart(depth_heap);
+    let depth_buffer = create_depth_buffer(device, 800, 600);
+    if depth_buffer.is_null() { eprintln!("Failed to create depth buffer"); return; }
+    create_depth_stencil_view(device, depth_buffer, depth_dsv);
+    println!("Depth buffer created");
 
-    // 7. Загружаем или создаём тестовый .altex
-    println!("[7/10] Loading 3D Model...");
-    let test_model_path = "test_model.altex";
-    let altex = match AltexFile::load(test_model_path) {
-        Ok(a) => {
-            println!("      ✓ Loaded .altex: {} meshes, {} vertices, {} indices",
-                     a.meshes.len(), a.vertices.len(), a.indices.len());
-            a
-        }
-        Err(_) => {
-            println!("      ⚠️ No .altex found, creating test cube...");
-            create_test_cube_model(test_model_path)
-        }
-    };
+    // Command System
+    create_command_allocators(device, 3);
+    create_command_list(device);
+    create_fence(device);
+    println!("Command system ready");
 
-    // 8. Создаём буферы
-    println!("[8/10] Creating GPU Buffers...");
-
-    // Вершинный буфер
-    let vertices_size = altex.vertices.len() * std::mem::size_of::<Vertex>();
+    // Geometry buffers
+    let vertices_size = vertices.len() * std::mem::size_of::<SimpleVertex>();
     let vbuf = create_buffer(device, vertices_size, std::ptr::null());
-    if vbuf.is_null() {
-        eprintln!("❌ Failed to create vertex buffer");
-        return;
-    }
-    let vertices_ptr = altex.vertices.as_ptr() as *const std::ffi::c_void;
-    update_subresource(vbuf, vertices_ptr, vertices_size);
+    update_subresource(vbuf, vertices.as_ptr() as _, vertices_size);
 
-    // Индексный буфер
-    let indices_size = altex.indices.len() * 4;
+    let indices_size = indices.len() * 4;
     let ibuf = create_buffer(device, indices_size, std::ptr::null());
-    if ibuf.is_null() {
-        eprintln!("❌ Failed to create index buffer");
-        return;
-    }
-    let indices_ptr = altex.indices.as_ptr() as *const std::ffi::c_void;
-    update_subresource(ibuf, indices_ptr, indices_size);
+    update_subresource(ibuf, indices.as_ptr() as _, indices_size);
 
-    println!("      ✓ Buffers created (VB: {} bytes, IB: {} bytes)", vertices_size, indices_size);
-
-    // 9. Константный буфер
     let cb_size = std::mem::size_of::<MVP>();
     let cb = create_buffer(device, cb_size, std::ptr::null());
-    if cb.is_null() {
-        eprintln!("❌ Failed to create constant buffer");
-        return;
-    }
-    let mvp = create_perspective_mvp(800.0 / 600.0);
+    let mvp = MVP { mvp: [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ] };
     update_subresource(cb, &mvp as *const _ as _, cb_size);
-    println!("      ✓ Constant buffer created");
+    println!("Geometry buffers created");
 
-    // 10. Создаём PSO
-    println!("[9/10] Creating Pipeline State Object...");
-
-    let root_sig = create_root_signature(
-        device,
-        0,
-        std::ptr::null(),
-        std::ptr::null(),
-        std::ptr::null()
-    );
-
-    if root_sig.is_null() {
-        eprintln!("❌ Failed to create root signature");
-        return;
-    }
-
+    // PSO
+    let root_sig = create_root_signature_local(device);
     let pso = create_simple_pso(device, root_sig);
-    if pso.is_null() {
-        eprintln!("❌ Failed to create PSO");
-        return;
-    }
-    println!("      ✓ PSO created successfully");
+    if pso.is_null() { eprintln!("Failed to create PSO"); return; }
+    println!("PSO created");
 
-    // 11. Основной цикл рендеринга
-    println!("[10/10] Starting Render Loop...");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("  Controls: ESC or Close window to exit");
-    println!("═══════════════════════════════════════════════════════════════\n");
+    println!("\nRENDERING - Press ESC to exit\n");
 
     let mut frame_count = 0u64;
     let start_time = std::time::Instant::now();
-    let mut last_fps_update = start_time;
-    let mut angle = 0.0f32;
 
-    'render_loop: while RUNNING.load(Ordering::Relaxed) {
-        // Обработка сообщений окна
+    // Настройки камеры - ПОДБЕРИ ЭТИ ЗНАЧЕНИЯ
+    let scale = 0.3;      // Размер куба (0.2 - 0.5)
+    let distance = 1.5;   // Расстояние от камеры (1.0 - 3.0)
+
+    while RUNNING.load(Ordering::Relaxed) {
         if !process_window_messages() {
-            break 'render_loop;
+            break;
         }
 
-        // Начинаем кадр
-        if !begin_frame() {
-            eprintln!("❌ begin_frame failed");
-            break 'render_loop;
+        let elapsed = start_time.elapsed().as_secs_f32();
+        let angle_y = elapsed * 1.5;
+        let angle_x = elapsed * 0.7;
+
+        let mut rotated_vertices = vertices.clone();
+        for v in &mut rotated_vertices {
+            let x = v.position[0];
+            let y = v.position[1];
+            let z = v.position[2];
+
+            // Вращение по Y
+            let cos_y = angle_y.cos();
+            let sin_y = angle_y.sin();
+            let x1 = x * cos_y + z * sin_y;
+            let z1 = z * cos_y - x * sin_y;
+
+            // Вращение по X
+            let cos_x = angle_x.cos();
+            let sin_x = angle_x.sin();
+            let y2 = y * cos_x - z1 * sin_x;
+            let z2 = z1 * cos_x + y * sin_x;
+
+            // НЕ ДОБАВЛЯЕМ НИКАКИХ scale И distance
+            v.position = [x1, y2, z2];
         }
+
+        update_subresource(vbuf, rotated_vertices.as_ptr() as _, vertices_size);
+
+        begin_frame();
 
         let frame_idx = get_frame_index() as usize;
         let rtv = rtvs[frame_idx % 2];
+        let back_buffer = back_buffers[frame_idx % 2];
 
-        // Очищаем экран (тёмно-синий фон)
+        transition_resource(back_buffer, 0, 4);
+
         let clear_color = [0.1f32, 0.15, 0.25, 1.0];
         clear_render_target(rtv, clear_color.as_ptr());
+        clear_depth_stencil(depth_dsv, 1.0, 0);
+        set_render_targets_with_depth(rtv, depth_dsv, 1);
 
-        // Настраиваем вьюпорт и scissors
         set_viewport(0.0, 0.0, 800.0, 600.0, 0.0, 1.0);
         set_scissor_rect(0, 0, 800, 600);
 
-        // Устанавливаем PSO и ресурсы
         set_graphics_pipeline(pso);
         set_root_signature(root_sig);
 
-        // Устанавливаем буферы
-        let vbuf_gpu = get_buffer_gpu_address(vbuf);
-        let ibuf_gpu = get_buffer_gpu_address(ibuf);
-
-        set_vertex_buffer(vbuf_gpu, vertices_size as u32, std::mem::size_of::<Vertex>() as u32);
-        set_index_buffer(ibuf_gpu, indices_size as u32, 4); // 32-bit индексы
-
-        // Устанавливаем константный буфер
+        set_vertex_buffer(get_buffer_gpu_address(vbuf), vertices_size as u32, std::mem::size_of::<SimpleVertex>() as u32);
+        set_index_buffer(get_buffer_gpu_address(ibuf), indices_size as u32, 4);
         set_root_constant_buffer_view(0, get_buffer_gpu_address(cb));
 
-        // Рендерим все меши
-        for mesh in &altex.meshes {
-            draw_indexed_instanced(
-                mesh.index_count,
-                1,
-                mesh.index_offset,
-                mesh.vertex_offset as i32,
-                0
-            );
-        }
+        draw_indexed_instanced(indices.len() as u32, 1, 0, 0, 0);
 
-        // Завершаем кадр
-        if !end_frame() {
-            eprintln!("❌ end_frame failed");
-            break 'render_loop;
-        }
+        transition_resource(back_buffer, 4, 0);
 
+        end_frame();
         wait_for_gpu();
         present_swap_chain(swap, 1);
 
         frame_count += 1;
 
-        // Вращаем модель
-        angle += 0.02;
-        let mvp = create_rotated_perspective_mvp(800.0 / 600.0, angle);
-        update_subresource(cb, &mvp as *const _ as _, cb_size);
-
-        // Статистика FPS
-        let now = std::time::Instant::now();
-        if (now - last_fps_update) >= Duration::from_secs(1) {
-            let elapsed = (now - start_time).as_secs_f32();
-            let fps = frame_count as f32 / elapsed;
-            print!("\r📊 Frame: {} | FPS: {:.1} | Angle: {:.1}°    ", frame_count, fps, angle.to_degrees());
-            use std::io::Write;
-            std::io::stdout().flush().unwrap();
-            last_fps_update = now;
+        if frame_count % 60 == 0 {
+            println!("Frame: {}", frame_count);
         }
 
-        // Небольшая задержка для стабильности
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(16));
     }
 
-    println!("\n\n✅ Render test completed successfully!");
-    println!("   Total frames: {}", frame_count);
-    println!("   Total time: {:.1}s", start_time.elapsed().as_secs_f32());
+    println!("\nDone. Total frames: {}", frame_count);
 }
 
-// Улучшенное создание окна
 fn create_window(width: i32, height: i32, title: &str) -> usize {
     unsafe {
         let inst = GetModuleHandleA(None).unwrap();
@@ -279,9 +352,7 @@ fn create_window(width: i32, height: i32, title: &str) -> usize {
             ..Default::default()
         };
 
-        if RegisterClassA(&wc) == 0 {
-            return 0;
-        }
+        RegisterClassA(&wc);
 
         let title_cstr = std::ffi::CString::new(title).unwrap();
 
@@ -290,47 +361,28 @@ fn create_window(width: i32, height: i32, title: &str) -> usize {
             class_name,
             PCSTR(title_cstr.as_ptr() as *const u8),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            width,
-            height,
-            None,
-            None,
-            HINSTANCE(inst.0),
-            None,
-        );
+            CW_USEDEFAULT, CW_USEDEFAULT, width, height,
+            None, None, HINSTANCE(inst.0), None,
+        ).unwrap();
 
-        match hwnd {
-            Ok(h) => {
-                ShowWindow(h, SW_SHOW);
-                UpdateWindow(h);
-                h.0 as usize
-            }
-            Err(_) => 0
-        }
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+        hwnd.0 as usize
     }
 }
 
-// Улучшенная обработка сообщений окна
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
-            WM_CLOSE => {
+            WM_CLOSE | WM_DESTROY => {
                 RUNNING.store(false, Ordering::Relaxed);
                 PostQuitMessage(0);
                 LRESULT(0)
             }
-            WM_DESTROY => {
+            WM_KEYDOWN if wparam.0 == 27 => {
                 RUNNING.store(false, Ordering::Relaxed);
                 PostQuitMessage(0);
                 LRESULT(0)
-            }
-            WM_KEYDOWN => {
-                if wparam.0 == 27 { // ESC key
-                    RUNNING.store(false, Ordering::Relaxed);
-                    PostQuitMessage(0);
-                }
-                DefWindowProcA(hwnd, msg, wparam, lparam)
             }
             _ => DefWindowProcA(hwnd, msg, wparam, lparam)
         }
@@ -344,139 +396,9 @@ fn process_window_messages() -> bool {
             if msg.message == WM_QUIT {
                 return false;
             }
-            let _ = TranslateMessage(&msg);
-            let _ = DispatchMessageA(&msg);
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
         }
     }
     true
-}
-
-fn get_gpu_name_safe(device: *mut std::ffi::c_void) -> String {
-    let name_ptr = get_gpu_name(device);
-    if name_ptr.is_null() {
-        return "Unknown".to_string();
-    }
-    unsafe {
-        std::ffi::CStr::from_ptr(name_ptr)
-            .to_string_lossy()
-            .to_string()
-    }
-}
-
-// Вспомогательная функция для создания Vertex
-fn create_vertex(pos: [f32; 3], normal: [f32; 3], uv: [f32; 2], color: [f32; 4]) -> Vertex {
-    Vertex {
-        position: pos,
-        normal,
-        tangent: [1.0, 0.0, 0.0],
-        bitangent: [0.0, 1.0, 0.0],
-        uv,
-        uv2: [0.0, 0.0],
-        color,
-    }
-}
-
-// Создание тестового куба
-fn create_test_cube_model(path: &str) -> AltexFile {
-    println!("      Creating test cube model...");
-
-    let mut altex = AltexFile::new();
-
-    // Простой куб из 8 вершин и 36 индексов (12 треугольников)
-    let vertices = vec![
-        create_vertex([-0.5, -0.5,  0.5], [0.0, 0.0, 1.0], [0.0, 0.0], [1.0, 0.0, 0.0, 1.0]),
-        create_vertex([ 0.5, -0.5,  0.5], [0.0, 0.0, 1.0], [1.0, 0.0], [0.0, 1.0, 0.0, 1.0]),
-        create_vertex([ 0.5,  0.5,  0.5], [0.0, 0.0, 1.0], [1.0, 1.0], [0.0, 0.0, 1.0, 1.0]),
-        create_vertex([-0.5,  0.5,  0.5], [0.0, 0.0, 1.0], [0.0, 1.0], [1.0, 1.0, 0.0, 1.0]),
-
-        create_vertex([ 0.5, -0.5, -0.5], [0.0, 0.0, -1.0], [0.0, 0.0], [0.0, 1.0, 1.0, 1.0]),
-        create_vertex([-0.5, -0.5, -0.5], [0.0, 0.0, -1.0], [1.0, 0.0], [1.0, 0.5, 0.0, 1.0]),
-        create_vertex([-0.5,  0.5, -0.5], [0.0, 0.0, -1.0], [1.0, 1.0], [1.0, 1.0, 1.0, 1.0]),
-        create_vertex([ 0.5,  0.5, -0.5], [0.0, 0.0, -1.0], [0.0, 1.0], [0.5, 0.5, 0.5, 1.0]),
-    ];
-
-    let indices = vec![
-        // Передняя грань
-        0, 1, 2, 2, 3, 0,
-        // Задняя грань
-        4, 5, 6, 6, 7, 4,
-        // Левая грань
-        5, 0, 3, 3, 6, 5,
-        // Правая грань
-        1, 4, 7, 7, 2, 1,
-        // Верхняя грань
-        3, 2, 7, 7, 6, 3,
-        // Нижняя грань
-        5, 4, 1, 1, 0, 5,
-    ];
-
-    altex.add_mesh(vertices, indices, "TestCube");
-
-    match altex.save(path) {
-        Ok(_) => println!("      ✓ Test model saved to {}", path),
-        Err(e) => println!("      ⚠️ Failed to save test model: {}", e),
-    }
-
-    altex
-}
-
-// Матрицы для рендеринга
-fn create_perspective_mvp(aspect: f32) -> MVP {
-    let fov = 60.0f32.to_radians();
-    let near = 0.1;
-    let far = 100.0;
-    let tan_half_fov = (fov / 2.0).tan();
-
-    MVP {
-        mvp: [
-            [1.0 / (aspect * tan_half_fov), 0.0, 0.0, 0.0],
-            [0.0, 1.0 / tan_half_fov, 0.0, 0.0],
-            [0.0, 0.0, far / (far - near), 1.0],
-            [0.0, 0.0, -(far * near) / (far - near), 0.0],
-        ]
-    }
-}
-
-fn create_rotated_perspective_mvp(aspect: f32, angle: f32) -> MVP {
-    let cos = angle.cos();
-    let sin = angle.sin();
-
-    let fov = 60.0f32.to_radians();
-    let near = 0.1;
-    let far = 100.0;
-    let tan_half_fov = (fov / 2.0).tan();
-
-    // Матрица вида (камера смотрит на объект)
-    let view = [
-        [cos, 0.0, -sin, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [sin, 0.0, cos, 0.0],
-        [0.0, 0.0, -3.0, 1.0], // Отодвигаем камеру
-    ];
-
-    // Матрица проекции
-    let proj = [
-        [1.0 / (aspect * tan_half_fov), 0.0, 0.0, 0.0],
-        [0.0, 1.0 / tan_half_fov, 0.0, 0.0],
-        [0.0, 0.0, far / (far - near), 1.0],
-        [0.0, 0.0, -(far * near) / (far - near), 0.0],
-    ];
-
-    // Умножаем view * proj
-    MVP {
-        mvp: multiply_matrices(view, proj)
-    }
-}
-
-fn multiply_matrices(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-    let mut result = [[0.0; 4]; 4];
-    for i in 0..4 {
-        for j in 0..4 {
-            result[i][j] = a[i][0] * b[0][j] +
-                a[i][1] * b[1][j] +
-                a[i][2] * b[2][j] +
-                a[i][3] * b[3][j];
-        }
-    }
-    result
 }

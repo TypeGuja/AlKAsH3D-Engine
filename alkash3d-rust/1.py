@@ -100,7 +100,7 @@ def main():
 
     gpu_name = lib.get_gpu_name(device)
     if gpu_name:
-        print(f"   GPU Name: {gpu_name.decode('utf-8')}")
+        print(f"   GPU name: {gpu_name.decode('utf-8')}")
 
     print(f"   Is WARP: {is_warp}")
     print(f"   WARP Mode: {warp_mode}")
