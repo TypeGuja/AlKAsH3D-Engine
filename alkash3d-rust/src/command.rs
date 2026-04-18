@@ -2,8 +2,10 @@
 
 use std::ffi::c_void;
 use std::cell::RefCell;
+use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Win32::{
-    Foundation::CloseHandle,
+    Foundation::{CloseHandle, HANDLE},
     Graphics::Direct3D12::*,
     System::Threading::{CreateEventA, WaitForSingleObject, INFINITE},
 };
@@ -11,58 +13,203 @@ use windows_core::Interface;
 use crate::{STATE, debug_println, utils::ptr_to_device};
 
 thread_local! {
-    static CURRENT_COMMAND_LIST: RefCell<Option<ID3D12GraphicsCommandList>> = RefCell::new(None);
-    static CURRENT_ALLOCATOR_INDEX: RefCell<usize> = RefCell::new(0);
+    static FENCE_EVENT: RefCell<Option<HANDLE>> = RefCell::new(None);
+}
+
+const ALLOCATOR_POOL_SIZE: usize = 3;
+static FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+static mut ALLOCATOR_FENCE_VALUES: [u64; ALLOCATOR_POOL_SIZE] = [0; ALLOCATOR_POOL_SIZE];
+
+#[no_mangle]
+pub extern "C" fn create_command_allocators(_device_ptr: *mut c_void, _count: u32) -> bool {
+    true
+}
+
+pub fn with_command_list<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&ID3D12GraphicsCommandList) -> R,
+{
+    let state = match STATE.lock() {
+        Ok(s) => s,
+        Err(e) => {
+            debug_println!("[with_command_list] Failed to lock state: {:?}", e);
+            return None;
+        }
+    };
+
+    if !state.command_list_open {
+        debug_println!("[with_command_list] Command list not open");
+        return None;
+    }
+
+    let list = match state.command_list.as_ref() {
+        Some(l) => l,
+        None => {
+            debug_println!("[with_command_list] Command list is None");
+            return None;
+        }
+    };
+
+    Some(f(list))
 }
 
 #[no_mangle]
-pub extern "C" fn create_command_allocators(device_ptr: *mut c_void, count: u32) -> bool {
+pub extern "C" fn create_command_list(_device_ptr: *mut c_void) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn create_fence(device_ptr: *mut c_void) -> bool {
     unsafe {
-        debug_println!("\n[create_command_allocators] Creating {} allocators", count);
+        debug_println!("\n[create_fence] Creating...");
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
             None => return false,
         };
 
-        let mut state = STATE.lock().unwrap();
-        state.command_allocators.clear();
+        match device.CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE) {
+            Ok(fence) => {
+                {
+                    let mut state = match STATE.lock() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            std::mem::forget(device);
+                            return false;
+                        }
+                    };
+                    state.fence = Some(fence);
+                }
 
-        for i in 0..count {
-            match device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) {
-                Ok(allocator) => {
-                    state.command_allocators.push(Some(allocator));
-                    debug_println!("[create_command_allocators] Allocator {} created", i);
+                match CreateEventA(None, false, false, None) {
+                    Ok(event) => {
+                        FENCE_EVENT.with(|cell| {
+                            *cell.borrow_mut() = Some(event);
+                        });
+                    }
+                    Err(_) => {}
                 }
-                Err(e) => {
-                    debug_println!("[create_command_allocators] Failed: {:?}", e);
-                    return false;
-                }
+
+                debug_println!("[create_fence] ✅ Created");
+                std::mem::forget(device);
+                true
+            }
+            Err(e) => {
+                debug_println!("[create_fence] Failed: {:?}", e);
+                std::mem::forget(device);
+                false
             }
         }
-        true
+    }
+}
+
+unsafe fn wait_for_allocator(allocator_idx: usize) {
+    let (fence, fence_value, event) = {
+        let state = match STATE.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        let fence = match state.fence.as_ref() {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        (fence, ALLOCATOR_FENCE_VALUES[allocator_idx],
+         FENCE_EVENT.with(|cell| cell.borrow().clone()))
+    };
+
+    if fence_value == 0 {
+        return;
+    }
+
+    let completed = fence.GetCompletedValue();
+    if completed < fence_value {
+        debug_println!("[wait] Allocator {} waiting ({} < {})",
+                      allocator_idx, completed, fence_value);
+        if let Some(event) = event {
+            let _ = fence.SetEventOnCompletion(fence_value, event);
+            WaitForSingleObject(event, INFINITE);
+        } else {
+            while fence.GetCompletedValue() < fence_value {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        debug_println!("[wait] Allocator {} ready", allocator_idx);
+    }
+}
+
+unsafe fn create_new_allocator(device: &ID3D12Device, idx: usize) -> Option<ID3D12CommandAllocator> {
+    match device.CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT) {
+        Ok(a) => {
+            debug_println!("[begin_frame] Created new allocator {}", idx);
+
+            let mut state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return None,
+            };
+
+            while state.command_allocators.len() <= idx {
+                state.command_allocators.push(None);
+            }
+            state.command_allocators[idx] = Some(a.clone());
+
+            Some(a)
+        }
+        Err(e) => {
+            debug_println!("[begin_frame] CreateCommandAllocator failed: {:?}", e);
+            None
+        }
     }
 }
 
 #[no_mangle]
-pub extern "C" fn create_command_list(device_ptr: *mut c_void) -> *mut c_void {
-    unsafe {
-        debug_println!("\n[create_command_list] Called");
+pub extern "C" fn begin_frame() -> *mut c_void {
+    let frame_id = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let allocator_idx = (frame_id % ALLOCATOR_POOL_SIZE as u64) as usize;
 
-        let device = match ptr_to_device(device_ptr) {
-            Some(d) => d,
+    debug_println!("\n[begin_frame] Frame {} (allocator {})", frame_id, allocator_idx);
+
+    unsafe {
+        wait_for_allocator(allocator_idx);
+    }
+
+    // Получаем device и allocator
+    let (device, allocator) = {
+        let state = match STATE.lock() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let device = match state.device.as_ref() {
+            Some(d) => d.clone(),
             None => return std::ptr::null_mut(),
         };
 
-        let state = STATE.lock().unwrap();
-        let allocator = match state.command_allocators.first() {
-            Some(Some(a)) => a.clone(),
-            _ => {
-                debug_println!("[create_command_list] No allocator available");
-                return std::ptr::null_mut();
+        let allocator = if allocator_idx < state.command_allocators.len() {
+            match &state.command_allocators[allocator_idx] {
+                Some(a) => a.clone(),
+                None => {
+                    drop(state);
+                    match unsafe { create_new_allocator(&device, allocator_idx) } {
+                        Some(a) => a,
+                        None => return std::ptr::null_mut(),
+                    }
+                }
+            }
+        } else {
+            drop(state);
+            match unsafe { create_new_allocator(&device, allocator_idx) } {
+                Some(a) => a,
+                None => return std::ptr::null_mut(),
             }
         };
-        drop(state);
+
+        (device, allocator)
+    };
+
+    unsafe {
+        let _ = allocator.Reset();
 
         match device.CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
             0,
@@ -70,24 +217,24 @@ pub extern "C" fn create_command_list(device_ptr: *mut c_void) -> *mut c_void {
             &allocator,
             None,
         ) {
-            Ok(command_list) => {
-                let _ = command_list.Close();
+            Ok(list) => {
+                let list_ptr = list.as_raw();
 
-                let mut state = STATE.lock().unwrap();
-                state.command_list = Some(command_list.clone());
-                state.command_list_open = false;
+                {
+                    let mut state = match STATE.lock() {
+                        Ok(s) => s,
+                        Err(_) => return std::ptr::null_mut(),
+                    };
+                    state.command_list = Some(list);  // НЕ клонируем!
+                    state.command_list_open = true;
+                    state.reset_bindings();
+                }
 
-                CURRENT_COMMAND_LIST.with(|cell| {
-                    *cell.borrow_mut() = Some(command_list.clone());
-                });
-
-                let raw_ptr = command_list.as_raw();
-                std::mem::forget(command_list);
-                debug_println!("[create_command_list] Created at {:p}", raw_ptr);
-                raw_ptr as *mut c_void
+                debug_println!("[begin_frame] ✅ Ready");
+                list_ptr as *mut c_void
             }
             Err(e) => {
-                debug_println!("[create_command_list] Failed: {:?}", e);
+                debug_println!("[begin_frame] CreateCommandList failed: {:?}", e);
                 std::ptr::null_mut()
             }
         }
@@ -95,249 +242,145 @@ pub extern "C" fn create_command_list(device_ptr: *mut c_void) -> *mut c_void {
 }
 
 #[no_mangle]
-pub extern "C" fn create_fence(device_ptr: *mut c_void) -> bool {
-    unsafe {
-        debug_println!("\n[create_fence] Called");
-
-        let device = match ptr_to_device(device_ptr) {
-            Some(d) => d,
-            None => return false,
-        };
-
-        match device.CreateFence(0, D3D12_FENCE_FLAG_NONE) {
-            Ok(fence) => {
-                let mut state = STATE.lock().unwrap();
-                state.fence = Some(fence);
-                debug_println!("[create_fence] Success");
-                true
-            }
-            Err(e) => {
-                debug_println!("[create_fence] Failed: {:?}", e);
-                false
-            }
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn begin_frame() -> bool {
-    debug_println!("\n[begin_frame] Called");
-
-    let state = STATE.lock().unwrap();
-
-    if state.command_queue.is_none() {
-        debug_println!("[begin_frame] No command queue");
-        return false;
-    }
-
-    if state.command_allocators.is_empty() {
-        debug_println!("[begin_frame] No command allocators");
-        return false;
-    }
-
-    if state.command_list.is_none() {
-        debug_println!("[begin_frame] No command list");
-        return false;
-    }
-
-    let frame_idx = state.frame_index as usize;
-    let allocator_idx = frame_idx % state.command_allocators.len();
-    let allocator = match state.command_allocators[allocator_idx].clone() {
-        Some(a) => a,
-        None => {
-            debug_println!("[begin_frame] Allocator {} is None", allocator_idx);
-            return false;
-        }
-    };
-
-    let list = match state.command_list.clone() {
-        Some(l) => l,
-        None => return false,
-    };
-
-    drop(state);
-
-    unsafe {
-        if let Err(e) = allocator.Reset() {
-            debug_println!("[begin_frame] Allocator reset failed: {:?}", e);
-            return false;
-        }
-
-        if let Err(e) = list.Reset(&allocator, None) {
-            debug_println!("[begin_frame] Command list reset failed: {:?}", e);
-            return false;
-        }
-    }
-
-    let mut state = STATE.lock().unwrap();
-    state.command_list_open = true;
-    CURRENT_ALLOCATOR_INDEX.with(|cell| *cell.borrow_mut() = allocator_idx);
-
-    if !state.descriptor_heaps.is_empty() {
-        if let Some(list) = state.command_list.clone() {
-            let mut heaps: Vec<Option<ID3D12DescriptorHeap>> = Vec::new();
-            for heap in &state.descriptor_heaps {
-                unsafe {
-                    if heap.GetDesc().Flags == D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
-                        heaps.push(Some(heap.clone()));
-                    }
-                }
-            }
-
-            if !heaps.is_empty() {
-                unsafe {
-                    list.SetDescriptorHeaps(&heaps);
-                }
-            }
-        }
-    }
-
-    debug_println!("[begin_frame] Success");
-    true
-}
-
-#[no_mangle]
 pub extern "C" fn end_frame() -> bool {
-    debug_println!("\n[end_frame] Called");
+    let frame_id = FRAME_COUNTER.load(Ordering::Relaxed) - 1;
+    let allocator_idx = (frame_id % ALLOCATOR_POOL_SIZE as u64) as usize;
 
-    let (queue, list, fence, frame_idx) = {
-        let state = STATE.lock().unwrap();
+    debug_println!("\n[end_frame] Frame {} (allocator {}) START", frame_id, allocator_idx);
+
+    // Забираем command list из состояния
+    let (queue, list, fence) = {
+        debug_println!("[end_frame] Locking STATE...");
+        let mut state = match STATE.lock() {
+            Ok(s) => s,
+            Err(e) => {
+                debug_println!("[end_frame] Failed to lock state: {:?}", e);
+                return false;
+            }
+        };
+        debug_println!("[end_frame] STATE locked");
 
         if !state.command_list_open {
             debug_println!("[end_frame] Command list not open");
             return false;
         }
 
-        let queue = match state.command_queue.clone() {
-            Some(q) => q,
+        let queue = match state.command_queue.as_ref() {
+            Some(q) => q.clone(),
             None => {
-                debug_println!("[end_frame] No command queue");
+                debug_println!("[end_frame] No command queue!");
                 return false;
             }
         };
 
-        let list = match state.command_list.clone() {
+        // Забираем command list
+        let list = match state.command_list.take() {
             Some(l) => l,
             None => {
-                debug_println!("[end_frame] No command list");
+                debug_println!("[end_frame] No command list!");
                 return false;
             }
         };
 
-        let fence = match state.fence.clone() {
-            Some(f) => f,
+        let fence = match state.fence.as_ref() {
+            Some(f) => f.clone(),
             None => {
-                debug_println!("[end_frame] No fence");
+                debug_println!("[end_frame] No fence!");
                 return false;
             }
         };
 
-        (queue, list, fence, state.frame_index as usize)
+        state.command_list_open = false;
+
+        (queue, list, fence)
     };
 
-    let next_fence_value = {
-        let mut state = STATE.lock().unwrap();
-        let val = state.fence_values[frame_idx] + 1;
-        state.fence_values[frame_idx] = val;
-        val
-    };
+    // Оборачиваем в ManuallyDrop чтобы предотвратить автоматический дроп
+    let list = ManuallyDrop::new(list);
 
     unsafe {
+        debug_println!("[end_frame] Closing command list...");
         if let Err(e) = list.Close() {
             debug_println!("[end_frame] Close failed: {:?}", e);
             return false;
         }
+        debug_println!("[end_frame] Command list closed");
 
-        let cmd_list: ID3D12CommandList = match list.cast() {
-            Ok(l) => l,
-            Err(e) => {
-                debug_println!("[end_frame] Cast failed: {:?}", e);
-                return false;
-            }
+        debug_println!("[end_frame] Executing command list...");
+        let cmd_list_raw = list.as_raw();
+        let cmd_list: ID3D12CommandList = std::mem::transmute_copy(&cmd_list_raw);
+        let cmd_lists = [Some(cmd_list)];
+        queue.ExecuteCommandLists(&cmd_lists);
+        debug_println!("[end_frame] Command list executed");
+
+        let next_fence_value = {
+            debug_println!("[end_frame] Updating fence value...");
+            let mut state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            let val = state.fence_values[0] + 1;
+            state.fence_values[0] = val;
+            val
         };
+        debug_println!("[end_frame] Fence value: {}", next_fence_value);
 
-        queue.ExecuteCommandLists(&[Some(cmd_list)]);
-
+        debug_println!("[end_frame] Signaling fence...");
         if let Err(e) = queue.Signal(&fence, next_fence_value) {
             debug_println!("[end_frame] Signal failed: {:?}", e);
             return false;
         }
+        debug_println!("[end_frame] Fence signaled");
+
+        ALLOCATOR_FENCE_VALUES[allocator_idx] = next_fence_value;
+
+        debug_println!("[end_frame] ✅ Done (fence: {})", next_fence_value);
     }
 
-    {
-        let mut state = STATE.lock().unwrap();
-        state.command_list_open = false;
-        state.frame_index = (state.frame_index + 1) % (state.fence_values.len() as u32);
-    }
+    // ManuallyDrop предотвращает вызов деструктора
+    // Command list будет освобожден когда allocator сбросится в begin_frame
 
-    debug_println!("[end_frame] Success (fence: {})", next_fence_value);
+    debug_println!("[end_frame] RETURN true");
     true
 }
 
 #[no_mangle]
 pub extern "C" fn wait_for_gpu() -> bool {
-    debug_println!("\n[wait_for_gpu] Called");
+    debug_println!("[wait_for_gpu] Waiting for all frames...");
 
-    let (fence, fence_value) = {
-        let state = STATE.lock().unwrap();
-        let fence = match state.fence.clone() {
-            Some(f) => f,
-            None => {
-                debug_println!("[wait_for_gpu] No fence");
-                return false;
-            }
-        };
-
-        let fence_value = state.fence_values[state.frame_index as usize];
-        (fence, fence_value)
-    };
-
-    if fence_value > 0 {
-        unsafe {
-            let completed = fence.GetCompletedValue();
-            if completed < fence_value {
-                debug_println!("[wait_for_gpu] Waiting for fence {} < {}", completed, fence_value);
-
-                let event = match CreateEventA(None, true, false, None) {
-                    Ok(e) => e,
-                    Err(_) => return false,
-                };
-
-                if let Err(_e) = fence.SetEventOnCompletion(fence_value, event) {
-                    let _ = CloseHandle(event);
-                    return false;
-                }
-
-                WaitForSingleObject(event, INFINITE);
-                let _ = CloseHandle(event);
-                debug_println!("[wait_for_gpu] Wait completed");
+    unsafe {
+        for i in 0..ALLOCATOR_POOL_SIZE {
+            if ALLOCATOR_FENCE_VALUES[i] > 0 {
+                wait_for_allocator(i);
             }
         }
     }
 
+    debug_println!("[wait_for_gpu] ✅ All frames complete");
     true
 }
 
 #[no_mangle]
 pub extern "C" fn get_frame_index() -> u32 {
-    STATE.lock().unwrap().frame_index
+    (FRAME_COUNTER.load(Ordering::Relaxed) % ALLOCATOR_POOL_SIZE as u64) as u32
 }
 
 #[no_mangle]
 pub extern "C" fn force_cleanup() {
-    debug_println!("[force_cleanup] Called");
+    debug_println!("[force_cleanup] Cleaning up...");
+
+    wait_for_gpu();
+
+    FENCE_EVENT.with(|cell| {
+        if let Some(event) = cell.borrow_mut().take() {
+            unsafe { let _ = CloseHandle(event); }
+        }
+    });
 
     let mut state = match STATE.try_lock() {
         Ok(s) => s,
-        Err(_) => {
-            debug_println!("[force_cleanup] Could not lock state");
-            return;
-        }
+        Err(_) => return,
     };
-
-    CURRENT_COMMAND_LIST.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
 
     state.command_list_open = false;
     state.command_list = None;
@@ -347,51 +390,7 @@ pub extern "C" fn force_cleanup() {
     state.root_signature = None;
     state.fence = None;
     state.descriptor_heaps.clear();
+    state.reset_bindings();
 
-    debug_println!("[force_cleanup] Done");
-}
-
-pub fn with_command_list<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&ID3D12GraphicsCommandList) -> R
-{
-    CURRENT_COMMAND_LIST.with(|cell| {
-        let list = cell.borrow();
-        list.as_ref().map(|l| f(l))
-    })
-}
-
-#[no_mangle]
-pub extern "C" fn transition_resource(
-    resource_ptr: *mut c_void,
-    state_before: u32,
-    state_after: u32,
-) -> bool {
-    unsafe {
-        if resource_ptr.is_null() {
-            return false;
-        }
-
-        let result = with_command_list(|list| {
-            let resource: ID3D12Resource = std::mem::transmute_copy(&resource_ptr);
-
-            let barrier = D3D12_RESOURCE_BARRIER {
-                Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                Anonymous: D3D12_RESOURCE_BARRIER_0 {
-                    Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                        pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
-                        Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                        StateBefore: D3D12_RESOURCE_STATES(state_before as i32),
-                        StateAfter: D3D12_RESOURCE_STATES(state_after as i32),
-                    }),
-                },
-            };
-
-            list.ResourceBarrier(&[barrier]);
-            std::mem::forget(resource);
-        });
-
-        result.is_some()
-    }
+    debug_println!("[force_cleanup] ✅ Done");
 }

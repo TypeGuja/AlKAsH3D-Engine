@@ -1,4 +1,4 @@
-//! Управление D3D12 устройством
+//! Управление D3D12 устройством с поддержкой WARP и реальных GPU
 
 use std::ffi::c_void;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -7,34 +7,53 @@ use windows::Win32::Graphics::Dxgi::*;
 use windows_core::Interface;
 use crate::{STATE, debug_println};
 
-static mut REAL_GPU_FOUND: bool = false;
-static mut GPU_NAME_STR: [u8; 256] = [0; 256];
+static mut GPU_INFO: GpuInfo = GpuInfo {
+    is_real: false,
+    name: [0; 256],
+    vram_mb: 0,
+    supports_raytracing: false,
+};
+
+struct GpuInfo {
+    is_real: bool,
+    name: [u8; 256],
+    vram_mb: u32,
+    supports_raytracing: bool,
+}
 
 #[no_mangle]
 pub extern "C" fn create_device() -> *mut c_void {
-    debug_println!("\n[create_device] Called");
+    debug_println!("\n[create_device] Creating D3D12 device...");
 
     unsafe {
-        // Сброс флагов
-        REAL_GPU_FOUND = false;
-
-        // Получаем фабрику
-        let factory: IDXGIFactory4 = match CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) {
-            Ok(f) => f,
-            Err(_) => return std::ptr::null_mut(),
+        // Сброс информации
+        GPU_INFO = GpuInfo {
+            is_real: false,
+            name: [0; 256],
+            vram_mb: 0,
+            supports_raytracing: false,
         };
 
-        let mut device: Option<ID3D12Device> = None;
+        let factory: IDXGIFactory4 = match CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) {
+            Ok(f) => f,
+            Err(e) => {
+                debug_println!("[create_device] Failed to create DXGI factory: {:?}", e);
+                return std::ptr::null_mut();
+            }
+        };
+
+        let mut best_device: Option<ID3D12Device> = None;
+        let mut best_adapter: Option<IDXGIAdapter1> = None;
+        let mut max_vram = 0;
         let mut adapter_index = 0;
 
-        // Перебираем все адаптеры
+        // Перебираем все адаптеры, ищем лучший
         loop {
             let adapter: IDXGIAdapter1 = match factory.EnumAdapters1(adapter_index) {
                 Ok(a) => a,
                 Err(_) => break,
             };
 
-            // Получаем описание адаптера
             let desc = match adapter.GetDesc1() {
                 Ok(d) => d,
                 Err(_) => {
@@ -46,35 +65,33 @@ pub extern "C" fn create_device() -> *mut c_void {
             let name = String::from_utf16_lossy(&desc.Description);
             let vram_mb = desc.DedicatedVideoMemory / 1024 / 1024;
 
-            debug_println!("[create_device] Adapter {}: {} (VRAM: {} MB)", adapter_index, name, vram_mb);
-
-            // Определяем WARP (Microsoft Basic Render Driver)
+            // Пропускаем WARP если есть реальные GPU
             let is_warp = name.contains("Microsoft Basic Render Driver") ||
                 name.contains("WARP") ||
                 name.contains("Software") ||
                 vram_mb == 0;
 
-            if !is_warp && vram_mb > 0 {
-                debug_println!("[create_device] Trying REAL GPU: {}", name);
+            debug_println!("[create_device] Adapter {}: {} (VRAM: {} MB, WARP: {})",
+                adapter_index, name, vram_mb, is_warp);
 
+            if !is_warp && vram_mb > max_vram {
+                // Проверяем, может ли адаптер создать устройство
                 let mut temp_device: Option<ID3D12Device> = None;
-                // Передаём адаптер напрямую, без Option и без ссылки
-                let hr = D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut temp_device);
+                if D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut temp_device).is_ok() {
+                    if temp_device.is_some() {
+                        max_vram = vram_mb;
+                        best_device = temp_device;
+                        best_adapter = Some(adapter.clone());
 
-                if hr.is_ok() {
-                    if let Some(d) = temp_device {
-                        debug_println!("[create_device] ✅ REAL GPU FOUND: {}", name);
-                        device = Some(d);
-                        REAL_GPU_FOUND = true;
-
-                        // Сохраняем имя GPU
+                        // Сохраняем информацию
+                        GPU_INFO.is_real = true;
+                        GPU_INFO.vram_mb = vram_mb as u32;
                         let name_bytes = name.as_bytes();
                         for i in 0..name_bytes.len().min(255) {
-                            GPU_NAME_STR[i] = name_bytes[i];
+                            GPU_INFO.name[i] = name_bytes[i];
                         }
-                        GPU_NAME_STR[name_bytes.len().min(255)] = 0;
 
-                        break;
+                        debug_println!("[create_device] ✅ Selected: {} ({} MB VRAM)", name, vram_mb);
                     }
                 }
             }
@@ -82,41 +99,37 @@ pub extern "C" fn create_device() -> *mut c_void {
             adapter_index += 1;
         }
 
-        // Если реального GPU нет - создаём WARP устройство
-        if device.is_none() {
-            debug_println!("[create_device] No real GPU found, creating WARP device...");
+        // Если реальный GPU не найден, используем WARP
+        if best_device.is_none() {
+            debug_println!("[create_device] No real GPU found, using WARP...");
 
-            // Создаём WARP адаптер
             let warp_adapter: IDXGIAdapter4 = match factory.EnumWarpAdapter() {
                 Ok(a) => a,
-                Err(_) => return std::ptr::null_mut(),
+                Err(e) => {
+                    debug_println!("[create_device] Failed to get WARP adapter: {:?}", e);
+                    return std::ptr::null_mut();
+                }
             };
 
             let mut temp_device: Option<ID3D12Device> = None;
-            let hr = D3D12CreateDevice(&warp_adapter, D3D_FEATURE_LEVEL_11_0, &mut temp_device);
-
-            if hr.is_ok() {
-                if let Some(d) = temp_device {
-                    debug_println!("[create_device] ⚠️ WARP device created (software rendering)");
-                    device = Some(d);
-                    REAL_GPU_FOUND = false;
-
-                    let name = "WARP Software Renderer";
-                    let name_bytes = name.as_bytes();
-                    for i in 0..name_bytes.len().min(255) {
-                        GPU_NAME_STR[i] = name_bytes[i];
-                    }
-                    GPU_NAME_STR[name_bytes.len().min(255)] = 0;
-                }
-            }
-        }
-
-        let device = match device {
-            Some(d) => d,
-            None => {
-                debug_println!("[create_device] ❌ FAILED to create any device!");
+            if D3D12CreateDevice(&warp_adapter, D3D_FEATURE_LEVEL_11_0, &mut temp_device).is_err() {
+                debug_println!("[create_device] Failed to create WARP device");
                 return std::ptr::null_mut();
             }
+
+            best_device = temp_device;
+            GPU_INFO.is_real = false;
+            let name = "WARP Software Renderer";
+            let name_bytes = name.as_bytes();
+            for i in 0..name_bytes.len().min(255) {
+                GPU_INFO.name[i] = name_bytes[i];
+            }
+            debug_println!("[create_device] ⚠️ Using WARP software renderer");
+        }
+
+        let device = match best_device {
+            Some(d) => d,
+            None => return std::ptr::null_mut(),
         };
 
         // Получаем размеры дескрипторов
@@ -135,60 +148,37 @@ pub extern "C" fn create_device() -> *mut c_void {
         let raw_ptr = device.as_raw();
         std::mem::forget(device);
 
-        debug_println!("[create_device] Done, REAL_GPU={}", REAL_GPU_FOUND);
-
+        debug_println!("[create_device] ✅ Device created successfully");
         raw_ptr as *mut c_void
     }
 }
 
 #[no_mangle]
 pub extern "C" fn is_real_gpu() -> bool {
-    unsafe { REAL_GPU_FOUND }
-}
-
-#[no_mangle]
-pub extern "C" fn is_warp_mode() -> bool {
-    unsafe { !REAL_GPU_FOUND }
-}
-
-#[no_mangle]
-pub extern "C" fn check_warp_driver(_device_ptr: *mut c_void) -> bool {
-    unsafe { !REAL_GPU_FOUND }
+    unsafe { GPU_INFO.is_real }
 }
 
 #[no_mangle]
 pub extern "C" fn get_gpu_name(_device_ptr: *mut c_void) -> *const i8 {
-    unsafe {
-        GPU_NAME_STR.as_ptr() as *const i8
-    }
+    unsafe { GPU_INFO.name.as_ptr() as *const i8 }
 }
 
 #[no_mangle]
-pub extern "C" fn get_gpu_vram_mb(device_ptr: *mut c_void) -> u32 {
-    unsafe {
-        if !REAL_GPU_FOUND || device_ptr.is_null() {
-            return 0;
-        }
+pub extern "C" fn get_gpu_vram_mb() -> u32 {
+    unsafe { GPU_INFO.vram_mb }
+}
 
-        let device: ID3D12Device = std::mem::transmute_copy(&device_ptr);
+#[no_mangle]
+pub extern "C" fn get_rtv_descriptor_size() -> u32 {
+    STATE.lock().unwrap().rtv_descriptor_size
+}
 
-        let mut adapter_ptr: *mut c_void = std::ptr::null_mut();
-        let iid = &IDXGIAdapter::IID;
+#[no_mangle]
+pub extern "C" fn get_dsv_descriptor_size() -> u32 {
+    STATE.lock().unwrap().dsv_descriptor_size
+}
 
-        let hr = device.query(iid, &mut adapter_ptr);
-        std::mem::forget(device);
-
-        if hr.is_ok() && !adapter_ptr.is_null() {
-            let adapter = std::mem::transmute::<*mut c_void, IDXGIAdapter>(adapter_ptr);
-            let desc = adapter.GetDesc();
-            std::mem::forget(adapter);
-
-            match desc {
-                Ok(desc) => (desc.DedicatedVideoMemory / 1024 / 1024) as u32,
-                Err(_) => 0
-            }
-        } else {
-            0
-        }
-    }
+#[no_mangle]
+pub extern "C" fn get_cbv_srv_uav_descriptor_size() -> u32 {
+    STATE.lock().unwrap().cbv_srv_uav_descriptor_size
 }

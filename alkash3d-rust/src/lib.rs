@@ -1,4 +1,5 @@
 //! alkash3d_rs - DirectX 12 рендерер на Rust
+//! Полностью функциональный движок с поддержкой игрового режима и редактора
 
 mod device;
 mod queue;
@@ -32,10 +33,13 @@ pub use alcar_format::*;
 pub use alroute_format::*;
 pub use utils::*;
 
-// Глобальное состояние
-static STATE: std::sync::LazyLock<std::sync::Mutex<GlobalState>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(GlobalState::new()));
+use std::sync::{LazyLock, Mutex};
 
+// Глобальное состояние движка
+pub static STATE: LazyLock<Mutex<GlobalState>> =
+    LazyLock::new(|| Mutex::new(GlobalState::new()));
+
+#[derive(Clone)]
 pub struct GlobalState {
     pub device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device>,
     pub command_queue: Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandQueue>,
@@ -51,6 +55,9 @@ pub struct GlobalState {
     pub fence_values: Vec<u64>,
     pub descriptor_heaps: Vec<windows::Win32::Graphics::Direct3D12::ID3D12DescriptorHeap>,
     pub command_list_open: bool,
+    pub current_pso: Option<windows::Win32::Graphics::Direct3D12::ID3D12PipelineState>,
+    pub bound_vertex_buffers: Vec<u64>,
+    pub bound_index_buffer: Option<u64>,
 }
 
 impl GlobalState {
@@ -70,6 +77,26 @@ impl GlobalState {
             fence_values: vec![0; 4],
             descriptor_heaps: Vec::new(),
             command_list_open: false,
+            current_pso: None,
+            bound_vertex_buffers: Vec::new(),
+            bound_index_buffer: None,
         }
     }
+
+    pub fn reset_bindings(&mut self) {
+        self.bound_vertex_buffers.clear();
+        self.bound_index_buffer = None;
+    }
 }
+
+// Версия движка
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// Инициализация логгера
+#[cfg(feature = "logging")]
+pub fn init_logger() {
+    env_logger::init();
+}
+
+#[cfg(not(feature = "logging"))]
+pub fn init_logger() {}
