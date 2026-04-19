@@ -1,22 +1,37 @@
 [package]
-name = "alkash3d_editor"
+name = "alkash3d-editor"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alkash3d_rs = { path = "../alkash3d-rust" }
 eframe = "0.27"
 egui = "0.27"
-anyhow = "1.0"
-rfd = "0.14"
-tobj = "4.0"
+egui_extras = { version = "0.27", features = ["image"] }
+glam = { version = "0.25", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-wgpu = "0.19.4"
-parking_lot = "0.12.5"
-windows = "0.58.0"
-windows-core = "0.58.0"
-which = "8.0.2"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+parking_lot = "0.12"
+rfd = "0.14"
+walkdir = "2.4"
+tobj = "4.0"
+image = "0.24"
+env_logger = "0.11"
+log = "0.4"
+libloading = "0.8"
+which = "6.0"
+alkash3d_rs = { path = "../alkash3d-rust" }
+serde_derive = "1.0.228"
+raw-window-handle = "0.6.2"
+
+[build-dependencies]
 
 [profile.release]
-opt-level = 2
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
