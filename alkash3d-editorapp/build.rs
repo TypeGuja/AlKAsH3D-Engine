@@ -1,31 +1,28 @@
-// editor/build.rs
-use std::fs;
-use std::path::Path;
+//! Build script
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets/");
+    // Проверяем наличие DLL движка
+    let dll_name = "alkash3d_rs.dll";
+    let search_paths = [
+        format!("./{}", dll_name),
+        format!("../alkash3d-rust/target/release/{}", dll_name),
+        format!("../target/release/{}", dll_name),
+        format!("C:/Users/user/Documents/GitHub/AlKAsH3D-Engine/alkash3d-rust/target/release/{}", dll_name),
+    ];
 
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    let target_dir = Path::new(&out_dir).ancestors().nth(3).unwrap();
-    let assets_dir = target_dir.join("assets");
-
-    if Path::new("assets").exists() {
-        let _ = fs::create_dir_all(&assets_dir);
-        copy_dir("assets", &assets_dir);
-    }
-}
-
-fn copy_dir(from: &str, to: &Path) {
-    if let Ok(entries) = fs::read_dir(from) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let dest = to.join(entry.file_name());
-            if path.is_dir() {
-                let _ = fs::create_dir_all(&dest);
-                copy_dir(path.to_str().unwrap(), &dest);
-            } else {
-                let _ = fs::copy(&path, &dest);
-            }
+    let mut dll_found = false;
+    for path in &search_paths {
+        if std::path::Path::new(path).exists() {
+            println!("cargo:warning=Found {} at: {}", dll_name, path);
+            dll_found = true;
+            break;
         }
     }
+
+    if !dll_found {
+        println!("cargo:warning={} not found. Please build alkash3d_rs first.", dll_name);
+        println!("cargo:warning=Searched in: {:?}", search_paths);
+    }
+
+    println!("cargo:rerun-if-changed=build.rs");
 }
