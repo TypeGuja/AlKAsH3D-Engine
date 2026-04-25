@@ -2,8 +2,9 @@
 
 use anyhow::{Result, anyhow};
 use std::path::Path;
+use std::fs::File;
+use std::io::Write;
 
-// Временные структуры вместо alkash3d_rs
 #[derive(Default)]
 struct AltexFile {
     meshes: Vec<AltexMesh>,
@@ -65,6 +66,54 @@ impl AltexFile {
 
     fn save(&self, path: &str) -> Result<()> {
         println!("[Altex] Saving {} meshes to {}", self.meshes.len(), path);
+
+        let mut file = File::create(path)?;
+
+        // Заголовок файла
+        writeln!(file, "ALTEХ")?;
+        writeln!(file, "version 1.0")?;
+        writeln!(file, "meshes {}", self.meshes.len())?;
+        writeln!(file, "objects {}", self.objects.len())?;
+
+        // Сохраняем меши
+        for (idx, mesh) in self.meshes.iter().enumerate() {
+            writeln!(file, "mesh {} {}", idx, mesh.name)?;
+            writeln!(file, "  vertices {}", mesh.vertices.len())?;
+            writeln!(file, "  indices {}", mesh.indices.len())?;
+
+            // Сохраняем вершины
+            for v in &mesh.vertices {
+                writeln!(file, "    v {} {} {} | {} {} {} | {} {} {} | {} {} {} | {} {} | {} {} | {} {} {} {}",
+                         v.position[0], v.position[1], v.position[2],
+                         v.normal[0], v.normal[1], v.normal[2],
+                         v.tangent[0], v.tangent[1], v.tangent[2],
+                         v.bitangent[0], v.bitangent[1], v.bitangent[2],
+                         v.uv[0], v.uv[1],
+                         v.uv2[0], v.uv2[1],
+                         v.color[0], v.color[1], v.color[2], v.color[3]
+                )?;
+            }
+
+            // Сохраняем индексы (по 10 в строке)
+            for chunk in mesh.indices.chunks(10) {
+                write!(file, "    i")?;
+                for idx in chunk {
+                    write!(file, " {}", idx)?;
+                }
+                writeln!(file)?;
+            }
+        }
+
+        // Сохраняем объекты
+        for (idx, obj) in self.objects.iter().enumerate() {
+            writeln!(file, "object {} {}", idx, obj.name)?;
+            writeln!(file, "  mesh {}", obj.mesh_id)?;
+            writeln!(file, "  position {} {} {}", obj.transform.position[0], obj.transform.position[1], obj.transform.position[2])?;
+            writeln!(file, "  rotation {} {} {} {}", obj.transform.rotation[0], obj.transform.rotation[1], obj.transform.rotation[2], obj.transform.rotation[3])?;
+            writeln!(file, "  scale {} {} {}", obj.transform.scale[0], obj.transform.scale[1], obj.transform.scale[2])?;
+        }
+
+        println!("[Altex] File saved successfully");
         Ok(())
     }
 }
@@ -91,8 +140,6 @@ pub fn convert(obj_path: &str, output_path: &str) -> Result<()> {
     }
 
     let mut altex = AltexFile::new();
-
-    // Обрабатываем материалы (игнорируем warning о неиспользуемой переменной)
     let _ = materials;
 
     for (idx, model) in models.iter().enumerate() {
@@ -139,7 +186,7 @@ pub fn convert(obj_path: &str, output_path: &str) -> Result<()> {
             vertices.push(Vertex {
                 position,
                 normal,
-                tangent,
+                tangent: tangent,
                 bitangent,
                 uv,
                 uv2: [0.0, 0.0],

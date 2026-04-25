@@ -32,7 +32,7 @@ pub struct RenderEngine {
     width: u32,
     height: u32,
     initialized: bool,
-    headless: bool,
+    pub headless: bool,
 }
 
 #[derive(Clone)]
@@ -97,10 +97,13 @@ impl RenderEngine {
             }
 
             if !self.headless && hwnd != 0 {
+                println!("[RenderEngine] Creating swap chain with hwnd: 0x{:X}, size: {}x{}", hwnd, self.width, self.height);
                 self.swap_chain = (self.dll.create_swap_chain)(self.queue, hwnd, self.width, self.height);
                 if self.swap_chain.is_null() {
-                    println!("[RenderEngine] Warning: Failed to create swap chain, running headless");
+                    println!("[RenderEngine] ERROR: Failed to create swap chain! Running headless.");
                     self.headless = true;
+                } else {
+                    println!("[RenderEngine] Swap chain created successfully at {:p}", self.swap_chain);
                 }
             }
 

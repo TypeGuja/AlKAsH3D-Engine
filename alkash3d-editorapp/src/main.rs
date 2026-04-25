@@ -1,6 +1,4 @@
 mod app;
-mod math;
-mod scene;
 
 use app::EditorApp;
 use eframe::egui;
