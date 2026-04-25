@@ -405,3 +405,13 @@ pub extern "C" fn transition_resource(
 pub extern "C" fn set_render_target(rtv_cpu_handle: u64) -> bool {
     set_render_targets(rtv_cpu_handle, 1)
 }
+
+#[no_mangle]
+pub extern "C" fn set_pipeline(pso_ptr: *mut c_void) -> bool {
+    set_graphics_pipeline(pso_ptr)
+}
+
+#[no_mangle]
+pub extern "C" fn draw(start_vertex: u32, vertex_count: u32) -> bool {
+    draw_instanced(vertex_count, 1, start_vertex, 0)
+}
