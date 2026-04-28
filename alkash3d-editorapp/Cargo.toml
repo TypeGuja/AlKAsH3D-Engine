@@ -14,20 +14,23 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 anyhow = "1.0"
 thiserror = "1.0"
 parking_lot = "0.12"
-rfd = "0.14"
+rfd = "0.17.2"
 walkdir = "2.4"
 tobj = "4.0"
 image = "0.24"
 env_logger = "0.11"
 log = "0.4"
 libloading = "0.8"
-which = "6.0"
+which = "8.0.2"
 alkash3d_rs = { path = "../alkash3d-rust" }
 serde_derive = "1.0.228"
 raw-window-handle = "0.6.2"
 rand = "0.10.1"
 rayon = "1.12.0"
-
+wgpu = "27.0.0"
+winit = "0.30.13"
+pollster = "0.4.0"
+bytemuck = { version = "1", features = ["derive"] }
 [build-dependencies]
 
 [profile.release]
@@ -37,3 +40,11 @@ codegen-units = 1
 
 [profile.dev]
 opt-level = 1
+
+[lib]
+name = "alkash3d_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "alkash3d-editor"
+path = "src/main.rs"
