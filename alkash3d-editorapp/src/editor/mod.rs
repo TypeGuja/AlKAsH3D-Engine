@@ -1,11 +1,7 @@
-//! Модуль редактора
-
 pub mod gizmo;
-pub mod tools;
-pub mod selection;
-pub mod command;
+pub mod history;
+pub mod tool;
 
-pub use gizmo::*;
-pub use tools::*;
-pub use command::*;
-pub use selection::*;
+pub use gizmo::{Gizmo, GizmoMode, GizmoSpace, GizmoAxis};
+pub use history::{CommandHistory, EditorCommand};
+pub use tool::EditorTool;

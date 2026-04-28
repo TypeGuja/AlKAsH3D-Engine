@@ -1,12 +1,19 @@
+mod math;
+mod animation;
+mod mesh;
+mod material;
+mod particle;
+mod scene;
+mod editor;
+mod systems;
+mod ui;
+mod assets;
+mod converters;
 mod app;
 
 use app::EditorApp;
-use eframe::egui;
 
 fn main() -> anyhow::Result<()> {
-    env_logger::init();
-    println!("[Editor] Starting AlKAsH3D Editor...");
-
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1600.0, 900.0])
