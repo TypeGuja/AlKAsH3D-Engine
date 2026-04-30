@@ -35,51 +35,83 @@ impl AssetLibrary {
             .unwrap_or("unnamed")
             .to_string();
 
+        println!("[ASSET] Importing model: {} (name: {})", path, file_name);
+
         let mesh = self.parse_obj(path)?;
         self.meshes.insert(file_name.clone(), mesh);
         Ok(vec![file_name])
     }
 
     fn parse_obj(&self, path: &str) -> Result<Mesh, String> {
-        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
+        println!("[ASSET] Parsing OBJ: {}", path);
 
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with("v ") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
-                    vertices.push(crate::math::Vec3::new(
-                        parts[1].parse().unwrap_or(0.0),
-                        parts[2].parse().unwrap_or(0.0),
-                        parts[3].parse().unwrap_or(0.0),
-                    ));
-                }
-            } else if line.starts_with("f ") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
-                    let mut face = Vec::new();
-                    for i in 1..parts.len() {
-                        let idx = parts[i].split('/').next().unwrap_or("0");
-                        if let Ok(i) = idx.parse::<i32>() {
-                            let idx = if i > 0 { i - 1 } else { vertices.len() as i32 + i };
-                            if idx >= 0 && idx < vertices.len() as i32 {
-                                face.push(idx as u32);
-                            }
-                        }
-                    }
-                    if face.len() >= 3 {
-                        for j in 1..face.len()-1 {
-                            indices.extend_from_slice(&[face[0], face[j], face[j+1]]);
-                        }
-                    }
-                }
-            }
+        // Проверяем существование файла
+        if !Path::new(path).exists() {
+            return Err(format!("File not found: {}", path));
         }
 
-        if vertices.is_empty() { return Err("No vertices".to_string()); }
-        Ok(Mesh::new(vertices, indices))
+        let (models, materials) = tobj::load_obj(
+            path,
+            &tobj::LoadOptions {
+                single_index: true,
+                triangulate: true,
+                ignore_points: true,
+                ignore_lines: true,
+            },
+        ).map_err(|e| {
+            println!("[ASSET] tobj error: {}", e);
+            format!("Failed to load OBJ: {}", e)
+        })?;
+
+        let _ = materials; // Не используем пока
+
+        println!("[ASSET] Loaded {} models", models.len());
+
+        if models.is_empty() {
+            return Err("No models found in OBJ file".to_string());
+        }
+
+        // Объединяем все модели в один меш (или берем первую)
+        let mut all_vertices = Vec::new();
+        let mut all_indices = Vec::new();
+        let mut vertex_offset = 0u32;
+
+        for (idx, model) in models.iter().enumerate() {
+            let mesh = &model.mesh;
+            let vertex_count = mesh.positions.len() / 3;
+
+            println!("[ASSET] Model {}: {} vertices, {} indices",
+                     idx, vertex_count, mesh.indices.len());
+
+            if vertex_count == 0 {
+                continue;
+            }
+
+            // Добавляем вершины
+            for i in 0..vertex_count {
+                all_vertices.push(crate::math::Vec3::new(
+                    mesh.positions[i * 3],
+                    mesh.positions[i * 3 + 1],
+                    mesh.positions[i * 3 + 2],
+                ));
+            }
+
+            // Добавляем индексы со смещением
+            for &idx in &mesh.indices {
+                all_indices.push(idx as u32 + vertex_offset);
+            }
+
+            vertex_offset += vertex_count as u32;
+        }
+
+        if all_vertices.is_empty() {
+            return Err("No vertices in model".to_string());
+        }
+
+        println!("[ASSET] Total: {} vertices, {} indices",
+                 all_vertices.len(), all_indices.len());
+
+        Ok(Mesh::new(all_vertices, all_indices))
     }
 
     pub fn get_mesh(&self, name: &str) -> Option<&Mesh> {
