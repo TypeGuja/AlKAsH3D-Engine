@@ -1,123 +1,191 @@
+// src/gpu/pipeline.rs
 use wgpu::*;
 
 pub struct PipelineManager {
     pub pbr_pipeline: RenderPipeline,
-    pub wireframe_pipeline: RenderPipeline,
-    pub skybox_pipeline: RenderPipeline,
-    pub pbr_bind_group_layout: BindGroupLayout,
-    pub material_bind_group_layout: BindGroupLayout,
+    pub camera_bind_group_layout: BindGroupLayout,
     pub light_bind_group_layout: BindGroupLayout,
-    pub sky_bind_group_layout: BindGroupLayout,
+    pub material_bind_group_layout: BindGroupLayout,
 }
 
 impl PipelineManager {
     pub fn new(device: &Device, surface_format: TextureFormat) -> Self {
-        let pbr_shader = device.create_shader_module(ShaderModuleDescriptor {
+        // Shader module
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("PBR Shader"),
             source: ShaderSource::Wgsl(include_str!("shaders/pbr.wgsl").into()),
         });
 
-        let skybox_shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("Skybox Shader"),
-            source: ShaderSource::Wgsl(include_str!("shaders/skybox.wgsl").into()),
-        });
-
-        // Bind Group Layouts
-        let pbr_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("PBR Camera"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
-                ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
-        });
-        let material_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("Material"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
-        });
-        let light_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("Light"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
-        });
-        let sky_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("Sky"),
+        // Bind group layouts
+        let camera_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Camera Layout"),
             entries: &[
-                BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::FRAGMENT, ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                BindGroupLayoutEntry { binding: 1, visibility: ShaderStages::FRAGMENT, ty: BindingType::Texture { sample_type: TextureSampleType::Float { filterable: true }, view_dimension: TextureViewDimension::Cube, multisampled: false }, count: None },
-                BindGroupLayoutEntry { binding: 2, visibility: ShaderStages::FRAGMENT, ty: BindingType::Sampler(SamplerBindingType::Filtering), count: None },
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        let pbr_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("PBR Layout"),
-            bind_group_layouts: &[&pbr_bind_group_layout, &material_bind_group_layout, &light_bind_group_layout],
+        let light_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Light Layout"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let material_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Material Layout"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // Pipeline layout
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("PBR Pipeline Layout"),
+            bind_group_layouts: &[
+                &camera_bind_group_layout,
+                &light_bind_group_layout,
+                &material_bind_group_layout,
+            ],
             push_constant_ranges: &[],
         });
 
-        let vertex_attrs = [
-            VertexAttribute { format: VertexFormat::Float32x3, offset: 0, shader_location: 0 },
-            VertexAttribute { format: VertexFormat::Float32x3, offset: 12, shader_location: 1 },
-            VertexAttribute { format: VertexFormat::Float32x2, offset: 24, shader_location: 2 },
-        ];
+        // Vertex buffer layouts
+        let vertex_layout = VertexBufferLayout {
+            array_stride: 32, // 8 floats * 4 bytes
+            step_mode: VertexStepMode::Vertex,
+            attributes: &[
+                // Position
+                VertexAttribute {
+                    format: VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                // Normal
+                VertexAttribute {
+                    format: VertexFormat::Float32x3,
+                    offset: 12,
+                    shader_location: 1,
+                },
+                // UV
+                VertexAttribute {
+                    format: VertexFormat::Float32x2,
+                    offset: 24,
+                    shader_location: 2,
+                },
+            ],
+        };
 
-        let vb_layout = VertexBufferLayout { array_stride: 32, step_mode: VertexStepMode::Vertex, attributes: &vertex_attrs };
-        let vb_layout2 = VertexBufferLayout { array_stride: 32, step_mode: VertexStepMode::Vertex, attributes: &vertex_attrs };
+        let instance_layout = VertexBufferLayout {
+            array_stride: std::mem::size_of::<[f32; 4 * 4 * 2 + 4]>() as u64,
+            step_mode: VertexStepMode::Instance,
+            attributes: &[
+                // Model matrix (4x4)
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 5,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: 16,
+                    shader_location: 6,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: 32,
+                    shader_location: 7,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x4,
+                    offset: 48,
+                    shader_location: 8,
+                },
+                // Material ID
+                VertexAttribute {
+                    format: VertexFormat::Uint32,
+                    offset: 64,
+                    shader_location: 9,
+                },
+            ],
+        };
 
-        // PBR Pipeline
+        // Create pipeline
         let pbr_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("PBR"),
-            layout: Some(&pbr_layout),
-            vertex: VertexState { module: &pbr_shader, entry_point: Option::from("vs_main"), buffers: &[vb_layout], compilation_options: Default::default() },
-            fragment: Some(FragmentState { module: &pbr_shader, entry_point: Option::from("fs_main"), targets: &[Some(ColorTargetState { format: surface_format, blend: Some(BlendState::REPLACE), write_mask: ColorWrites::ALL })], compilation_options: Default::default() }),
-            primitive: PrimitiveState { topology: PrimitiveTopology::TriangleList, front_face: FrontFace::Ccw, cull_mode: Some(Face::Back), polygon_mode: PolygonMode::Fill, ..Default::default() },
-            depth_stencil: Some(DepthStencilState { format: TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: CompareFunction::Less, stencil: StencilState::default(), bias: DepthBiasState::default() }),
-            multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+            label: Some("PBR Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[vertex_layout, instance_layout],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(ColorTargetState {
+                    format: surface_format,
+                    blend: Some(BlendState::REPLACE),
+                    write_mask: ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: Some(Face::Back),
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil: StencilState::default(),
+                bias: DepthBiasState::default(),
+            }),
+            multisample: MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
 
-        // Wireframe
-        let wireframe_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("Wireframe"),
-            layout: Some(&pbr_layout),
-            vertex: VertexState { module: &pbr_shader, entry_point: Option::from("vs_main"), buffers: &[vb_layout2], compilation_options: Default::default() },
-            fragment: Some(FragmentState { module: &pbr_shader, entry_point: Option::from("fs_main"), targets: &[Some(ColorTargetState { format: surface_format, blend: Some(BlendState::REPLACE), write_mask: ColorWrites::ALL })], compilation_options: Default::default() }),
-            primitive: PrimitiveState { polygon_mode: PolygonMode::Line, ..PrimitiveState::default() },
-            depth_stencil: Some(DepthStencilState { format: TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: CompareFunction::Less, stencil: StencilState::default(), bias: DepthBiasState::default() }),
-            multisample: MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let sky_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("Sky Layout"),
-            bind_group_layouts: &[&pbr_bind_group_layout, &sky_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let skybox_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("Skybox"),
-            layout: Some(&sky_layout),
-            vertex: VertexState { module: &skybox_shader, entry_point: Option::from("vs_main"), buffers: &[], compilation_options: Default::default() },
-            fragment: Some(FragmentState { module: &skybox_shader, entry_point: Option::from("fs_main"), targets: &[Some(ColorTargetState { format: surface_format, blend: Some(BlendState::REPLACE), write_mask: ColorWrites::ALL })], compilation_options: Default::default() }),
-            primitive: PrimitiveState { topology: PrimitiveTopology::TriangleList, front_face: FrontFace::Cw, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(DepthStencilState { format: TextureFormat::Depth32Float, depth_write_enabled: false, depth_compare: CompareFunction::LessEqual, stencil: StencilState::default(), bias: DepthBiasState::default() }),
-            multisample: MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        Self { pbr_pipeline, wireframe_pipeline, skybox_pipeline, pbr_bind_group_layout, material_bind_group_layout, light_bind_group_layout, sky_bind_group_layout }
+        Self {
+            pbr_pipeline,
+            camera_bind_group_layout,
+            light_bind_group_layout,
+            material_bind_group_layout,
+        }
     }
 }

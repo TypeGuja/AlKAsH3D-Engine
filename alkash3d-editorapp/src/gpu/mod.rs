@@ -1,3 +1,4 @@
+// src/gpu/mod.rs
 pub mod renderer;
 pub mod camera;
 pub mod mesh;

@@ -19,7 +19,6 @@ pub struct Camera {
     pub near: f32,
     pub far: f32,
     pub buffer: Option<Buffer>,
-    pub bind_group: Option<BindGroup>,
     pub uniform: CameraUniform,
 }
 
@@ -30,10 +29,16 @@ impl Camera {
         let view = Self::calculate_view_matrix(position, target, Vec3::UP);
         let proj = Self::calculate_projection_matrix(60.0_f32.to_radians(), aspect, 0.1, 1000.0);
         let view_proj = Self::multiply_matrices(proj, view);
+
         Self {
-            position, target, up: Vec3::UP,
-            fov: 60.0_f32.to_radians(), aspect, near: 0.1, far: 1000.0,
-            buffer: None, bind_group: None,
+            position,
+            target,
+            up: Vec3::UP,
+            fov: 60.0_f32.to_radians(),
+            aspect,
+            near: 0.1,
+            far: 1000.0,
+            buffer: None,
             uniform: CameraUniform {
                 view_proj,
                 view_position: [position.x, position.y, position.z],
@@ -58,6 +63,7 @@ impl Camera {
                 mapped_at_creation: false,
             }));
         }
+
         if let Some(ref buffer) = self.buffer {
             queue.write_buffer(buffer, 0, bytemuck::cast_slice(&[self.uniform]));
         }
@@ -67,6 +73,7 @@ impl Camera {
         let f = (target - pos).normalize();
         let s = f.cross(up).normalize();
         let u = s.cross(f);
+
         [
             [s.x, u.x, -f.x, 0.0],
             [s.y, u.y, -f.y, 0.0],
@@ -77,6 +84,7 @@ impl Camera {
 
     fn calculate_projection_matrix(fov: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
         let f = 1.0 / (fov / 2.0).tan();
+
         [
             [f / aspect, 0.0, 0.0, 0.0],
             [0.0, f, 0.0, 0.0],
