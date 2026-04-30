@@ -1,3 +1,4 @@
+// src/lib.rs
 pub mod math;
 pub mod animation;
 pub mod mesh;
@@ -9,7 +10,7 @@ pub mod systems;
 pub mod ui;
 pub mod assets;
 pub mod converters;
-pub mod gpu;
+pub mod gpu; // Добавляем GPU модуль
 
 mod app;
 
