@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use uuid::Uuid;
-use crate::math::Transform;
-use crate::animation::AnimationTrack;  // Исправлено
+use crate::math::{Vec3, Transform, Quat};
+use crate::animation::AnimationTrack;
 use super::object_type::ObjectType;
 
 #[derive(Debug, Clone)]
@@ -12,11 +12,10 @@ pub struct GameObject {
     pub locked: bool,
     pub transform: Transform,
     pub object_type: ObjectType,
-    pub animations: HashMap<String, Animation>,  // Нужно создать тип Animation
+    pub animations: HashMap<String, Animation>,
     pub shader_technique: String,
 }
 
-// Временно определим Animation здесь
 #[derive(Debug, Clone)]
 pub struct Animation {
     pub name: String,
@@ -52,9 +51,9 @@ impl Animation {
 
     pub fn get_transform(&self) -> Transform {
         Transform {
-            position: self.position_track.evaluate(self.current_time).unwrap_or(crate::math::Vec3::ZERO),
-            rotation: self.rotation_track.evaluate(self.current_time).unwrap_or(crate::math::Quat::IDENTITY),
-            scale: self.scale_track.evaluate(self.current_time).unwrap_or(crate::math::Vec3::ONE),
+            position: self.position_track.evaluate(self.current_time).unwrap_or(Vec3::ZERO),
+            rotation: self.rotation_track.evaluate(self.current_time).unwrap_or(Quat::IDENTITY),
+            scale: self.scale_track.evaluate(self.current_time).unwrap_or(Vec3::ONE),
         }
     }
 }
@@ -70,6 +69,36 @@ impl GameObject {
             object_type,
             animations: HashMap::new(),
             shader_technique: "PBR_Standard".to_string(),
+        }
+    }
+
+    pub fn get_mesh_bounds(&self) -> Option<(Vec3, Vec3)> {
+        match &self.object_type {
+            ObjectType::Mesh(mesh_comp) => {
+                let (min, max) = mesh_comp.mesh.bounds;
+                let corners = [
+                    Vec3::new(min.x, min.y, min.z),
+                    Vec3::new(max.x, min.y, min.z),
+                    Vec3::new(min.x, max.y, min.z),
+                    Vec3::new(min.x, min.y, max.z),
+                    Vec3::new(max.x, max.y, min.z),
+                    Vec3::new(max.x, min.y, max.z),
+                    Vec3::new(min.x, max.y, max.z),
+                    Vec3::new(max.x, max.y, max.z),
+                ];
+
+                let mut world_min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+                let mut world_max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+
+                for corner in &corners {
+                    let world_corner = self.transform.transform_point(*corner);
+                    world_min = world_min.min(world_corner);
+                    world_max = world_max.max(world_corner);
+                }
+
+                Some((world_min, world_max))
+            }
+            _ => None,
         }
     }
 }
