@@ -1,5 +1,6 @@
 use egui::*;
 use crate::EditorApp;
+use crate::math::Vec3;
 
 pub fn render_dialogs(ctx: &egui::Context, app: &mut EditorApp) {
     if app.show_new_scene_dialog {
@@ -34,8 +35,11 @@ pub fn render_dialogs(ctx: &egui::Context, app: &mut EditorApp) {
                         .pick_file()
                     {
                         let path_str = path.to_string_lossy().to_string();
+                        println!("[DIALOG] Selected file: {}", path_str);
+
                         match app.asset_library.import_model(&path_str) {
                             Ok(imported_names) => {
+                                println!("[DIALOG] Successfully imported: {:?}", imported_names);
                                 for name in &imported_names {
                                     if let Some(mesh) = app.asset_library.get_mesh(name) {
                                         let mesh_clone = mesh.clone();
@@ -44,21 +48,32 @@ pub fn render_dialogs(ctx: &egui::Context, app: &mut EditorApp) {
                                             crate::scene::ObjectType::Mesh(
                                                 crate::scene::MeshComponent {
                                                     mesh: mesh_clone,
-                                                    material: crate::material::Material::default(),
+                                                    material: crate::material::Material {
+                                                        color: [0.7, 0.7, 0.7, 1.0],
+                                                        metallic: 0.0,
+                                                        roughness: 0.8,
+                                                        ..Default::default()
+                                                    },
                                                     visible: true,
                                                     wireframe: false,
                                                     solid: true,
-                                                    double_sided: true,
+                                                    double_sided: false,
                                                 }
                                             )
                                         );
                                         app.scene.add_object(obj);
+                                        println!("[DIALOG] Added object: {}", name);
+                                    } else {
+                                        println!("[DIALOG] WARNING: Mesh '{}' not found after import", name);
                                     }
                                 }
                                 app.log(&format!("✅ Imported {} models", imported_names.len()), Color32::GREEN);
                                 app.show_import_dialog = false;
                             }
-                            Err(e) => app.log(&format!("❌ Import failed: {}", e), Color32::RED),
+                            Err(e) => {
+                                println!("[DIALOG] Import error: {}", e);
+                                app.log(&format!("❌ Import failed: {}", e), Color32::RED);
+                            }
                         }
                     }
                 }
