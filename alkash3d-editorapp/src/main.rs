@@ -13,7 +13,6 @@ mod app;
 mod gpu;
 
 use app::EditorApp;
-use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
@@ -29,10 +28,7 @@ fn main() -> anyhow::Result<()> {
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-
-            let app = EditorApp::new(cc);
-
-            Box::new(app)
+            Box::new(EditorApp::new(cc))
         }),
     ).map_err(|e| anyhow::anyhow!("Failed to run editor: {}", e))
 }
