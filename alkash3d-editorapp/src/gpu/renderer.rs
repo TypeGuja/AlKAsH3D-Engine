@@ -1,56 +1,118 @@
-// src/gpu/renderer.rs - ИСПРАВЛЕННЫЙ
+// src/gpu/renderer.rs
+use std::sync::Arc;
 use wgpu::*;
 use winit::window::Window;
-use std::sync::Arc;
-use crate::math::{Vec3, Transform};
-use super::camera::Camera;
-use super::pipeline::PipelineManager;
+use crate::math::Vec3;
+use crate::mesh::Mesh;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct InstanceData {
-    model_matrix: [[f32; 4]; 4],
-    normal_matrix: [[f32; 4]; 4],
-    material_id: u32,
-    _padding: [u32; 3],
+struct CameraUniform {
+    view_proj: [[f32; 4]; 4],
+    view_position: [f32; 3],
+    _padding: f32,
 }
 
-pub struct RenderMesh {
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex3D {
+    position: [f32; 3],
+    normal: [f32; 3],
+    color: [f32; 3],
+}
+
+pub struct GpuMesh {
     pub vertex_buffer: Buffer,
     pub index_buffer: Buffer,
     pub index_count: u32,
-    pub instance_buffer: Buffer,
-    pub instance_count: u32,
-    pub material_id: u32,
     pub visible: bool,
 }
 
-pub struct Renderer {
+pub struct GpuRenderer {
     pub device: Device,
     pub queue: Queue,
-    pub surface: Surface<'static>,
-    pub config: SurfaceConfiguration,
-    pub size: (u32, u32),
-    pub depth_texture: Texture,
-    pub depth_view: TextureView,
-    pub camera: Camera,
-    pub pipelines: PipelineManager,
-    pub meshes: Vec<RenderMesh>,
-    pub camera_bind_group: BindGroup,
-    pub light_bind_group: BindGroup,
-    pub material_bind_groups: Vec<BindGroup>,
-    pub _window: Arc<Window>,
+    surface: Surface<'static>,
+    config: SurfaceConfiguration,
+    pipeline: RenderPipeline,
+    camera_buffer: Buffer,
+    camera_bind_group: BindGroup,
+    depth_texture: Texture,
+    depth_view: TextureView,
+    pub meshes: Vec<GpuMesh>,
+    pub camera: CameraData,
+    size: (u32, u32),
+    _window: Arc<Window>,
 }
 
-impl Renderer {
-    pub async fn new(window: Arc<Window>) -> Result<Self, Box<dyn std::error::Error>> {
+pub struct CameraData {
+    pub position: Vec3,
+    pub target: Vec3,
+    pub up: Vec3,
+    pub fov: f32,
+    pub aspect: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+impl CameraData {
+    pub fn new() -> Self {
+        Self {
+            position: Vec3::new(5.0, 5.0, 10.0),
+            target: Vec3::ZERO,
+            up: Vec3::UP,
+            fov: 60.0_f32.to_radians(),
+            aspect: 16.0 / 9.0,
+            near: 0.1,
+            far: 1000.0,
+        }
+    }
+
+    fn view_matrix(&self) -> [[f32; 4]; 4] {
+        let f = (self.target - self.position).normalize();
+        let s = f.cross(self.up).normalize();
+        let u = s.cross(f);
+        [
+            [s.x, u.x, -f.x, 0.0],
+            [s.y, u.y, -f.y, 0.0],
+            [s.z, u.z, -f.z, 0.0],
+            [-s.dot(self.position), -u.dot(self.position), f.dot(self.position), 1.0],
+        ]
+    }
+
+    fn proj_matrix(&self) -> [[f32; 4]; 4] {
+        let f = 1.0 / (self.fov / 2.0).tan();
+        [
+            [f / self.aspect, 0.0, 0.0, 0.0],
+            [0.0, f, 0.0, 0.0],
+            [0.0, 0.0, (self.far + self.near) / (self.near - self.far), -1.0],
+            [0.0, 0.0, (2.0 * self.far * self.near) / (self.near - self.far), 0.0],
+        ]
+    }
+
+    pub fn view_proj_matrix(&self) -> [[f32; 4]; 4] {
+        let view = self.view_matrix();
+        let proj = self.proj_matrix();
+        let mut result = [[0.0; 4]; 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                for k in 0..4 {
+                    result[i][j] += proj[i][k] * view[k][j];
+                }
+            }
+        }
+        result
+    }
+}
+
+impl GpuRenderer {
+    pub async fn new(window: Arc<Window>) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::all(),
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window.clone())?;
+        let surface = instance.create_surface(window.clone()).map_err(|e| format!("Surface error: {}", e))?;
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
                 power_preference: PowerPreference::HighPerformance,
@@ -58,28 +120,22 @@ impl Renderer {
                 force_fallback_adapter: false,
             })
             .await
-            .map_err(|e| format!("Failed to request adapter: {}", e))?;
-        
+            .expect("No adapter found");
+
         let (device, queue) = adapter
             .request_device(
                 &DeviceDescriptor {
-                    label: Some("AlKAsH3D Device"),
+                    label: Some("GPU Device"),
                     required_features: Features::empty(),
                     required_limits: Limits::default(),
-                    experimental_features: Default::default(),
-                    memory_hints: Default::default(),
-                    trace: Default::default(),
+                    ..Default::default()
                 },
             )
-            .await?;
+            .await
+            .expect("Failed to create device");
 
         let caps = surface.get_capabilities(&adapter);
-        let format = caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(caps.formats[0]);
+        let format = caps.formats[0];
 
         let config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
@@ -93,296 +149,255 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let (depth_texture, depth_view) = Self::create_depth_texture(&device, &config);
+        // Shader
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: ShaderSource::Wgsl(
+                r#"
+                struct Camera {
+                    view_proj: mat4x4<f32>,
+                    view_position: vec3<f32>,
+                }
+                @group(0) @binding(0) var<uniform> camera: Camera;
 
-        let pipelines = PipelineManager::new(&device, format);
-        let mut camera = Camera::new(size.width as f32 / size.height as f32);
+                struct VertexOutput {
+                    @builtin(position) clip_pos: vec4<f32>,
+                    @location(0) world_pos: vec3<f32>,
+                    @location(1) normal: vec3<f32>,
+                    @location(2) color: vec3<f32>,
+                }
 
-        let camera_bind_group = Self::create_camera_bind_group(
-            &device,
-            &queue,
-            &pipelines.camera_bind_group_layout,
-            &mut camera,
-        );
+                @vertex
+                fn vs_main(
+                    @location(0) pos: vec3<f32>,
+                    @location(1) norm: vec3<f32>,
+                    @location(2) col: vec3<f32>,
+                ) -> VertexOutput {
+                    var out: VertexOutput;
+                    out.world_pos = pos;
+                    out.normal = norm;
+                    out.color = col;
+                    out.clip_pos = camera.view_proj * vec4<f32>(pos, 1.0);
+                    return out;
+                }
 
-        let light_bind_group = Self::create_light_bind_group(
-            &device,
-            &pipelines.light_bind_group_layout,
-        );
+                @fragment
+                fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+                    let light_dir = normalize(vec3<f32>(-0.5, -1.0, -0.5));
+                    let n = normalize(in.normal);
+                    let diff = max(dot(n, -light_dir), 0.0) * 0.7 + 0.3;
+                    return vec4<f32>(in.color * diff, 1.0);
+                }
+                "#.into()
+            ),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Camera Layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let camera_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Camera Buffer"),
+            size: std::mem::size_of::<CameraUniform>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let camera_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("Camera BG"),
+            layout: &bind_group_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex3D>() as u64,
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: &[
+                        VertexAttribute { format: VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                        VertexAttribute { format: VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+                        VertexAttribute { format: VertexFormat::Float32x3, offset: 24, shader_location: 2 },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(ColorTargetState {
+                    format,
+                    blend: Some(BlendState::REPLACE),
+                    write_mask: ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: Some(Face::Back),
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil: StencilState::default(),
+                bias: DepthBiasState::default(),
+            }),
+            multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+            multiview: None,
+            cache: None,
+        });
+
+        let depth_texture = device.create_texture(&TextureDescriptor {
+            label: Some("Depth"),
+            size: Extent3d { width: size.width, height: size.height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Depth32Float,
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&TextureViewDescriptor::default());
 
         Ok(Self {
             device,
             queue,
             surface,
             config,
-            size: (size.width, size.height),
+            pipeline,
+            camera_buffer,
+            camera_bind_group,
             depth_texture,
             depth_view,
-            camera,
-            pipelines,
             meshes: Vec::new(),
-            camera_bind_group,
-            light_bind_group,
-            material_bind_groups: Vec::new(),
+            camera: CameraData::new(),
+            size: (size.width, size.height),
             _window: window,
         })
     }
 
-    fn create_depth_texture(device: &Device, config: &SurfaceConfiguration) -> (Texture, TextureView) {
-        let texture = device.create_texture(&TextureDescriptor {
-            label: Some("Depth Texture"),
-            size: Extent3d {
-                width: config.width,
-                height: config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Depth32Float,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-
-        let view = texture.create_view(&TextureViewDescriptor::default());
-        (texture, view)
-    }
-
-    fn create_camera_bind_group(
-        device: &Device,
-        queue: &Queue,
-        layout: &BindGroupLayout,
-        camera: &mut Camera,
-    ) -> BindGroup {
-        if camera.buffer.is_none() {
-            camera.buffer = Some(device.create_buffer(&BufferDescriptor {
-                label: Some("Camera Buffer"),
-                size: std::mem::size_of::<super::camera::CameraUniform>() as u64,
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+    pub fn add_mesh(&mut self, mesh: &Mesh) {
+        let mut vertices = Vec::new();
+        for (i, v) in mesh.vertices.iter().enumerate() {
+            let n = if i < mesh.normals.len() { mesh.normals[i] } else { Vec3::UP };
+            vertices.push(Vertex3D {
+                position: [v.x, v.y, v.z],
+                normal: [n.x, n.y, n.z],
+                color: [0.7, 0.7, 0.7],
+            });
         }
 
-        if let Some(ref buffer) = camera.buffer {
-            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&[camera.uniform]));
-        }
-
-        device.create_bind_group(&BindGroupDescriptor {
-            label: Some("Camera Bind Group"),
-            layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: camera.buffer.as_ref().unwrap().as_entire_binding(),
-                },
-            ],
-        })
-    }
-
-    fn create_light_bind_group(device: &Device, layout: &BindGroupLayout) -> BindGroup {
-        let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("Light Buffer"),
-            size: 64,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        device.create_bind_group(&BindGroupDescriptor {
-            label: Some("Light Bind Group"),
-            layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                },
-            ],
-        })
-    }
-
-    pub fn add_mesh(
-        &mut self,
-        vertices: &[Vec3],
-        indices: &[u32],
-        normals: &[Vec3],
-        material_id: u32,
-    ) -> usize {
-        let vertex_data = Self::pack_vertices(vertices, normals);
-
-        let vertex_buffer = self.device.create_buffer(&BufferDescriptor {
-            label: Some("Vertex Buffer"),
-            size: (vertex_data.len() * std::mem::size_of::<f32>()) as u64,
+        let vb = self.device.create_buffer(&BufferDescriptor {
+            label: Some("VB"),
+            size: (vertices.len() * std::mem::size_of::<Vertex3D>()) as u64,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
+        vb.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&vertices));
+        vb.unmap();
 
-        let index_buffer = self.device.create_buffer(&BufferDescriptor {
-            label: Some("Index Buffer"),
-            size: (indices.len() * std::mem::size_of::<u32>()) as u64,
+        let ib = self.device.create_buffer(&BufferDescriptor {
+            label: Some("IB"),
+            size: (mesh.indices.len() * 4) as u64,
             usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
+        ib.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&mesh.indices));
+        ib.unmap();
 
-        let instance_buffer = self.device.create_buffer(&BufferDescriptor {
-            label: Some("Instance Buffer"),
-            size: std::mem::size_of::<InstanceData>() as u64 * 1024,
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Записываем данные в буферы через mapped_at_creation
-        vertex_buffer.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&vertex_data));
-        vertex_buffer.unmap();
-
-        index_buffer.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(indices));
-        index_buffer.unmap();
-
-        let mesh = RenderMesh {
-            vertex_buffer,
-            index_buffer,
-            index_count: indices.len() as u32,
-            instance_buffer,
-            instance_count: 0,
-            material_id,
+        self.meshes.push(GpuMesh {
+            vertex_buffer: vb,
+            index_buffer: ib,
+            index_count: mesh.indices.len() as u32,
             visible: true,
-        };
-
-        let id = self.meshes.len();
-        self.meshes.push(mesh);
-        id
-    }
-
-    fn pack_vertices(vertices: &[Vec3], normals: &[Vec3]) -> Vec<f32> {
-        let mut data = Vec::with_capacity(vertices.len() * 8);
-        for (i, vertex) in vertices.iter().enumerate() {
-            data.push(vertex.x);
-            data.push(vertex.y);
-            data.push(vertex.z);
-            if i < normals.len() {
-                data.push(normals[i].x);
-                data.push(normals[i].y);
-                data.push(normals[i].z);
-            } else {
-                data.push(0.0);
-                data.push(1.0);
-                data.push(0.0);
-            }
-            data.push(0.0); // UV u
-            data.push(0.0); // UV v
-        }
-        data
-    }
-
-    pub fn update_mesh_instances(&mut self, mesh_id: usize, instances: &[Transform]) {
-        if mesh_id >= self.meshes.len() { return; }
-
-        let mesh = &mut self.meshes[mesh_id];
-        let instance_data: Vec<InstanceData> = instances
-            .iter()
-            .map(|transform| {
-                let model_matrix = transform.to_matrix();
-                let normal_matrix = Self::calculate_normal_matrix(&model_matrix);
-                InstanceData {
-                    model_matrix,
-                    normal_matrix,
-                    material_id: mesh.material_id,
-                    _padding: [0; 3],
-                }
-            })
-            .collect();
-
-        mesh.instance_count = instance_data.len() as u32;
-        if mesh.instance_count > 0 {
-            self.queue.write_buffer(
-                &mesh.instance_buffer,
-                0,
-                bytemuck::cast_slice(&instance_data),
-            );
-        }
-    }
-
-    fn calculate_normal_matrix(model_matrix: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
-        let mut normal_matrix = [[0.0f32; 4]; 4];
-        for i in 0..3 {
-            for j in 0..3 {
-                normal_matrix[i][j] = model_matrix[j][i];
-            }
-        }
-        normal_matrix[3][3] = 1.0;
-        normal_matrix
-    }
-
-    pub fn resize(&mut self, new_size: (u32, u32)) {
-        if new_size.0 == 0 || new_size.1 == 0 { return; }
-        self.size = new_size;
-        self.config.width = new_size.0;
-        self.config.height = new_size.1;
-        self.surface.configure(&self.device, &self.config);
-        let (depth_texture, depth_view) = Self::create_depth_texture(&self.device, &self.config);
-        self.depth_texture = depth_texture;
-        self.depth_view = depth_view;
+        });
     }
 
     pub fn render(&mut self) -> Result<(), SurfaceError> {
-        self.camera.update_view_matrix();
-
-        if let Some(ref buffer) = self.camera.buffer {
-            self.queue.write_buffer(buffer, 0, bytemuck::cast_slice(&[self.camera.uniform]));
-        }
-
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let vp = self.camera.view_proj_matrix();
+        let uniform = CameraUniform {
+            view_proj: vp,
+            view_position: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
+            _padding: 0.0,
+        };
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[uniform]));
 
+        let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor { label: Some("Encoder") });
         {
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("Main Render Pass"),
+            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("Pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color { r: 0.1, g: 0.1, b: 0.15, a: 1.0 }),
-                        store: StoreOp::Store,
-                    },
+                    ops: Operations { load: LoadOp::Clear(Color { r: 0.1, g: 0.1, b: 0.15, a: 1.0 }), store: StoreOp::Store },
                 })],
                 depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Clear(1.0),
-                        store: StoreOp::Store,
-                    }),
+                    depth_ops: Some(Operations { load: LoadOp::Clear(1.0), store: StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 ..Default::default()
             });
 
+            rp.set_pipeline(&self.pipeline);
+            rp.set_bind_group(0, &self.camera_bind_group, &[]);
             for mesh in &self.meshes {
-                if !mesh.visible || mesh.instance_count == 0 { continue; }
-
-                render_pass.set_pipeline(&self.pipelines.pbr_pipeline);
-                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, mesh.instance_buffer.slice(..));
-                render_pass.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_bind_group(1, &self.light_bind_group, &[]);
-
-                if (mesh.material_id as usize) < self.material_bind_groups.len() {
-                    render_pass.set_bind_group(
-                        2,
-                        &self.material_bind_groups[mesh.material_id as usize],
-                        &[],
-                    );
-                }
-
-                render_pass.draw_indexed(0..mesh.index_count, 0, 0..mesh.instance_count);
+                if !mesh.visible { continue; }
+                rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                rp.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
+                rp.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
         }
-
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         Ok(())
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 { return; }
+        self.size = (width, height);
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.device, &self.config);
+        self.depth_texture = self.device.create_texture(&TextureDescriptor {
+            label: Some("Depth"),
+            size: Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: TextureDimension::D2,
+            format: TextureFormat::Depth32Float, usage: TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
+        });
+        self.depth_view = self.depth_texture.create_view(&TextureViewDescriptor::default());
     }
 }

@@ -10,13 +10,11 @@ pub struct PipelineManager {
 
 impl PipelineManager {
     pub fn new(device: &Device, surface_format: TextureFormat) -> Self {
-        // Shader module
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("PBR Shader"),
             source: ShaderSource::Wgsl(include_str!("shaders/pbr.wgsl").into()),
         });
 
-        // Bind group layouts
         let camera_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Camera Layout"),
             entries: &[
@@ -65,7 +63,6 @@ impl PipelineManager {
             ],
         });
 
-        // Pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("PBR Pipeline Layout"),
             bind_group_layouts: &[
@@ -76,24 +73,20 @@ impl PipelineManager {
             push_constant_ranges: &[],
         });
 
-        // Vertex buffer layouts
         let vertex_layout = VertexBufferLayout {
-            array_stride: 32, // 8 floats * 4 bytes
+            array_stride: 32,
             step_mode: VertexStepMode::Vertex,
             attributes: &[
-                // Position
                 VertexAttribute {
                     format: VertexFormat::Float32x3,
                     offset: 0,
                     shader_location: 0,
                 },
-                // Normal
                 VertexAttribute {
                     format: VertexFormat::Float32x3,
                     offset: 12,
                     shader_location: 1,
                 },
-                // UV
                 VertexAttribute {
                     format: VertexFormat::Float32x2,
                     offset: 24,
@@ -103,10 +96,9 @@ impl PipelineManager {
         };
 
         let instance_layout = VertexBufferLayout {
-            array_stride: std::mem::size_of::<[f32; 4 * 4 * 2 + 4]>() as u64,
+            array_stride: 80, // 4*4*4 + 4*4 + 4 = 80 bytes
             step_mode: VertexStepMode::Instance,
             attributes: &[
-                // Model matrix (4x4)
                 VertexAttribute {
                     format: VertexFormat::Float32x4,
                     offset: 0,
@@ -127,7 +119,6 @@ impl PipelineManager {
                     offset: 48,
                     shader_location: 8,
                 },
-                // Material ID
                 VertexAttribute {
                     format: VertexFormat::Uint32,
                     offset: 64,
@@ -136,7 +127,6 @@ impl PipelineManager {
             ],
         };
 
-        // Create pipeline
         let pbr_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("PBR Pipeline"),
             layout: Some(&pipeline_layout),
