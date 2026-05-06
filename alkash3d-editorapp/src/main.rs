@@ -9,8 +9,8 @@ mod systems;
 mod ui;
 mod assets;
 mod converters;
-mod app;
 mod gpu;
+mod app;
 
 use app::EditorApp;
 
@@ -20,6 +20,7 @@ fn main() -> anyhow::Result<()> {
             .with_inner_size([1600.0, 900.0])
             .with_min_inner_size([1024.0, 768.0])
             .with_title("AlKAsH3D Editor"),
+        renderer: eframe::Renderer::Wgpu,  // ВКЛЮЧАЕМ GPU
         ..Default::default()
     };
 

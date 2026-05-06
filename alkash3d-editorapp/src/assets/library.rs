@@ -24,7 +24,7 @@ impl AssetLibrary {
         materials.insert("green".to_string(), Material { color: [0.2, 1.0, 0.2, 1.0], ..Default::default() });
         materials.insert("blue".to_string(), Material { color: [0.2, 0.2, 1.0, 1.0], ..Default::default() });
         materials.insert("metal".to_string(), Material { metallic: 1.0, roughness: 0.3, ..Default::default() });
-
+        
         Self { meshes, materials }
     }
 
