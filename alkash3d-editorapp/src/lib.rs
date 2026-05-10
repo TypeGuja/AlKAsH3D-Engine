@@ -10,7 +10,8 @@ pub mod systems;
 pub mod ui;
 pub mod assets;
 pub mod converters;
-pub mod gpu; // Добавляем GPU модуль
+pub mod gpu;
+pub mod memory;  // ← ДОБАВЬТЕ ЭТУ СТРОКУ
 
 mod app;
 

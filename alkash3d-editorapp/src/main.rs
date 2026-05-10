@@ -11,6 +11,7 @@ mod assets;
 mod converters;
 mod gpu;
 mod app;
+mod memory;
 
 use app::EditorApp;
 
@@ -29,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Box::new(EditorApp::new(cc))
+            Ok(Box::new(EditorApp::new(cc)))
         }),
     ).map_err(|e| anyhow::anyhow!("Failed to run editor: {}", e))
 }

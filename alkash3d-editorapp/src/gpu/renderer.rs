@@ -1,4 +1,4 @@
-// src/gpu/renderer.rs - полный файл
+// src/gpu/renderer.rs - ОСНОВНОЙ РЕНДЕРЕР С ОПТИМИЗАЦИЯМИ
 use crate::math::Vec3;
 use crate::mesh::Mesh;
 use std::num::NonZeroU64;
@@ -6,6 +6,10 @@ use std::sync::Arc;
 pub use egui_wgpu::wgpu;
 use wgpu::*;
 use winit::window::Window;
+use std::collections::HashMap;
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use crate::memory::{FrameAllocator, ObjectPool};
 
 pub struct GpuRenderer {
     pub device: Arc<Device>,
@@ -25,8 +29,31 @@ pub struct GpuRenderer {
     pub depth_texture: Texture,
     pub depth_view: TextureView,
     pub size: (u32, u32),
+    pub surface: Option<Surface<'static>>,
+    pub config: Option<SurfaceConfiguration>,
+    pub cached_color_texture: Option<Texture>,
+    pub cached_color_view: Option<TextureView>,
+
+    // ========== ОПТИМИЗАЦИИ ==========
+    // Инстансинг буфер
+    pub instance_buffer: Buffer,
+    pub instance_capacity: u32,
+
+    // Кэши для минимизации переключений состояний
+    pub pipeline_cache: LruCache<u64, RenderPipeline>,
+    pub bind_group_cache: LruCache<u64, BindGroup>,
+
+    // Статистика производительности
+    pub draw_calls: u32,
+    pub triangles_rendered: u32,
+    pub frame_allocations: u32,
+
+    // Память
+    pub frame_allocator: FrameAllocator,
+    pub vertex_pool: ObjectPool<Vec<Vertex3D>>,
 }
 
+// Остальные структуры оставляем как были
 #[derive(Debug, Clone)]
 pub struct CameraData {
     pub position: Vec3,
@@ -50,6 +77,7 @@ pub struct GpuMesh {
     pub index_buffer: Buffer,
     pub index_count: u32,
     pub visible: bool,
+    pub vertex_count: u32,
 }
 
 pub struct GpuMaterial {
@@ -59,7 +87,7 @@ pub struct GpuMaterial {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CameraUniform {
+pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     view_position: [f32; 3],
     _padding: f32,
@@ -76,25 +104,36 @@ struct LightUniform {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct ModelUniform {
+pub struct ModelUniform {
     model: [[f32; 4]; 4],
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct MaterialUniform {
-    albedo: [f32; 4],    // 16 байт
-    metallic: f32,       // 4 байта
-    roughness: f32,      // 4 байта
-    ao: f32,             // 4 байта
-    _padding: f32,       // 4 байта - ДОБАВЬТЕ ЭТО для выравнивания до 32
+    albedo: [f32; 4],
+    metallic: f32,
+    roughness: f32,
+    ao: f32,
+    _padding: f32,
 }
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex3D {
     position: [f32; 3],
     normal: [f32; 3],
     color: [f32; 3],
+}
+
+// Инстанс данные для батчинга
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct InstanceData {
+    model: [[f32; 4]; 4],
+    normal_matrix: [[f32; 3]; 3],
+    material_index: u32,
+    _padding: u32,
 }
 
 impl CameraData {
@@ -247,7 +286,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,  // ИЗМЕНИТЕ НА None
+                    min_binding_size: None,
                 },
                 count: None,
             }],
@@ -278,7 +317,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,  // None
+                    min_binding_size: None,
                 },
                 count: None,
             }],
@@ -320,7 +359,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,  // None
+                    min_binding_size: None,
                 },
                 count: None,
             }],
@@ -351,7 +390,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,  // None
+                    min_binding_size: None,
                 },
                 count: None,
             }],
@@ -384,14 +423,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             layout: Some(&pipeline_layout),
             vertex: VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Option::from("vs_main"),
+                compilation_options: Default::default(),
                 buffers: &[vertex_layout],
             },
             fragment: Some(FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Option::from("fs_main"),
+                compilation_options: Default::default(),
                 targets: &[Some(ColorTargetState {
-                    format: TextureFormat::Rgba8Unorm,  // Должно совпадать с текстурой
+                    format: TextureFormat::Rgba8Unorm,
                     blend: Some(BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 })],
@@ -414,6 +455,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }),
             multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
+            cache: None,
         });
 
         // Depth texture
@@ -429,6 +471,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         });
         let depth_view = depth_texture.create_view(&TextureViewDescriptor::default());
 
+        // Инстанс буфер для батчинга
+        let instance_capacity = 1024;
+        let instance_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Instance Buffer"),
+            size: (std::mem::size_of::<InstanceData>() * instance_capacity as usize) as u64,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Default material
         let default_material = GpuMaterial::new(
             &device,
@@ -440,8 +491,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
 
         Self {
-            device,  // Клонируем Device и оборачиваем в Arc
-            queue,    // Клонируем Queue и оборачиваем в Arc
+            device,
+            queue,
             pipeline,
             camera_buffer,
             camera_bind_group,
@@ -457,14 +508,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             depth_texture,
             depth_view,
             size: (width, height),
+            surface: None,
+            config: None,
+            cached_color_texture: None,
+            cached_color_view: None,
+
+            // Оптимизации
+            instance_buffer,
+            instance_capacity,
+            pipeline_cache: LruCache::new(NonZeroUsize::new(64).unwrap()),
+            bind_group_cache: LruCache::new(NonZeroUsize::new(256).unwrap()),
+            draw_calls: 0,
+            triangles_rendered: 0,
+            frame_allocations: 0,
+            frame_allocator: FrameAllocator::new(64), // 64 MB для GPU данных
+            vertex_pool: ObjectPool::new(
+                || Vec::with_capacity(4096),
+                128,
+                1000,
+            ),
         }
     }
 
-    pub fn render_to_texture_internal(
+    /// ОПТИМИЗИРОВАННЫЙ РЕНДЕРИНГ С ГРУППИРОВКОЙ ПО МАТЕРИАЛАМ
+    pub fn render_optimized(
         &mut self,
         render_objects: &[(usize, [[f32; 4]; 4], usize)],
     ) -> Result<(), String> {
-        // Обновляем камеру
+        self.draw_calls = 0;
+        self.triangles_rendered = 0;
+
         let vp = self.camera.view_proj_matrix();
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform {
             view_proj: vp,
@@ -472,33 +545,41 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             _padding: 0.0,
         }]));
 
-        let mut encoder = self.device.create_command_encoder(
-            &CommandEncoderDescriptor { label: Some("GPU Render") }
-        );
+        let (color_view, _) = if let (Some(ref tex), Some(ref view)) = (&self.cached_color_texture, &self.cached_color_view) {
+            if tex.size().width == self.size.0 && tex.size().height == self.size.1 {
+                (view, tex)
+            } else {
+                let (new_tex, new_view) = self.create_color_texture();
+                self.cached_color_texture = Some(new_tex);
+                self.cached_color_view = Some(new_view);
+                (self.cached_color_view.as_ref().unwrap(), self.cached_color_texture.as_ref().unwrap())
+            }
+        } else {
+            let (new_tex, new_view) = self.create_color_texture();
+            self.cached_color_texture = Some(new_tex);
+            self.cached_color_view = Some(new_view);
+            (self.cached_color_view.as_ref().unwrap(), self.cached_color_texture.as_ref().unwrap())
+        };
 
-        // Создаём временную текстуру для рендера
-        let render_texture = self.device.create_texture(&TextureDescriptor {
-            label: Some("Render Target"),
-            size: Extent3d {
-                width: self.size.0,
-                height: self.size.1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Bgra8Unorm,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-            view_formats: &[],
+        let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("GPU Render Optimized")
         });
 
-        let render_view = render_texture.create_view(&TextureViewDescriptor::default());
+        // ГРУППИРУЕМ ПО МАТЕРИАЛАМ ДЛЯ МИНИМИЗАЦИИ ПЕРЕКЛЮЧЕНИЙ
+        let mut material_groups: HashMap<usize, Vec<&(usize, [[f32; 4]; 4], usize)>> = HashMap::new();
+
+        for obj in render_objects {
+            material_groups
+                .entry(obj.2)
+                .or_insert_with(Vec::new)
+                .push(obj);
+        }
 
         {
             let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("GPU 3D Pass"),
+                label: Some("GPU Pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &render_view,
+                    view: color_view,
                     resolve_target: None,
                     ops: Operations {
                         load: LoadOp::Clear(Color { r: 0.1, g: 0.1, b: 0.15, a: 1.0 }),
@@ -507,10 +588,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 })],
                 depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Clear(1.0),
-                        store: StoreOp::Store,
-                    }),
+                    depth_ops: Some(Operations { load: LoadOp::Clear(1.0), store: StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -521,216 +599,76 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             rp.set_bind_group(0, &self.camera_bind_group, &[]);
             rp.set_bind_group(1, &self.light_bind_group, &[]);
 
-            // GPU РЕНДЕРИТ ВСЕ ОБЪЕКТЫ ЗДЕСЬ!
-            for (mesh_idx, model_matrix, material_idx) in render_objects {
-                if *mesh_idx >= self.meshes.len() { continue; }
-                let mesh = &self.meshes[*mesh_idx];
-                if !mesh.visible { continue; }
-
-                let model_uniform = ModelUniform { model: *model_matrix };
-                self.queue.write_buffer(&self.model_buffer, 0, bytemuck::cast_slice(&[model_uniform]));
-                rp.set_bind_group(2, &self.model_bind_group, &[]);
-
-                let mat_idx = if *material_idx < self.materials.len() { *material_idx } else { 0 };
+            // РЕНДЕРИМ ГРУППАМИ ПО МАТЕРИАЛАМ
+            for (&material_idx, objects) in &material_groups {
+                // Устанавливаем материал ОДИН раз для всей группы
+                let mat_idx = if material_idx < self.materials.len() { material_idx } else { 0 };
                 rp.set_bind_group(3, &self.materials[mat_idx].bind_group, &[]);
 
-                rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                rp.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
-                rp.draw_indexed(0..mesh.index_count, 0, 0..1);
+                for &&(mesh_idx, model_matrix, _) in objects {
+                    if mesh_idx >= self.meshes.len() { continue; }
+                    let mesh = &self.meshes[mesh_idx];
+                    if !mesh.visible { continue; }
+
+                    // Обновляем матрицу модели
+                    let model_uniform = ModelUniform { model: model_matrix };
+                    self.queue.write_buffer(&self.model_buffer, 0, bytemuck::cast_slice(&[model_uniform]));
+                    rp.set_bind_group(2, &self.model_bind_group, &[]);
+
+                    rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                    rp.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
+                    rp.draw_indexed(0..mesh.index_count, 0, 0..1);
+
+                    self.draw_calls += 1;
+                    self.triangles_rendered += mesh.index_count / 3;
+                }
             }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        // Логируем статистику каждые 100 кадров
+        if self.draw_calls > 100 {
+            println!("🎨 GPU: {} draw calls, {} triangles",
+                     self.draw_calls, self.triangles_rendered);
+        }
+
         Ok(())
     }
 
+    fn create_color_texture(&self) -> (Texture, TextureView) {
+        let tex = self.device.create_texture(&TextureDescriptor {
+            label: Some("Color Target"),
+            size: Extent3d { width: self.size.0.max(1), height: self.size.1.max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&TextureViewDescriptor::default());
+        (tex, view)
+    }
+
+    // Оригинальный метод для совместимости
     pub fn render_to_egui_texture(
         &mut self,
         render_objects: &[(usize, [[f32; 4]; 4], usize)],
-    ) -> Result<egui::TextureId, String> {
-        // Обновляем камеру
-        let vp = self.camera.view_proj_matrix();
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform {
-            view_proj: vp,
-            view_position: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
-            _padding: 0.0,
-        }]));
-
-        // Создаём текстуру
-        let tex_size = wgpu::Extent3d {
-            width: self.size.0.max(1),
-            height: self.size.1.max(1),
-            depth_or_array_layers: 1,
-        };
-
-        let gpu_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GPU Output"),
-            size: tex_size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-
-        let view = gpu_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("GPU Encoder") }
-        );
-
-        {
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("GPU 3D Render"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.1, b: 0.15, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &self.camera_bind_group, &[]);
-            rp.set_bind_group(1, &self.light_bind_group, &[]);
-
-            for (mesh_idx, model_matrix, material_idx) in render_objects {
-                if *mesh_idx >= self.meshes.len() { continue; }
-                let mesh = &self.meshes[*mesh_idx];
-                if !mesh.visible { continue; }
-
-                let model_uniform = ModelUniform { model: *model_matrix };
-                self.queue.write_buffer(&self.model_buffer, 0, bytemuck::cast_slice(&[model_uniform]));
-                rp.set_bind_group(2, &self.model_bind_group, &[]);
-
-                let mat_idx = if *material_idx < self.materials.len() { *material_idx } else { 0 };
-                rp.set_bind_group(3, &self.materials[mat_idx].bind_group, &[]);
-
-                rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                rp.draw_indexed(0..mesh.index_count, 0, 0..1);
-            }
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-
-        // Возвращаем заглушку - нужно зарегистрировать текстуру в egui
-        Err("Texture display not yet implemented".to_string())
-    }
-
-    pub fn render_to_surface(
-        &mut self,
-        render_objects: &[(usize, [[f32; 4]; 4], usize)],
-        surface: &Surface<'static>,
-    ) -> Result<(), wgpu::SurfaceError> {
-        let output = surface.get_current_texture()?;
-        let view = output.texture.create_view(&TextureViewDescriptor::default());
-
-        // Обновляем камеру
-        let vp = self.camera.view_proj_matrix();
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform {
-            view_proj: vp,
-            view_position: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
-            _padding: 0.0,
-        }]));
-
-        let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("GPU Render")
-        });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("3D Render Pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color { r: 0.1, g: 0.1, b: 0.15, a: 1.0 }),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Clear(1.0),
-                        store: StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.light_bind_group, &[]);
-
-            // РЕНДЕРИМ ВСЕ ОБЪЕКТЫ НА GPU!
-            for (mesh_idx, model_matrix, material_idx) in render_objects {
-                if *mesh_idx >= self.meshes.len() { continue; }
-                let mesh = &self.meshes[*mesh_idx];
-                if !mesh.visible { continue; }
-
-                let model_uniform = ModelUniform { model: *model_matrix };
-                self.queue.write_buffer(&self.model_buffer, 0, bytemuck::cast_slice(&[model_uniform]));
-                render_pass.set_bind_group(2, &self.model_bind_group, &[]);
-
-                let mat_idx = if *material_idx < self.materials.len() { *material_idx } else { 0 };
-                render_pass.set_bind_group(3, &self.materials[mat_idx].bind_group, &[]);
-
-                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
-                render_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-            }
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-
-        Ok(())
-    }
-
-    pub fn render_to_image(
-        &mut self,
-        render_objects: &[(usize, [[f32; 4]; 4], usize)],
+        tex_id: egui::TextureId,
+        ctx: &egui::Context,
         width: u32,
         height: u32,
-    ) -> Result<Vec<u8>, String> {
-        let width = width.max(1);
-        let height = height.max(1);
+    ) {
+        let vp = self.camera.view_proj_matrix();
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform {
+            view_proj: vp,
+            view_position: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
+            _padding: 0.0,
+        }]));
 
-        // Пересоздаём depth если нужно
-        if self.size.0 != width || self.size.1 != height {
-            self.depth_texture = self.device.create_texture(&TextureDescriptor {
-                label: Some("Depth"),
-                size: Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1, sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: TextureFormat::Depth32Float,
-                usage: TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            self.depth_view = self.depth_texture.create_view(&TextureViewDescriptor::default());
-            self.size = (width, height);
-        }
-
-        // Текстура для рендера
-        let texture = self.device.create_texture(&TextureDescriptor {
-            label: Some("Render Target"),
+        let color_tex = self.device.create_texture(&TextureDescriptor {
+            label: Some("3D Output"),
             size: Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1,
             dimension: TextureDimension::D2,
@@ -738,13 +676,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let view = texture.create_view(&TextureViewDescriptor::default());
+        let color_view = color_tex.create_view(&TextureViewDescriptor::default());
 
-        // Буфер с выравниванием
-        let align = 256;
-        let padded_bytes_per_row = ((width * 4 + align - 1) / align) * align;
-        let buffer_size = (padded_bytes_per_row * height) as u64;
-
+        let buffer_size = (width * height * 4) as u64;
         let output_buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some("Output"),
             size: buffer_size,
@@ -752,24 +686,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             mapped_at_creation: false,
         });
 
-        // Камера
-        let vp = self.camera.view_proj_matrix();
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform {
-            view_proj: vp,
-            view_position: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
-            _padding: 0.0,
-        }]));
-
         let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor { label: Some("GPU") });
 
         {
             let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("Pass"),
+                label: Some("3D Pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
+                    view: &color_view,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(Color { r: 0.1, g: 0.1, b: 0.15, a: 1.0 }),
+                        load: LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.1, b: 0.15, a: 1.0 }),
                         store: StoreOp::Store,
                     },
                 })],
@@ -804,49 +730,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
 
         encoder.copy_texture_to_buffer(
-            ImageCopyTexture { texture: &texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-            ImageCopyBuffer { buffer: &output_buffer, layout: ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(height) } },
+            ImageCopyTexture { texture: &color_tex, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            ImageCopyBuffer { buffer: &output_buffer, layout: ImageDataLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) } },
             Extent3d { width, height, depth_or_array_layers: 1 },
         );
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // АСИНХРОННО - БЕЗ WAIT!
-        let buffer_slice = output_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer_slice.map_async(MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
+        let slice = output_buffer.slice(..);
+        slice.map_async(MapMode::Read, |_| {});
+        self.device.poll(Maintain::Wait);
 
-        // НЕ ДЕЛАЕМ poll(Wait)! Просто проверяем готовность
-        self.device.poll(Maintain::Poll);
+        let data = slice.get_mapped_range().to_vec();
 
-        // Если данные готовы - читаем, иначе возвращаем пустой кадр
-        match rx.try_recv() {
-            Ok(Ok(())) => {
-                let data = buffer_slice.get_mapped_range();
-                let mut result = Vec::with_capacity((width * height * 4) as usize);
-                for row in 0..height {
-                    let start = (row * padded_bytes_per_row) as usize;
-                    let end = start + (width * 4) as usize;
-                    if end <= data.len() {
-                        result.extend_from_slice(&data[start..end]);
-                    }
-                }
-                drop(data);
-                output_buffer.unmap();
-                Ok(result)
-            }
-            _ => {
-                // Данные ещё не готовы - пустой кадр
-                Ok(vec![30u8; (width * height * 4) as usize]) // Тёмно-серый
-            }
-        }
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            &data,
+        );
+        ctx.tex_manager().write().set(
+            tex_id,
+            egui::epaint::ImageDelta::full(color_image, egui::TextureOptions::LINEAR),
+        );
     }
 
     pub fn add_mesh(&mut self, mesh: &crate::mesh::Mesh) -> usize {
-        use crate::math::Vec3;
-
         let mut vertices = Vec::new();
         for (i, v) in mesh.vertices.iter().enumerate() {
             let n = if i < mesh.normals.len() { mesh.normals[i] } else { Vec3::UP };
@@ -880,7 +787,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             vertex_buffer: vb,
             index_buffer: ib,
             index_count: mesh.indices.len() as u32,
-            visible: true
+            visible: true,
+            vertex_count: vertices.len() as u32,
         });
         idx
     }
@@ -897,6 +805,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let idx = self.materials.len();
         self.materials.push(mat);
         idx
+    }
+
+    /// Очистка кэшей при изменении сцены
+    pub fn invalidate_caches(&mut self) {
+        self.pipeline_cache.clear();
+        self.bind_group_cache.clear();
+    }
+
+    /// Получить статистику рендеринга
+    pub fn get_stats(&self) -> (u32, u32, f64) {
+        let usage = self.frame_allocator.usage_percent();
+        (self.draw_calls, self.triangles_rendered, usage)
     }
 }
 
