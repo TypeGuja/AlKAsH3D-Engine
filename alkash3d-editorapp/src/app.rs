@@ -1,35 +1,19 @@
-/// src/app.rs
-use std::time::Instant;
-use std::collections::{HashMap, VecDeque};
-use eframe::emath::{pos2, Align2, Pos2};
-use eframe::epaint::{Color32, FontId};
-use egui::{Key, PointerButton, Rect, Ui};
-// Используем super:: для доступа к родительскому модулю (lib.rs)
-use super::ui;
-use super::editor::{CommandHistory, EditorTool, Gizmo};
-use super::scene::{Scene, GameObject, MeshComponent, ObjectType};
-use super::math::Vec3;
-use super::assets::AssetLibrary;
-use super::gpu::GpuRenderer;
-use super::material::Material;
-use super::systems::{
-    CinematicManager, MaterialAccelerator, ScriptingEngine,
-    ShaderManager, SpatialAudioSystem, WorldStreamer
-};
-use super::mesh::Mesh;
-use crate::memory::{AssetCache, FrameAllocator, ObjectPool};
-
-
-pub struct PendingImport {
-    pub path: String,
-    pub receiver: std::sync::mpsc::Receiver<Result<ImportResult, String>>,
-}
-
-#[derive(Debug)]
-pub struct ImportResult {
-    pub mesh_names: Vec<String>,
-    pub meshes: Vec<(String, Mesh)>,
-}
+// src/app.rs - ПОЛНАЯ GPU ВЕРСИЯ (исправления: очередь загрузки, избежание double-borrow, оценка байтов без приватных типов)
+use eframe::egui;
+use egui::*;
+use std::collections::VecDeque;
+use std::sync::mpsc;
+use std::collections::HashMap;
+use crate::gpu::GpuRenderer;
+use crate::math::Vec3;
+use crate::scene::{Scene, GameObject, ObjectType, MeshComponent};
+use crate::editor::{Gizmo, CommandHistory, EditorTool};
+use crate::systems::*;
+use crate::assets::AssetLibrary;
+use crate::ui;
+use crate::material::Material;
+use crate::mesh::Mesh;
+use uuid::Uuid;
 
 pub struct EditorApp {
     pub scene: Scene,
@@ -76,50 +60,28 @@ pub struct EditorApp {
     pub gpu_texture_id: Option<egui::TextureId>,
     pub gpu_texture_size: (u32, u32),
 
-    // Оптимизации
-    pub frame_allocator: FrameAllocator,
-    pub object_pool: ObjectPool<CachedTransform>,
-    pub asset_cache: AssetCache<Vec<u8>>,
-    pub frame_start: Instant,
-    pub fps_counter: FPSCounter,
-    pub visible_objects: Vec<bool>,
-    pub transform_cache: HashMap<uuid::Uuid, [[f32; 4]; 4]>,
-    pub bounds_cache: HashMap<uuid::Uuid, (Vec3, f32)>,
+    // Новые поля
+    pub upload_queue: VecDeque<UploadTask>,
+    pub max_upload_bytes_per_frame: usize,
 }
 
-#[derive(Clone)]
-pub struct CachedTransform {
-    pub matrix: [[f32; 4]; 4],
-    pub position: Vec3,
-    pub bounds_center: Vec3,
-    pub bounds_radius: f32,
+pub struct PendingImport {
+    pub path: String,
+    pub receiver: mpsc::Receiver<Result<ImportResult, String>>,
 }
 
-pub struct FPSCounter {
-    frames: u32,
-    last_time: Instant,
-    current_fps: f32,
+#[derive(Debug)]
+pub struct ImportResult {
+    pub mesh_names: Vec<String>,
+    pub meshes: Vec<(String, Mesh)>,
 }
 
-impl FPSCounter {
-    pub fn new() -> Self {
-        Self {
-            frames: 0,
-            last_time: Instant::now(),
-            current_fps: 0.0,
-        }
-    }
-
-    pub fn update(&mut self) -> f32 {
-        self.frames += 1;
-        let elapsed = self.last_time.elapsed().as_secs_f32();
-        if elapsed >= 1.0 {
-            self.current_fps = self.frames as f32 / elapsed;
-            self.frames = 0;
-            self.last_time = Instant::now();
-        }
-        self.current_fps
-    }
+pub struct UploadTask {
+    pub id: Uuid,
+    pub name: String,
+    pub mesh: Mesh,
+    pub material: Material,
+    pub estimated_bytes: usize,
 }
 
 impl EditorApp {
@@ -184,45 +146,149 @@ impl EditorApp {
             gpu_initialized: false,
             gpu_texture_id: None,
             gpu_texture_size: (1720, 768),
-            frame_allocator: FrameAllocator::new(256),
-            object_pool: ObjectPool::new(
-                || CachedTransform {
-                    matrix: [[0.0; 4]; 4],
-                    position: Vec3::ZERO,
-                    bounds_center: Vec3::ZERO,
-                    bounds_radius: 0.0,
-                },
-                1024,
-                100_000,
-            ),
-            asset_cache: AssetCache::new(60.0, 1024),
-            frame_start: Instant::now(),
-            fps_counter: FPSCounter::new(),
-            visible_objects: Vec::with_capacity(10000),
-            transform_cache: HashMap::with_capacity(10000),
-            bounds_cache: HashMap::with_capacity(10000),
+
+            upload_queue: VecDeque::new(),
+            max_upload_bytes_per_frame: 4 * 1024 * 1024,
         };
 
-        app.log("🚀 Editor started with extreme performance optimizations!", Color32::GREEN);
+        app.init_gpu();
+        app.log("🚀 Editor started with GPU acceleration!", Color32::GREEN);
         app
     }
 
+    pub fn log(&mut self, msg: &str, color: Color32) {
+        self.console_messages.push_back((msg.to_string(), color));
+        if self.console_messages.len() > 100 {
+            self.console_messages.pop_front();
+        }
+        self.status_message = msg.to_string();
+    }
+
+    fn create_gpu_renderer(&self) -> Result<GpuRenderer, String> {
+        let render_state = self.wgpu_render_state.as_ref()
+            .ok_or("No wgpu render state".to_string())?;
+
+        let format = render_state.target_format;
+        let width = self.viewport_rect.width().max(1.0) as u32;
+        let height = self.viewport_rect.height().max(1.0) as u32;
+
+        // Клонируем device и queue (они не Copy, нужно явно clone)
+        let device = render_state.device.clone();
+        let queue = render_state.queue.clone();
+
+        let renderer = GpuRenderer::with_device(
+            device,
+            queue,
+            format,
+            width,
+            height,
+        );
+
+        Ok(renderer)
+    }
+
+    pub fn init_gpu(&mut self) {
+        if self.gpu_initialized {
+            return;
+        }
+
+        if self.wgpu_render_state.is_none() {
+            self.log("⚠️ No wgpu render state - using CPU fallback", Color32::YELLOW);
+            return;
+        }
+
+        self.log("🔧 GPU ready - will init on first frame", Color32::YELLOW);
+        self.gpu_initialized = true;
+    }
+
+    // Обработка очереди загрузок (без удержания mutable borrow при логировании)
+    fn process_upload_queue(&mut self, budget_bytes: usize) {
+        if self.upload_queue.is_empty() || self.gpu_renderer.is_none() {
+            return;
+        }
+
+        let mut remaining = budget_bytes;
+        let mut uploaded_count = 0usize;
+        let mut messages: Vec<String> = Vec::new();
+
+        // получаем mutable borrow единственный раз, но НЕ вызываем self.log() внутри
+        if let Some(renderer) = self.gpu_renderer.as_mut() {
+            while remaining > 0 {
+                if let Some(task) = self.upload_queue.front() {
+                    if task.estimated_bytes > remaining && remaining < 1024 {
+                        break;
+                    }
+                    let task = self.upload_queue.pop_front().unwrap();
+                    remaining = remaining.saturating_sub(task.estimated_bytes);
+
+                    let mesh_idx = renderer.add_mesh(&task.mesh);
+                    let mat_idx = renderer.add_material(task.material.color, task.material.metallic, task.material.roughness);
+                    self.gpu_mesh_map.insert(task.id, mesh_idx);
+                    self.gpu_material_map.insert(task.id, mat_idx);
+
+                    uploaded_count += 1;
+                    messages.push(format!("Uploaded '{}' -> mesh_idx={}, mat_idx={}", task.name, mesh_idx, mat_idx));
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if uploaded_count > 0 {
+            for m in messages {
+                // теперь безопасно логируем — borrow renderer уже отпущен
+                self.log(&format!("⬆️ {}", m), Color32::from_rgb(180, 255, 180));
+            }
+            self.log(&format!("Uploaded {} objects this frame (budget {:.1} KB left)", uploaded_count, remaining as f32 / 1024.0), Color32::GREEN);
+        }
+    }
+
     fn render_gpu_viewport(&mut self, ui: &mut Ui, rect: Rect) {
-        self.update_visibility_cache();
-        let render_objects = self.get_visible_gpu_objects();
+        if self.gpu_renderer.is_none() && self.gpu_initialized {
+            match self.create_gpu_renderer() {
+                Ok(mut renderer) => {
+                    // очередь заполнится позже; для существующих объектов — поставим задачи в очередь
+                    for (&id, obj) in &self.scene.objects {
+                        if let ObjectType::Mesh(ref m) = obj.object_type {
+                            let verts = m.mesh.vertices.len();
+                            let inds = m.mesh.indices.len();
+                            // estimate: 9 floats per vertex (pos+normal+color) => 9*4 = 36 bytes per vertex
+                            let bytes = verts * 36 + inds * 4;
+                            let task = UploadTask {
+                                id,
+                                name: obj.name.clone(),
+                                mesh: m.mesh.clone(),
+                                material: m.material.clone(),
+                                estimated_bytes: bytes.max(1024),
+                            };
+                            self.upload_queue.push_back(task);
+                        }
+                    }
+                    self.gpu_renderer = Some(renderer);
+                    self.log("✅ GPU renderer created! Upload queue initialized.", Color32::GREEN);
+                }
+                Err(e) => {
+                    self.log(&format!("❌ GPU init failed: {}", e), Color32::RED);
+                    return;
+                }
+            }
+        }
+
+        // обработаем очередь (budget per frame)
+        self.process_upload_queue(self.max_upload_bytes_per_frame);
+
+        let render_objects = self.get_gpu_render_objects();
 
         if render_objects.is_empty() {
-            super::ui::viewport::render_viewport(ui, self);
+            crate::ui::viewport::render_viewport(ui, self);
             return;
         }
 
         if self.gpu_texture_id.is_none() {
+            let size = [rect.width() as usize, rect.height() as usize];
             let handle = ui.ctx().load_texture(
-                "gpu3d",
-                egui::ColorImage::new(
-                    [rect.width() as usize, rect.height() as usize],
-                    Color32::BLACK
-                ),
+                "gpu-3d",
+                egui::ColorImage::new(size, Color32::BLACK),
                 egui::TextureOptions::LINEAR,
             );
             self.gpu_texture_id = Some(handle.id());
@@ -235,6 +301,7 @@ impl EditorApp {
             renderer.camera.fov = self.camera_fov.to_radians();
             renderer.camera.aspect = rect.width() / rect.height();
 
+            // Используем render_to_egui_texture вместо render_to_image
             if let Some(tex_id) = self.gpu_texture_id {
                 renderer.render_to_egui_texture(
                     &render_objects,
@@ -253,123 +320,12 @@ impl EditorApp {
             }
         }
 
-        self.render_overlay(ui, rect);
-    }
-
-    fn update_visibility_cache(&mut self) {
-        let dir = (self.camera_target - self.camera_position).normalize();
-        let right = dir.cross(self.camera_up).normalize();
-        let up = right.cross(dir).normalize();
-        let near_dist = 0.1;
-        let far_dist = 1000.0;
-        let tan_half_fov = (self.camera_fov * std::f32::consts::PI / 180.0 / 2.0).tan();
-
-        self.visible_objects.clear();
-
-        let aspect = if self.viewport_rect.width() > 0.0 {
-            self.viewport_rect.width() / self.viewport_rect.height().max(1.0)
-        } else {
-            16.0 / 9.0
-        };
-
-        let object_data: Vec<(uuid::Uuid, bool)> = self.scene.objects.iter()
-            .map(|(&id, obj)| (id, obj.visible))
-            .collect();
-
-        for (id, visible) in object_data {
-            if !visible {
-                self.visible_objects.push(false);
-                continue;
-            }
-
-            let (center, radius) = self.get_object_bounds(id);
-            let rel = center - self.camera_position;
-            let dist = rel.dot(dir);
-
-            if dist < near_dist || dist > far_dist {
-                self.visible_objects.push(false);
-                continue;
-            }
-
-            let half_width = tan_half_fov * dist;
-            let half_height = half_width / aspect;
-
-            let dx = rel.dot(right);
-            let dy = rel.dot(up);
-
-            if dx.abs() - radius > half_width || dy.abs() - radius > half_height {
-                self.visible_objects.push(false);
-            } else {
-                self.visible_objects.push(true);
-            }
-        }
-    }
-
-    fn get_object_bounds(&mut self, id: uuid::Uuid) -> (Vec3, f32) {
-        if let Some(&bounds) = self.bounds_cache.get(&id) {
-            return bounds;
-        }
-
-        if let Some(obj) = self.scene.get_object(id) {
-            let transform = self.scene.get_world_transform(id);
-            let center = transform.position;
-
-            let radius = match &obj.object_type {
-                ObjectType::Mesh(mesh_comp) => {
-                    let (min, max) = mesh_comp.mesh.bounds;
-                    let world_min = transform.transform_point(min);
-                    let world_max = transform.transform_point(max);
-                    (world_max - world_min).length() * 0.5
-                }
-                _ => 1.0,
-            };
-
-            let bounds = (center, radius);
-            self.bounds_cache.insert(id, bounds);
-            bounds
-        } else {
-            (Vec3::ZERO, 1.0)
-        }
-    }
-
-    fn get_visible_gpu_objects(&self) -> Vec<(usize, [[f32; 4]; 4], usize)> {
-        let mut objects = Vec::new();
-
-        for (i, (&id, obj)) in self.scene.objects.iter().enumerate() {
-            if i < self.visible_objects.len() && !self.visible_objects[i] {
-                continue;
-            }
-
-            if !obj.visible {
-                continue;
-            }
-
-            if let ObjectType::Mesh(_) = obj.object_type {
-                if let Some(&mesh_idx) = self.gpu_mesh_map.get(&id) {
-                    if let Some(&mat_idx) = self.gpu_material_map.get(&id) {
-                        let model_matrix = if let Some(&matrix) = self.transform_cache.get(&id) {
-                            matrix
-                        } else {
-                            let transform = self.scene.get_world_transform(id);
-                            transform.to_matrix()
-                        };
-
-                        objects.push((mesh_idx, model_matrix, mat_idx));
-                    }
-                }
-            }
-        }
-
-        objects
-    }
-
-    fn render_overlay(&self, ui: &mut Ui, rect: Rect) {
+        // overlay/grid/names (как раньше)
         if self.scene.grid_enabled {
             let gc = Color32::from_rgb(60, 60, 70);
             for i in -20..=20 {
                 for j in -20..=20 {
-                    let x = i as f32;
-                    let z = j as f32;
+                    let x = i as f32; let z = j as f32;
                     if let (Some(p1), Some(p2)) = (
                         self.world_to_screen(Vec3::new(x, 0.0, z), rect),
                         self.world_to_screen(Vec3::new(x + 1.0, 0.0, z), rect)
@@ -381,21 +337,166 @@ impl EditorApp {
         }
 
         for obj in self.scene.objects.values() {
-            if !obj.visible {
-                continue;
-            }
+            if !obj.visible { continue; }
             let world = self.scene.get_world_transform(obj.id);
-            if let Some(pos) = self.world_to_screen(
-                world.position + Vec3::new(0.0, 1.0, 0.0),
-                rect
-            ) {
+            let selected = self.scene.selected_ids.contains(&obj.id);
+            if let Some(pos) = self.world_to_screen(world.position + Vec3::new(0.0, 1.0, 0.0), rect) {
                 ui.painter().text(
-                    pos,
-                    Align2::CENTER_CENTER,
-                    &obj.name,
+                    pos, Align2::CENTER_CENTER, &obj.name,
                     FontId::proportional(10.0),
-                    Color32::WHITE,
+                    if selected { Color32::WHITE } else { Color32::LIGHT_GRAY }
                 );
+            }
+        }
+    }
+
+    fn get_gpu_render_objects(&self) -> Vec<(usize, [[f32; 4]; 4], usize)> {
+        let mut objects = Vec::new();
+
+        let forward = (self.camera_target - self.camera_position).normalize();
+
+        for (&id, obj) in &self.scene.objects {
+            if !obj.visible { continue; }
+
+            if let ObjectType::Mesh(_) = obj.object_type {
+                if let Some(&mesh_idx) = self.gpu_mesh_map.get(&id) {
+                    if let Some(&mat_idx) = self.gpu_material_map.get(&id) {
+                        let transform = self.scene.get_world_transform(id);
+                        let center = transform.position;
+                        let to_obj = center - self.camera_position;
+                        if to_obj.dot(forward) <= 0.0 {
+                            continue;
+                        }
+                        let model_matrix = transform.to_matrix();
+                        objects.push((mesh_idx, model_matrix, mat_idx));
+                    }
+                }
+            }
+        }
+
+        objects
+    }
+
+    pub fn import_model_async(&mut self, path: &str) {
+        let path_owned = path.to_string();
+        let (tx, rx) = mpsc::channel();
+        let path_clone = path_owned.clone();
+
+        let file_size = std::fs::metadata(&path_clone)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let size_mb = file_size as f64 / (1024.0 * 1024.0);
+
+        std::thread::spawn(move || {
+            let mut lib = AssetLibrary::new();
+            match lib.import_model(&path_clone) {
+                Ok(names) => {
+                    let mut meshes = Vec::new();
+                    for name in &names {
+                        if let Some(m) = lib.get_mesh(name) {
+                            meshes.push((name.clone(), m.clone()));
+                        }
+                    }
+                    let _ = tx.send(Ok(ImportResult {
+                        mesh_names: names,
+                        meshes,
+                    }));
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                }
+            }
+        });
+
+        self.pending_imports.push(PendingImport {
+            path: path_owned,
+            receiver: rx,
+        });
+
+        self.log(
+            &format!("📥 Importing: {} ({:.1} MB)...", path, size_mb),
+            Color32::YELLOW,
+        );
+    }
+
+    fn check_pending_imports(&mut self) {
+        if self.pending_imports.is_empty() {
+            return;
+        }
+
+        let mut results = Vec::new();
+        let mut completed_indices = Vec::new();
+
+        for (i, imp) in self.pending_imports.iter().enumerate() {
+            if let Ok(r) = imp.receiver.try_recv() {
+                completed_indices.push(i);
+                results.push((imp.path.clone(), r));
+            }
+        }
+
+        for &i in completed_indices.iter().rev() {
+            self.pending_imports.remove(i);
+        }
+
+        for (_path, result) in results {
+            match result {
+                Ok(ir) => {
+                    let mut total_tris = 0;
+                    for (name, mesh) in ir.meshes {
+                        let tris = mesh.indices.len() / 3;
+                        let verts = mesh.vertices.len();
+
+                        if tris == 0 {
+                            self.log(&format!("⚠️ Empty mesh: {}", name), Color32::YELLOW);
+                        }
+
+                        total_tris += tris;
+
+                        self.asset_library.meshes.insert(name.clone(), mesh.clone());
+
+                        let obj = GameObject::new(
+                            &name,
+                            ObjectType::Mesh(MeshComponent {
+                                mesh: mesh.clone(),
+                                material: Material {
+                                    name: format!("{}_mat", name),
+                                    color: [0.7, 0.7, 0.7, 1.0],
+                                    ..Default::default()
+                                },
+                                visible: true,
+                                wireframe: false,
+                                solid: true,
+                                double_sided: false,
+                            }),
+                        );
+
+                        let id = obj.id;
+                        self.scene.add_object(obj);
+
+                        // Оценка байтов: 36 bytes per vertex (pos+normal+color) + 4 bytes per index
+                        let bytes_est = verts * 36 + mesh.indices.len() * 4;
+                        let task = UploadTask {
+                            id,
+                            name: name.clone(),
+                            mesh: mesh.clone(),
+                            material: Material {
+                                name: format!("{}_mat", name),
+                                color: [0.7, 0.7, 0.7, 1.0],
+                                ..Default::default()
+                            },
+                            estimated_bytes: bytes_est.max(1024),
+                        };
+                        self.upload_queue.push_back(task);
+                    }
+                    self.log(
+                        &format!("✅ Import complete: {}K tris in {} meshes (queued)", total_tris / 1000, self.upload_queue.len()),
+                        Color32::GREEN,
+                    );
+                    self.show_import_dialog = false;
+                }
+                Err(e) => {
+                    self.log(&format!("❌ Import error: {}", e), Color32::RED);
+                }
             }
         }
     }
@@ -403,7 +504,9 @@ impl EditorApp {
     pub fn orbit_camera(&mut self, dx: f32, dy: f32) {
         let dir = self.camera_position - self.camera_target;
         let r = dir.length();
-        if r < 0.01 { return; }
+        if r < 0.01 {
+            return;
+        }
         let mut ha = dir.z.atan2(dir.x);
         let mut va = (dir.y / r).asin();
         ha += -dx * 0.01;
@@ -435,7 +538,9 @@ impl EditorApp {
         let up = right.cross(dir).normalize();
         let rel = wp - self.camera_position;
         let dist = rel.dot(dir);
-        if dist <= 0.01 { return None; }
+        if dist <= 0.01 {
+            return None;
+        }
         let tf = (self.camera_fov * std::f32::consts::PI / 180.0 / 2.0).tan();
         let scale = 1.0 / (dist * tf);
         let x = rel.dot(right) * scale;
@@ -449,7 +554,9 @@ impl EditorApp {
 
     fn handle_viewport_input(&mut self, ui: &mut Ui, rect: Rect) {
         self.viewport_rect = rect;
-        if !ui.rect_contains_pointer(rect) { return; }
+        if !ui.rect_contains_pointer(rect) {
+            return;
+        }
         let mp = ui.input(|i| i.pointer.hover_pos());
         let left = ui.input(|i| i.pointer.button_down(PointerButton::Primary));
         let right = ui.input(|i| i.pointer.button_down(PointerButton::Secondary));
@@ -473,145 +580,34 @@ impl EditorApp {
         });
 
         if left && !self.left_mouse_pressed {
-            if !shift { self.scene.selected_ids.clear(); }
+            if !shift {
+                self.scene.selected_ids.clear();
+            }
             let mut cid = None;
             let mut md = f32::MAX;
             for (&id, _) in &self.scene.objects {
                 let p = self.scene.get_world_transform(id).position;
                 let d = (p - self.camera_position).length();
-                if d < md { md = d; cid = Some(id); }
+                if d < md {
+                    md = d;
+                    cid = Some(id);
+                }
             }
-            if let Some(id) = cid { self.scene.select(id, true); }
+            if let Some(id) = cid {
+                self.scene.select(id, true);
+            }
         }
         self.left_mouse_pressed = left;
         self.last_mouse_pos = mp;
-    }
-
-    pub fn log(&mut self, msg: &str, color: Color32) {
-        self.console_messages.push_back((msg.to_string(), color));
-        if self.console_messages.len() > 100 {
-            self.console_messages.pop_front();
-        }
-        self.status_message = msg.to_string();
-    }
-
-    pub fn import_model_async(&mut self, path: &str) {
-        let path_owned = path.to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let path_clone = path_owned.clone();
-
-        let file_size = std::fs::metadata(&path_clone)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        let size_mb = file_size as f64 / (1024.0 * 1024.0);
-
-        std::thread::spawn(move || {
-            let mut lib = AssetLibrary::new();
-            match lib.import_model(&path_clone) {
-                Ok(names) => {
-                    let mut meshes = Vec::new();
-                    for name in &names {
-                        if let Some(m) = lib.get_mesh(name) {
-                            meshes.push((name.clone(), m.clone()));
-                        }
-                    }
-                    let _ = tx.send(Ok(ImportResult { mesh_names: names, meshes }));
-                }
-                Err(e) => { let _ = tx.send(Err(e)); }
-            }
-        });
-
-        self.pending_imports.push(PendingImport {
-            path: path_owned,
-            receiver: rx,
-        });
-
-        self.log(
-            &format!("📥 Importing: {} ({:.1} MB)...", path, size_mb),
-            Color32::YELLOW,
-        );
-    }
-
-    fn check_pending_imports(&mut self) {
-        if self.pending_imports.is_empty() { return; }
-
-        let mut results = Vec::new();
-        let mut completed_indices = Vec::new();
-
-        for (i, imp) in self.pending_imports.iter().enumerate() {
-            if let Ok(r) = imp.receiver.try_recv() {
-                completed_indices.push(i);
-                results.push(r);
-            }
-        }
-
-        for &i in completed_indices.iter().rev() {
-            self.pending_imports.remove(i);
-        }
-
-        for result in results {
-            match result {
-                Ok(ir) => {
-                    let mut total_tris = 0;
-                    for (name, mesh) in ir.meshes {
-                        let tris = mesh.indices.len() / 3;
-                        total_tris += tris;
-
-                        self.asset_library.meshes.insert(name.clone(), mesh.clone());
-
-                        let obj = GameObject::new(
-                            &name,
-                            ObjectType::Mesh(MeshComponent {
-                                mesh: mesh.clone(),
-                                material: Material {
-                                    name: format!("{}_mat", name),
-                                    color: [0.7, 0.7, 0.7, 1.0],
-                                    ..Default::default()
-                                },
-                                visible: true,
-                                wireframe: false,
-                                solid: true,
-                                double_sided: false,
-                            }),
-                        );
-
-                        let id = obj.id;
-                        self.scene.add_object(obj);
-
-                        if let Some(ref mut renderer) = self.gpu_renderer {
-                            let gpu_idx = renderer.add_mesh(&mesh);
-                            self.gpu_mesh_map.insert(id, gpu_idx);
-                            let mat_idx = renderer.add_material([0.7, 0.7, 0.7, 1.0], 0.0, 0.5);
-                            self.gpu_material_map.insert(id, mat_idx);
-                        }
-
-                        self.transform_cache.remove(&id);
-                        self.bounds_cache.remove(&id);
-                    }
-                    self.log(
-                        &format!("✅ Import complete: {}K tris in {} meshes",
-                                 total_tris / 1000, self.gpu_mesh_map.len()),
-                        Color32::GREEN,
-                    );
-                }
-                Err(e) => {
-                    self.log(&format!("❌ Import error: {}", e), Color32::RED);
-                }
-            }
-        }
     }
 }
 
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.frame_allocator.reset_frame();
-
         let now = ctx.input(|i| i.time);
         self.last_update_time = now;
-
         self.check_pending_imports();
         self.scene.update(0.016);
-        self.fps = self.fps_counter.update();
 
         ctx.input(|i| {
             if i.key_pressed(Key::W) { self.current_tool = EditorTool::Move; }
@@ -624,8 +620,6 @@ impl eframe::App for EditorApp {
                     for id in &self.scene.selected_ids {
                         self.gpu_mesh_map.remove(id);
                         self.gpu_material_map.remove(id);
-                        self.transform_cache.remove(id);
-                        self.bounds_cache.remove(id);
                     }
                 }
                 self.scene.delete_selected();
@@ -633,34 +627,143 @@ impl eframe::App for EditorApp {
 
             if i.key_pressed(Key::Z) && i.modifiers.ctrl {
                 self.history.undo(&mut self.scene);
-                self.transform_cache.clear();
-                self.bounds_cache.clear();
             }
             if i.key_pressed(Key::Y) && i.modifiers.ctrl {
                 self.history.redo(&mut self.scene);
-                self.transform_cache.clear();
-                self.bounds_cache.clear();
+            }
+
+            if i.key_pressed(Key::F5) {
+                self.log(
+                    &format!("GPU: {}", if self.gpu_initialized { "ACTIVE" } else { "NOT INITIALIZED" }),
+                    if self.gpu_initialized { Color32::GREEN } else { Color32::YELLOW }
+                );
             }
         });
 
-        super::ui::menu_bar::render_menu_bar(ctx, self);
-        super::ui::hierarchy::render_hierarchy(ctx, self);
-        super::ui::inspector::render_inspector(ctx, self);
-        super::ui::console::render_console(ctx, self);
-        super::ui::status_bar::render_status_bar(ctx, self);
-        super::ui::dialogs::render_dialogs(ctx, self);
+        self.frame_count += 1;
+        if now - self.last_frame_time > 1.0 {
+            self.fps = self.frame_count as f32;
+            self.frame_count = 0;
+            self.last_frame_time = now;
+        }
+
+        crate::ui::menu_bar::render_menu_bar(ctx, self);
+        crate::ui::hierarchy::render_hierarchy(ctx, self);
+        crate::ui::inspector::render_inspector(ctx, self);
+        crate::ui::console::render_console(ctx, self);
+        crate::ui::status_bar::render_status_bar(ctx, self);
+        crate::ui::dialogs::render_dialogs(ctx, self);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.available_rect_before_wrap();
             self.handle_viewport_input(ui, rect);
 
+            // Сначала даём шанс загрузить
+            self.process_upload_queue(self.max_upload_bytes_per_frame);
+
             if self.gpu_initialized && self.gpu_renderer.is_some() {
                 self.render_gpu_viewport(ui, rect);
             } else {
-                super::ui::viewport::render_viewport(ui, self);
+                crate::ui::viewport::render_viewport(ui, self);
             }
         });
 
         ctx.request_repaint();
+    }
+}
+
+// CPU helpers (unchanged)...
+fn render_bounding_box_gpu(
+    ui: &Ui,
+    mesh: &Mesh,
+    transform: &crate::math::Transform,
+    selected: bool,
+    rect: Rect,
+    app: &EditorApp,
+) {
+    use crate::math::Vec3;
+
+    let (min, max) = mesh.bounds;
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+
+    let transformed: Vec<Pos2> = corners
+        .iter()
+        .filter_map(|c| app.world_to_screen(transform.transform_point(*c), rect))
+        .collect();
+
+    if transformed.len() < 8 {
+        return;
+    }
+
+    let color = if selected {
+        Color32::from_rgb(255, 200, 100)
+    } else {
+        Color32::from_rgb(255, 255, 0)
+    };
+
+    let edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0),
+        (4, 5), (5, 6), (6, 7), (7, 4),
+        (0, 4), (1, 5), (2, 6), (3, 7),
+    ];
+
+    for &(a, b) in &edges {
+        ui.painter().line_segment([transformed[a], transformed[b]], (1.5, color));
+    }
+}
+
+fn render_mesh_cpu(
+    ui: &Ui,
+    mesh: &Mesh,
+    transform: &crate::math::Transform,
+    selected: bool,
+    rect: Rect,
+    app: &EditorApp,
+) {
+    let color = if selected {
+        Color32::from_rgb(255, 200, 100)
+    } else {
+        Color32::from_rgb(180, 180, 200)
+    };
+
+    let tc = mesh.indices.len() / 3;
+    let step = if tc > 1000 { 2 } else { 1 };
+
+    for i in (0..tc).step_by(step) {
+        let idx = i * 3;
+        if idx + 2 >= mesh.indices.len() {
+            continue;
+        }
+
+        let i0 = mesh.indices[idx] as usize;
+        let i1 = mesh.indices[idx + 1] as usize;
+        let i2 = mesh.indices[idx + 2] as usize;
+
+        if i0 >= mesh.vertices.len() || i1 >= mesh.vertices.len() || i2 >= mesh.vertices.len() {
+            continue;
+        }
+
+        let v0 = transform.transform_point(mesh.vertices[i0]);
+        let v1 = transform.transform_point(mesh.vertices[i1]);
+        let v2 = transform.transform_point(mesh.vertices[i2]);
+
+        if let (Some(p0), Some(p1), Some(p2)) = (
+            app.world_to_screen(v0, rect),
+            app.world_to_screen(v1, rect),
+            app.world_to_screen(v2, rect)
+        ) {
+            ui.painter().line_segment([p0, p1], (1.0, color));
+            ui.painter().line_segment([p1, p2], (1.0, color));
+            ui.painter().line_segment([p2, p0], (1.0, color));
+        }
     }
 }
