@@ -120,7 +120,7 @@ struct MaterialUniform {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex3D {
+pub struct Vertex3D {
     position: [f32; 3],
     normal: [f32; 3],
     color: [f32; 3],
@@ -198,12 +198,16 @@ impl LightData {
 
 impl GpuRenderer {
     pub fn with_device(
-        device: Arc<Device>,
-        queue: Arc<Queue>,
+        device: Device,
+        queue: Queue,
         format: TextureFormat,
         width: u32,
         height: u32
     ) -> Self {
+        // Оборачиваем переданные device/queue в Arc внутри конструктора,
+        // чтобы остальная часть кодовой базы могла хранить Arc<Device>/Arc<Queue>
+        let device = std::sync::Arc::new(device);
+        let queue = std::sync::Arc::new(queue);
         let shader_source = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
