@@ -246,53 +246,33 @@ impl EditorApp {
     fn render_gpu_viewport(&mut self, ui: &mut Ui, rect: Rect) {
         if self.gpu_renderer.is_none() && self.gpu_initialized {
             match self.create_gpu_renderer() {
-                Ok(mut renderer) => {
-                    // очередь заполнится позже; для существующих объектов — поставим задачи в очередь
+                Ok(renderer) => {
                     for (&id, obj) in &self.scene.objects {
                         if let ObjectType::Mesh(ref m) = obj.object_type {
-                            let verts = m.mesh.vertices.len();
-                            let inds = m.mesh.indices.len();
-                            // estimate: 9 floats per vertex (pos+normal+color) => 9*4 = 36 bytes per vertex
-                            let bytes = verts * 36 + inds * 4;
                             let task = UploadTask {
                                 id,
                                 name: obj.name.clone(),
                                 mesh: m.mesh.clone(),
                                 material: m.material.clone(),
-                                estimated_bytes: bytes.max(1024),
+                                estimated_bytes: m.mesh.vertices.len() * 36 + m.mesh.indices.len() * 4,
                             };
                             self.upload_queue.push_back(task);
                         }
                     }
                     self.gpu_renderer = Some(renderer);
-                    self.log("✅ GPU renderer created! Upload queue initialized.", Color32::GREEN);
+                    self.log("✅ GPU renderer created!", Color32::GREEN);
                 }
                 Err(e) => {
                     self.log(&format!("❌ GPU init failed: {}", e), Color32::RED);
+                    crate::ui::viewport::render_viewport(ui, self);
                     return;
                 }
             }
         }
 
-        // обработаем очередь (budget per frame)
         self.process_upload_queue(self.max_upload_bytes_per_frame);
 
         let render_objects = self.get_gpu_render_objects();
-
-        if render_objects.is_empty() {
-            crate::ui::viewport::render_viewport(ui, self);
-            return;
-        }
-
-        if self.gpu_texture_id.is_none() {
-            let size = [rect.width() as usize, rect.height() as usize];
-            let handle = ui.ctx().load_texture(
-                "gpu-3d",
-                egui::ColorImage::new(size, Color32::BLACK),
-                egui::TextureOptions::LINEAR,
-            );
-            self.gpu_texture_id = Some(handle.id());
-        }
 
         if let Some(ref mut renderer) = self.gpu_renderer {
             renderer.camera.position = self.camera_position;
@@ -301,41 +281,38 @@ impl EditorApp {
             renderer.camera.fov = self.camera_fov.to_radians();
             renderer.camera.aspect = rect.width() / rect.height();
 
-            // Используем render_to_egui_texture вместо render_to_image
-            if let Some(tex_id) = self.gpu_texture_id {
-                renderer.render_to_egui_texture(
-                    &render_objects,
-                    tex_id,
-                    ui.ctx(),
-                    rect.width() as u32,
-                    rect.height() as u32,
-                );
+            let width = rect.width() as u32;
+            let height = rect.height() as u32;
 
+            // Рендерим сцену в offscreen текстуру
+            renderer.render(&render_objects, width, height);
+
+            // Пытаемся обновить egui текстуру (если готов readback)
+            renderer.try_update_egui_texture(ui.ctx());
+
+            // Отображаем текстуру
+            if let Some(tex_id) = renderer.get_egui_texture() {
                 ui.painter().image(
                     tex_id,
                     rect,
                     Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+            } else {
+                // Первый кадр — показываем фон
+                let bg = Color32::from_rgb(
+                    (self.scene.ambient_color[0] * 255.0) as u8,
+                    (self.scene.ambient_color[1] * 255.0) as u8,
+                    (self.scene.ambient_color[2] * 255.0) as u8,
+                );
+                ui.painter().rect_filled(rect, 0.0, bg);
             }
+        } else {
+            crate::ui::viewport::render_viewport(ui, self);
+            return;
         }
 
-        // overlay/grid/names (как раньше)
-        if self.scene.grid_enabled {
-            let gc = Color32::from_rgb(60, 60, 70);
-            for i in -20..=20 {
-                for j in -20..=20 {
-                    let x = i as f32; let z = j as f32;
-                    if let (Some(p1), Some(p2)) = (
-                        self.world_to_screen(Vec3::new(x, 0.0, z), rect),
-                        self.world_to_screen(Vec3::new(x + 1.0, 0.0, z), rect)
-                    ) {
-                        ui.painter().line_segment([p1, p2], (1.0, gc));
-                    }
-                }
-            }
-        }
-
+        // Оверлей
         for obj in self.scene.objects.values() {
             if !obj.visible { continue; }
             let world = self.scene.get_world_transform(obj.id);
@@ -344,7 +321,7 @@ impl EditorApp {
                 ui.painter().text(
                     pos, Align2::CENTER_CENTER, &obj.name,
                     FontId::proportional(10.0),
-                    if selected { Color32::WHITE } else { Color32::LIGHT_GRAY }
+                    if selected { Color32::WHITE } else { Color32::LIGHT_GRAY },
                 );
             }
         }
