@@ -1,13 +1,12 @@
 // src/lib.rs
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 pub mod math;
 pub mod world;
 pub mod body;
 pub mod collision;
 pub mod solver;
-
-// Убираем эту строку (или комментируем)
-// #[cfg(feature = "fortran")]
-// mod kernels;
 
 pub use math::*;
 pub use world::*;

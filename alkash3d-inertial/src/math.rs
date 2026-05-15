@@ -9,6 +9,28 @@ pub struct Transform {
     pub scale: Vector3,
 }
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+#[inline(always)]
+pub fn fast_sqrt(x: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let _mm = _mm_set_ss(x);
+        let sqrt_mm = _mm_sqrt_ss(_mm);
+        _mm_cvtss_f32(sqrt_mm)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        x.sqrt()
+    }
+}
+
+#[inline(always)]
+pub fn fast_dot(a: Vector3, b: Vector3) -> f32 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
 impl Transform {
     pub fn new(position: Vector3, rotation: na::UnitQuaternion<f32>, scale: Vector3) -> Self {
         Self { position, rotation, scale }
