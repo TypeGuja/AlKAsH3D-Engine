@@ -16,7 +16,6 @@ module rigid_body_mod
         integer(c_int) :: is_asleep
     end type rigid_body_c
 
-    ! ОПРЕДЕЛЯЕМ ТИП ЗДЕСЬ (до использования)
     type, bind(c) :: contact_c
         integer(c_int) :: body_a
         integer(c_int) :: body_b
@@ -25,31 +24,35 @@ module rigid_body_mod
         real(c_float) :: point(3)
     end type contact_c
 
+    type, bind(c) :: constraint_c
+        integer(c_int) :: body_a
+        integer(c_int) :: body_b
+        real(c_float) :: anchor_a(3)
+        real(c_float) :: anchor_b(3)
+        real(c_float) :: bias
+        real(c_float) :: accumulated_impulse
+    end type constraint_c
+
 contains
     subroutine integrate_bodies(bodies, n, dt) bind(c, name="integrate_bodies")
         type(rigid_body_c), intent(inout) :: bodies(n)
         integer(c_int), intent(in) :: n
         real(c_float), intent(in) :: dt
-
         integer :: i
 
-        !$omp parallel do simd schedule(static)
         do i = 1, n
             if (bodies(i)%is_asleep == 0 .and. bodies(i)%is_static == 0) then
                 bodies(i)%velocity = bodies(i)%velocity + bodies(i)%acceleration * dt
                 bodies(i)%position = bodies(i)%position + bodies(i)%velocity * dt
             end if
         end do
-        !$omp end parallel do simd
     end subroutine integrate_bodies
 
     subroutine solve_contacts(bodies, contacts, n_contacts, iterations) &
             bind(c, name="solve_contacts")
-
         type(rigid_body_c), intent(inout) :: bodies(:)
         type(contact_c), intent(inout) :: contacts(:)
         integer(c_int), intent(in) :: n_contacts, iterations
-
         integer :: iter, i
 
         do iter = 1, iterations
@@ -66,7 +69,6 @@ contains
         type(rigid_body_c), intent(inout) :: a, b
         real(c_float), intent(in) :: normal(3)
         real(c_float), intent(in) :: penetration
-
         real(c_float) :: rel_vel(3), vel_along, impulse, restitution, inv_mass_sum
         real(c_float) :: impulse_vec(3), correction(3)
 
@@ -77,16 +79,34 @@ contains
             restitution = (a%restitution + b%restitution) * 0.5
             impulse = -(1.0 + restitution) * vel_along
             inv_mass_sum = a%inv_mass + b%inv_mass
-            impulse = impulse / inv_mass_sum
-
-            impulse_vec = normal * impulse
-
-            a%velocity = a%velocity - impulse_vec * a%inv_mass
-            b%velocity = b%velocity + impulse_vec * b%inv_mass
+            if (inv_mass_sum > 0.0) then
+                impulse = impulse / inv_mass_sum
+                impulse_vec = normal * impulse
+                a%velocity = a%velocity - impulse_vec * a%inv_mass
+                b%velocity = b%velocity + impulse_vec * b%inv_mass
+            end if
         end if
 
         correction = normal * (penetration * 0.5)
         a%position = a%position - correction
         b%position = b%position + correction
     end subroutine resolve_contact
+
+    subroutine update_aabb(bodies, n, min_bounds, max_bounds) bind(c, name="update_aabb")
+        type(rigid_body_c), intent(in) :: bodies(n)
+        integer(c_int), intent(in) :: n
+        real(c_float), intent(out) :: min_bounds(n, 3)
+        real(c_float), intent(out) :: max_bounds(n, 3)
+        integer :: i
+        real(c_float) :: radius = 0.5
+
+        do i = 1, n
+            min_bounds(i, 1) = bodies(i)%position(1) - radius
+            min_bounds(i, 2) = bodies(i)%position(2) - radius
+            min_bounds(i, 3) = bodies(i)%position(3) - radius
+            max_bounds(i, 1) = bodies(i)%position(1) + radius
+            max_bounds(i, 2) = bodies(i)%position(2) + radius
+            max_bounds(i, 3) = bodies(i)%position(3) + radius
+        end do
+    end subroutine update_aabb
 end module rigid_body_mod
