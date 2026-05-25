@@ -19,6 +19,8 @@ pub struct RigidBody {
     pub torque_accumulator: Vector3,
     pub restitution: f32,
     pub friction: f32,
+    pub linear_damping: f32,      // Добавлено
+    pub angular_damping: f32,     // Добавлено
     pub is_static: bool,
     pub is_kinematic: bool,
     pub is_asleep: bool,
@@ -47,6 +49,8 @@ impl RigidBody {
             torque_accumulator: Vector3::zeros(),
             restitution: 0.5,
             friction: 0.5,
+            linear_damping: 0.01,      // Добавлено
+            angular_damping: 0.01,     // Добавлено
             is_static: mass <= 0.0,
             is_kinematic: false,
             is_asleep: false,
@@ -67,11 +71,9 @@ impl RigidBody {
         self.force_accumulator += force;
     }
 
-    pub fn apply_impulse(&mut self, impulse: Vector3, point: Vector3) {
+    pub fn apply_impulse(&mut self, impulse: Vector3, _point: Vector3) {
         if self.is_static { return; }
         self.velocity += impulse * self.inv_mass;
-        // Упрощённо: без тензора инерции для начала
-        // self.angular_velocity += self.inv_inertia_tensor * (point - self.position).cross(&impulse);
     }
 
     pub fn get_transform(&self) -> Transform {

@@ -1,4 +1,5 @@
-//! Система коллизий
+// src/collision.rs - оптимизированная версия
+#![allow(dead_code)]
 
 use crate::{Vector3, RigidBody};
 
@@ -22,6 +23,7 @@ pub struct Contact {
 }
 
 impl CollisionManifold {
+    #[inline(always)]
     pub fn new() -> Self {
         Self {
             body_a: 0,
@@ -34,135 +36,109 @@ impl CollisionManifold {
     }
 }
 
-/// Детектор коллизий
-pub struct CollisionDetector {
-    /// GJK кэш для оптимизации
-    gjk_cache: Vec<GJKCache>,
-}
-
-struct GJKCache {
-    simplex: Vec<Vector3>,
-    last_support: Vector3,
-}
+pub struct CollisionDetector;
 
 impl CollisionDetector {
+    #[inline(always)]
     pub fn new() -> Self {
-        Self {
-            gjk_cache: Vec::new(),
-        }
+        Self
     }
 
-    /// Проверка коллизии между двумя сферами (быстро)
-    pub fn sphere_sphere(
+    /// Быстрая проверка коллизии сфер (без квадратного корня если возможно)
+    #[inline(always)]
+    pub fn sphere_sphere_fast(
         pos_a: Vector3, radius_a: f32,
         pos_b: Vector3, radius_b: f32,
     ) -> Option<CollisionManifold> {
-        let delta = pos_b - pos_a;
-        let distance = delta.magnitude();
+        let dx = pos_b.x - pos_a.x;
+        let dy = pos_b.y - pos_a.y;
+        let dz = pos_b.z - pos_a.z;
+        let dist_sq = dx * dx + dy * dy + dz * dz;
         let radius_sum = radius_a + radius_b;
 
-        if distance < radius_sum {
-            let normal = if distance > 0.0 {
-                delta / distance
-            } else {
-                Vector3::new(1.0, 0.0, 0.0)
-            };
-
+        if dist_sq < radius_sum * radius_sum {
+            let distance = if dist_sq > 0.0 { dist_sq.sqrt() } else { 0.001 };
+            let inv_dist = 1.0 / distance;
+            let nx = dx * inv_dist;
+            let ny = dy * inv_dist;
+            let nz = dz * inv_dist;
             let penetration = radius_sum - distance;
 
-            let mut manifold = CollisionManifold::new();
-            manifold.normal = normal;
-            manifold.penetration = penetration;
-            manifold.contact_points[0] = pos_a + normal * radius_a;
-            manifold.contact_count = 1;
-
-            Some(manifold)
+            Some(CollisionManifold {
+                body_a: 0,
+                body_b: 0,
+                normal: Vector3::new(nx, ny, nz),
+                penetration,
+                contact_points: [Vector3::new(pos_a.x + nx * radius_a, pos_a.y + ny * radius_a, pos_a.z + nz * radius_a), Vector3::zeros(), Vector3::zeros(), Vector3::zeros()],
+                contact_count: 1,
+            })
         } else {
             None
         }
     }
 
-    /// Проверка коллизии сфера-бокс
+    #[inline(always)]
+    pub fn sphere_sphere_with_radii(
+        body_a: &RigidBody, radius_a: f32,
+        body_b: &RigidBody, radius_b: f32,
+    ) -> Option<Contact> {
+        let dx = body_b.position.x - body_a.position.x;
+        let dy = body_b.position.y - body_a.position.y;
+        let dz = body_b.position.z - body_a.position.z;
+        let dist_sq = dx * dx + dy * dy + dz * dz;
+        let radius_sum = radius_a + radius_b;
+
+        if dist_sq < radius_sum * radius_sum {
+            let distance = if dist_sq > 0.0 { dist_sq.sqrt() } else { 0.001 };
+            let inv_dist = 1.0 / distance;
+            let nx = dx * inv_dist;
+            let ny = dy * inv_dist;
+            let nz = dz * inv_dist;
+            let penetration = radius_sum - distance;
+
+            Some(Contact {
+                body_a: body_a.id,
+                body_b: body_b.id,
+                point: Vector3::new(body_a.position.x + nx * radius_a, body_a.position.y + ny * radius_a, body_a.position.z + nz * radius_a),
+                normal: Vector3::new(nx, ny, nz),
+                penetration,
+            })
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
     pub fn sphere_aabb(
         sphere_pos: Vector3, sphere_radius: f32,
         box_min: Vector3, box_max: Vector3,
     ) -> Option<CollisionManifold> {
-        // Находим ближайшую точку на AABB к сфере
-        let closest = Vector3::new(
-            sphere_pos.x.max(box_min.x).min(box_max.x),
-            sphere_pos.y.max(box_min.y).min(box_max.y),
-            sphere_pos.z.max(box_min.z).min(box_max.z),
-        );
+        let closest_x = sphere_pos.x.max(box_min.x).min(box_max.x);
+        let closest_y = sphere_pos.y.max(box_min.y).min(box_max.y);
+        let closest_z = sphere_pos.z.max(box_min.z).min(box_max.z);
 
-        let delta = closest - sphere_pos;
-        let distance_sq = delta.magnitude_squared();
+        let dx = closest_x - sphere_pos.x;
+        let dy = closest_y - sphere_pos.y;
+        let dz = closest_z - sphere_pos.z;
+        let dist_sq = dx * dx + dy * dy + dz * dz;
 
-        if distance_sq < sphere_radius * sphere_radius {
-            let distance = distance_sq.sqrt();
-            let normal = if distance > 0.0 {
-                delta / distance
-            } else {
-                Vector3::new(1.0, 0.0, 0.0)
-            };
+        if dist_sq < sphere_radius * sphere_radius {
+            let distance = dist_sq.sqrt();
+            let inv_dist = 1.0 / distance;
+            let nx = dx * inv_dist;
+            let ny = dy * inv_dist;
+            let nz = dz * inv_dist;
 
-            let mut manifold = CollisionManifold::new();
-            manifold.normal = normal;
-            manifold.penetration = sphere_radius - distance;
-            manifold.contact_points[0] = closest;
-            manifold.contact_count = 1;
-
-            Some(manifold)
+            Some(CollisionManifold {
+                body_a: 0,
+                body_b: 0,
+                normal: Vector3::new(nx, ny, nz),
+                penetration: sphere_radius - distance,
+                contact_points: [Vector3::new(closest_x, closest_y, closest_z), Vector3::zeros(), Vector3::zeros(), Vector3::zeros()],
+                contact_count: 1,
+            })
         } else {
             None
         }
-    }
-
-    /// Проверка AABB-AABB (быстро)
-    pub fn aabb_aabb(
-        min_a: Vector3, max_a: Vector3,
-        min_b: Vector3, max_b: Vector3,
-    ) -> Option<CollisionManifold> {
-        if max_a.x < min_b.x || max_b.x < min_a.x { return None; }
-        if max_a.y < min_b.y || max_b.y < min_a.y { return None; }
-        if max_a.z < min_b.z || max_b.z < min_a.z { return None; }
-
-        // Вычисляем глубину проникновения по каждой оси
-        let dx = (max_a.x - min_b.x).min(max_b.x - min_a.x);
-        let dy = (max_a.y - min_b.y).min(max_b.y - min_a.y);
-        let dz = (max_a.z - min_b.z).min(max_b.z - min_a.z);
-
-        // Находим минимальную ось для нормали
-        let mut manifold = CollisionManifold::new();
-
-        if dx < dy && dx < dz {
-            let center_a = (min_a.x + max_a.x) * 0.5;
-            let center_b = (min_b.x + max_b.x) * 0.5;
-            manifold.normal = if center_a < center_b {
-                Vector3::new(1.0, 0.0, 0.0)
-            } else {
-                Vector3::new(-1.0, 0.0, 0.0)
-            };
-            manifold.penetration = dx;
-        } else if dy < dz {
-            let center_a = (min_a.y + max_a.y) * 0.5;
-            let center_b = (min_b.y + max_b.y) * 0.5;
-            manifold.normal = if center_a < center_b {
-                Vector3::new(0.0, 1.0, 0.0)
-            } else {
-                Vector3::new(0.0, -1.0, 0.0)
-            };
-            manifold.penetration = dy;
-        } else {
-            let center_a = (min_a.z + max_a.z) * 0.5;
-            let center_b = (min_b.z + max_b.z) * 0.5;
-            manifold.normal = if center_a < center_b {
-                Vector3::new(0.0, 0.0, 1.0)
-            } else {
-                Vector3::new(0.0, 0.0, -1.0)
-            };
-            manifold.penetration = dz;
-        }
-
-        Some(manifold)
     }
 }
