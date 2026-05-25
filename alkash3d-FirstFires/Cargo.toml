@@ -1,0 +1,22 @@
+[package]
+name = "alkash3d-firstfires"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
+
+[dependencies]
+bytemuck = { version = "1.14", features = ["derive"] }
+nalgebra = "0.32"
+rayon = "1.8"
+parking_lot = "0.12"
+
+# windows полностью убран - не нужен для CPU culling
+
+[build-dependencies]
+anyhow = "1.0"
