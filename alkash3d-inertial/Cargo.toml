@@ -3,28 +3,24 @@ name = "alkash3d-inertial"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-crate-type = ["rlib", "staticlib"]
-
 [dependencies]
 nalgebra = "0.32"
-rayon = "1.8"
+rayon = "1.12"
+parking_lot = "0.12"
+
+[features]
+default = []
+fortran = []
 
 [build-dependencies]
-cc = "1.0"
-which = "8.0.2"
+cc = "1.2"
+which = "8.0"
+
+[lib]
+name = "alkash3d_inertial"
+path = "src/lib.rs"
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = true
-debug = false
-overflow-checks = false
-incremental = false
-
-[profile.bench]
-opt-level = 3
-lto = "fat"
+lto = true
 codegen-units = 1
