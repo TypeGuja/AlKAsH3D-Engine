@@ -22,6 +22,8 @@ mod alps_format;
 mod alsnd_format;
 mod alscript_format;
 mod aluv_format;
+mod scheduler;
+mod engine;
 
 pub use device::*;
 pub use queue::*;
@@ -44,6 +46,8 @@ pub use alps_format::*;
 pub use alsnd_format::*;
 pub use alscript_format::*;
 pub use aluv_format::*;
+pub use scheduler::*;
+pub use engine::*;
 
 use std::sync::{LazyLock, Mutex};
 
@@ -51,7 +55,7 @@ use std::sync::{LazyLock, Mutex};
 pub static STATE: LazyLock<Mutex<GlobalState>> =
     LazyLock::new(|| Mutex::new(GlobalState::new()));
 
-#[derive(Clone)]
+// GlobalState больше не содержит плагины (они вынесены в engine)
 pub struct GlobalState {
     pub device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device>,
     pub command_queue: Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandQueue>,
@@ -70,6 +74,7 @@ pub struct GlobalState {
     pub current_pso: Option<windows::Win32::Graphics::Direct3D12::ID3D12PipelineState>,
     pub bound_vertex_buffers: Vec<u64>,
     pub bound_index_buffer: Option<u64>,
+    pub scheduler: Option<EngineScheduler>,
 }
 
 impl GlobalState {
@@ -92,6 +97,7 @@ impl GlobalState {
             current_pso: None,
             bound_vertex_buffers: Vec::new(),
             bound_index_buffer: None,
+            scheduler: None,
         }
     }
 
@@ -104,11 +110,4 @@ impl GlobalState {
 // Версия движка
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// Инициализация логгера
-#[cfg(feature = "logging")]
-pub fn init_logger() {
-    env_logger::init();
-}
-
-#[cfg(not(feature = "logging"))]
 pub fn init_logger() {}

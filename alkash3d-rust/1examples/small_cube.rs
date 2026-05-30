@@ -1,4 +1,4 @@
-// examples/walking_world.rs - 3D мир с возможностью ходить
+// 1examples/walking_world.rs - 3D мир с возможностью ходить
 
 use alkash3d_rs::*;
 use std::ffi::c_void;

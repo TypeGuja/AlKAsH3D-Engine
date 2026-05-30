@@ -1,4 +1,4 @@
-// examples/test_altex_load.rs - Финальная рабочая версия
+// 1examples/test_altex_load.rs - Финальная рабочая версия
 use alkash3d_rs::*;
 use std::thread;
 use std::time::Duration;

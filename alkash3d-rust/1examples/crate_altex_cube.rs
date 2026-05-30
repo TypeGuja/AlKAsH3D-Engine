@@ -1,4 +1,4 @@
-// examples/create_cube_altex_fixed.rs
+// 1examples/create_cube_altex_fixed.rs
 use alkash3d_rs::*;
 
 fn main() {
