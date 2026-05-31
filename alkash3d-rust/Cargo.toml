@@ -20,7 +20,8 @@ libloading = "0.9.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 num_cpus = "1.16"
 crossbeam-channel = "0.5"
-rayon = "0.5"
+rayon = "1.8"
+sysinfo = "0.39.3"
 
 [profile.release]
 opt-level = 3
