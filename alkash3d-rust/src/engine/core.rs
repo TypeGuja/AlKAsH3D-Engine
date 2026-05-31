@@ -110,6 +110,13 @@ impl AlkashEngine {
         }
     }
 
+    pub fn add_physics_body(&self, body: PhysicsBody) -> Option<i32> {
+        let api = self.plugin_manager.get_physics_api()?;
+        let instance = self.plugin_manager.get_physics_instance()?;
+        let id = (api.add_body)(instance, &body);
+        if id >= 0 { Some(id) } else { None }
+    }
+
     pub fn add_sphere_body(&mut self, x: f32, y: f32, z: f32, mass: f32) -> Option<i32> {
         let body = FortranRigidBody {
             position: [x, y, z],

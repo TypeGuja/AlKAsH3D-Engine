@@ -23,7 +23,7 @@ mod alsnd_format;
 mod alscript_format;
 mod aluv_format;
 mod scheduler;
-mod engine;
+pub mod engine;
 
 pub use device::*;
 pub use queue::*;

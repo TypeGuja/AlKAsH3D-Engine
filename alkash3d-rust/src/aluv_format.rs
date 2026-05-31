@@ -142,11 +142,9 @@ impl AluvFile {
     pub fn create_opening_cinematic() -> Self {
         let mut aluv = AluvFile::new();
 
-        // Заранее получаем все нужные ID строк
         let seq_name_id = aluv.add_string("Opening_Cinematic");
         let subtitle_text_id = aluv.add_string("В мире, где скорость решает всё...");
 
-        // Создаём камеру
         let cam_track = AnimationTrack {
             target_type: 0,
             target_id: 0,
@@ -158,7 +156,6 @@ impl AluvFile {
         let track_start = aluv.tracks.len() as u32;
         aluv.tracks.push(cam_track);
 
-        // Добавляем ключевые кадры
         aluv.keyframes.extend_from_slice(&[
             KeyframeBezier {
                 time_ms: 0,
@@ -186,11 +183,10 @@ impl AluvFile {
             },
         ]);
 
-        // Теперь используем заранее полученный ID
         aluv.subtitles.push(Subtitle {
             time_start_ms: 1000,
             time_end_ms: 5000,
-            text_id: subtitle_text_id,  // Используем готовый ID
+            text_id: subtitle_text_id,
             speaker_id: 0xFFFFFFFF,
             position: [0.5, 0.9],
             color: [1.0, 1.0, 1.0, 1.0],
@@ -198,9 +194,8 @@ impl AluvFile {
             alignment: 1,
         });
 
-        // Собираем секвенцию
         aluv.sequences.push(Sequence {
-            name_id: seq_name_id,  // Используем готовый ID
+            name_id: seq_name_id,
             duration_ms: 8000,
             fps: 30.0,
             flags: 0,
@@ -222,9 +217,22 @@ impl AluvFile {
         aluv
     }
 
-    fn add_string(&mut self, s: &str) -> u32 {
+    pub fn add_string(&mut self, s: &str) -> u32 {
         let id = self.strings.len() as u32;
         self.strings.push(s.to_string());
         id
+    }
+
+    pub fn get_string(&self, id: u32) -> &str {
+        &self.strings[id as usize]
+    }
+
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(self.header.magic.as_slice())?;
+        file.write_all(&self.header.version.to_le_bytes())?;
+        file.write_all(&self.header.sequence_count.to_le_bytes())?;
+        file.write_all(&self.header.total_duration_ms.to_le_bytes())?;
+        Ok(())
     }
 }
