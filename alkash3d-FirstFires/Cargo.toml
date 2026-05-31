@@ -16,7 +16,5 @@ nalgebra = "0.32"
 rayon = "1.8"
 parking_lot = "0.12"
 
-# windows полностью убран - не нужен для CPU culling
-
 [build-dependencies]
 anyhow = "1.0"
