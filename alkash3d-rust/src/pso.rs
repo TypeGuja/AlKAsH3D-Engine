@@ -301,6 +301,7 @@ unsafe fn create_pso_internal(
         NodeMask: 0,
         CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
         Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
+        CS: Default::default(),
     };
 
     match device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&pso_desc) {

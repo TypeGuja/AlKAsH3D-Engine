@@ -229,7 +229,7 @@ pub extern "C" fn clear_depth_stencil(dsv_cpu_handle: u64, depth: f32, stencil: 
     with_command_list(|list| {
         let dsv = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(dsv_cpu_handle) };
         unsafe {
-            list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, depth, stencil, &[]);
+            list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, depth, stencil, Some(&[]));
         }
     }).is_some()
 }

@@ -138,6 +138,53 @@ pub extern "C" fn update_buffer(
 }
 
 #[no_mangle]
+pub extern "C" fn update_buffer_persistent(
+    buffer_ptr: *mut c_void,
+    data_ptr: *const c_void,
+    size: usize,
+) -> bool {
+    unsafe {
+        if buffer_ptr.is_null() || data_ptr.is_null() || size == 0 {
+            return false;
+        }
+
+        let buffer: ID3D12Resource = std::mem::transmute_copy(&buffer_ptr);
+
+        // Для UPLOAD буферов используем persistent mapping
+        let mut mapped: *mut c_void = std::ptr::null_mut();
+
+        // Мапим без read range
+        match buffer.Map(0, None, Some(&mut mapped)) {
+            Ok(_) => {
+                if mapped.is_null() {
+                    buffer.Unmap(0, None);
+                    std::mem::forget(buffer);
+                    return false;
+                }
+
+                // Копируем данные
+                std::ptr::copy_nonoverlapping(data_ptr as *const u8, mapped as *mut u8, size);
+
+                // Unmap с записью всех изменений
+                let write_range = D3D12_RANGE {
+                    Begin: 0,
+                    End: size,
+                };
+                buffer.Unmap(0, Some(&write_range));
+
+                std::mem::forget(buffer);
+                true
+            }
+            Err(e) => {
+                debug_println!("[update_buffer_persistent] Map failed: {:?}", e);
+                std::mem::forget(buffer);
+                false
+            }
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn update_subresource(
     buffer_ptr: *mut c_void,
     data_ptr: *const c_void,
