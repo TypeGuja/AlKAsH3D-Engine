@@ -1,4 +1,4 @@
-//! Командные списки и синхронизация
+// src/command.rs - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
 use std::cell::RefCell;
@@ -163,8 +163,9 @@ unsafe fn create_new_allocator(device: &ID3D12Device, idx: usize) -> Option<ID3D
     }
 }
 
+// ГЛАВНОЕ ИСПРАВЛЕНИЕ: begin_frame с PSO
 #[no_mangle]
-pub extern "C" fn begin_frame() -> *mut c_void {
+pub extern "C" fn begin_frame_ex(pso_ptr: *mut c_void) -> *mut c_void {
     let frame_id = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
     let allocator_idx = (frame_id % ALLOCATOR_POOL_SIZE as u64) as usize;
 
@@ -174,7 +175,6 @@ pub extern "C" fn begin_frame() -> *mut c_void {
         wait_for_allocator(allocator_idx);
     }
 
-    // Получаем device и allocator
     let (device, allocator) = {
         let state = match STATE.lock() {
             Ok(s) => s,
@@ -190,18 +190,23 @@ pub extern "C" fn begin_frame() -> *mut c_void {
             match &state.command_allocators[allocator_idx] {
                 Some(a) => a.clone(),
                 None => {
-                    drop(state);
-                    match unsafe { create_new_allocator(&device, allocator_idx) } {
-                        Some(a) => a,
-                        None => return std::ptr::null_mut(),
+                    drop(state);  // drop ВНЕ unsafe блока
+                    // Теперь unsafe только для вызова create_new_allocator
+                    unsafe {
+                        match create_new_allocator(&device, allocator_idx) {
+                            Some(a) => a,
+                            None => return std::ptr::null_mut(),
+                        }
                     }
                 }
             }
         } else {
             drop(state);
-            match unsafe { create_new_allocator(&device, allocator_idx) } {
-                Some(a) => a,
-                None => return std::ptr::null_mut(),
+            unsafe {
+                match create_new_allocator(&device, allocator_idx) {
+                    Some(a) => a,
+                    None => return std::ptr::null_mut(),
+                }
             }
         };
 
@@ -211,11 +216,17 @@ pub extern "C" fn begin_frame() -> *mut c_void {
     unsafe {
         let _ = allocator.Reset();
 
+        let pso_option: Option<ID3D12PipelineState> = if pso_ptr.is_null() {
+            None
+        } else {
+            Some(std::mem::transmute_copy(&pso_ptr))
+        };
+
         match device.CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
             0,
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             &allocator,
-            None,
+            pso_option.as_ref(),
         ) {
             Ok(list) => {
                 let list_ptr = list.as_raw();
@@ -225,7 +236,7 @@ pub extern "C" fn begin_frame() -> *mut c_void {
                         Ok(s) => s,
                         Err(_) => return std::ptr::null_mut(),
                     };
-                    state.command_list = Some(list);  // НЕ клонируем!
+                    state.command_list = Some(list);
                     state.command_list_open = true;
                     state.reset_bindings();
                 }
@@ -241,6 +252,13 @@ pub extern "C" fn begin_frame() -> *mut c_void {
     }
 }
 
+// Для обратной совместимости
+#[no_mangle]
+pub extern "C" fn begin_frame() -> *mut c_void {
+    begin_frame_ex(std::ptr::null_mut())
+}
+
+// ИСПРАВЛЕННЫЙ end_frame с правильной синхронизацией
 #[no_mangle]
 pub extern "C" fn end_frame() -> bool {
     let frame_id = FRAME_COUNTER.load(Ordering::Relaxed) - 1;
@@ -248,7 +266,6 @@ pub extern "C" fn end_frame() -> bool {
 
     debug_println!("\n[end_frame] Frame {} (allocator {}) START", frame_id, allocator_idx);
 
-    // Забираем command list из состояния
     let (queue, list, fence) = {
         debug_println!("[end_frame] Locking STATE...");
         let mut state = match STATE.lock() {
@@ -273,7 +290,6 @@ pub extern "C" fn end_frame() -> bool {
             }
         };
 
-        // Забираем command list
         let list = match state.command_list.take() {
             Some(l) => l,
             None => {
@@ -295,7 +311,6 @@ pub extern "C" fn end_frame() -> bool {
         (queue, list, fence)
     };
 
-    // Оборачиваем в ManuallyDrop чтобы предотвратить автоматический дроп
     let list = ManuallyDrop::new(list);
 
     unsafe {
@@ -313,17 +328,17 @@ pub extern "C" fn end_frame() -> bool {
         queue.ExecuteCommandLists(&cmd_lists);
         debug_println!("[end_frame] Command list executed");
 
+        // ИСПРАВЛЕНИЕ: используем правильный fence value для каждого allocator
         let next_fence_value = {
-            debug_println!("[end_frame] Updating fence value...");
             let mut state = match STATE.lock() {
                 Ok(s) => s,
                 Err(_) => return false,
             };
-            let val = state.fence_values[0] + 1;
-            state.fence_values[0] = val;
+            let val = state.fence_values[allocator_idx] + 1;
+            state.fence_values[allocator_idx] = val;
             val
         };
-        debug_println!("[end_frame] Fence value: {}", next_fence_value);
+        debug_println!("[end_frame] Fence value for allocator {}: {}", allocator_idx, next_fence_value);
 
         debug_println!("[end_frame] Signaling fence...");
         if let Err(e) = queue.Signal(&fence, next_fence_value) {
@@ -336,9 +351,6 @@ pub extern "C" fn end_frame() -> bool {
 
         debug_println!("[end_frame] ✅ Done (fence: {})", next_fence_value);
     }
-
-    // ManuallyDrop предотвращает вызов деструктора
-    // Command list будет освобожден когда allocator сбросится в begin_frame
 
     debug_println!("[end_frame] RETURN true");
     true

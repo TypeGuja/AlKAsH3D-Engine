@@ -1,6 +1,8 @@
-//! Дескрипторные кучи
+// src/heap.rs
+//! Дескрипторные кучи - ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
+use std::ptr;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows_core::Interface;
 use crate::{STATE, debug_println, utils::ptr_to_device};
@@ -18,7 +20,7 @@ pub extern "C" fn create_descriptor_heap(
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
-            None => return std::ptr::null_mut(),
+            None => return ptr::null_mut(),
         };
 
         let heap_ty = match heap_type {
@@ -26,7 +28,7 @@ pub extern "C" fn create_descriptor_heap(
             1 => D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
             2 => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             3 => D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-            _ => return std::ptr::null_mut(),
+            _ => return ptr::null_mut(),
         };
 
         let flags = if shader_visible && heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV {
@@ -50,17 +52,27 @@ pub extern "C" fn create_descriptor_heap(
                     state.descriptor_heaps.push(heap.clone());
                 }
 
-                let raw_ptr = heap.as_raw();
-                std::mem::forget(heap);
-                std::mem::forget(device);
-                raw_ptr as *mut c_void
+                // ИСПРАВЛЕНИЕ: используем Box вместо forget
+                let raw_ptr = Box::into_raw(Box::new(heap)) as *mut c_void;
+                raw_ptr
             }
             Err(e) => {
                 debug_println!("[heap] Failed: {:?}", e);
-                std::mem::forget(device);
-                std::ptr::null_mut()
+                ptr::null_mut()
             }
         }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_descriptor_heap(heap_ptr: *mut c_void) -> bool {
+    if heap_ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let _ = Box::from_raw(heap_ptr as *mut ID3D12DescriptorHeap);
+        debug_println!("[destroy_descriptor_heap] ✅ Heap destroyed");
+        true
     }
 }
 
@@ -71,18 +83,15 @@ pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
     }
 
     unsafe {
-        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
+        let heap = &*(heap_ptr as *const ID3D12DescriptorHeap);
         let desc = heap.GetDesc();
 
         if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
-            std::mem::forget(heap);
             return 0;
         }
 
         let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
-        let result = gpu_handle.ptr as u64;
-        std::mem::forget(heap);
-        result
+        gpu_handle.ptr as u64
     }
 }
 
@@ -92,11 +101,9 @@ pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u
         return 0;
     }
     unsafe {
-        let heap: ID3D12DescriptorHeap = std::mem::transmute_copy(&heap_ptr);
+        let heap = &*(heap_ptr as *const ID3D12DescriptorHeap);
         let handle = heap.GetCPUDescriptorHandleForHeapStart();
-        let result = handle.ptr as u64;
-        std::mem::forget(heap);
-        result
+        handle.ptr as u64
     }
 }
 
@@ -119,8 +126,6 @@ pub extern "C" fn get_descriptor_handle_increment_size(
             _ => return 0,
         };
 
-        let size = device.GetDescriptorHandleIncrementSize(ty);
-        std::mem::forget(device);
-        size
+        device.GetDescriptorHandleIncrementSize(ty)
     }
 }

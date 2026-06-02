@@ -1,34 +1,43 @@
+// src/swap_chain.rs
 //! Управление swap chain
 
 use std::ffi::c_void;
+use std::ptr;
 use windows::Win32::{
     Foundation::HWND,
-    Graphics::{Dxgi::*, Dxgi::Common::*},
+    Graphics::Dxgi::*,
+    Graphics::Dxgi::Common::*,
 };
-use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
+use windows::Win32::Graphics::Direct3D12::{ID3D12CommandQueue, ID3D12Resource};
 use windows_core::Interface;
-use crate::{STATE, debug_println, utils::ptr_to_queue};
+use crate::{STATE, debug_println};
 
 #[no_mangle]
-pub extern "C" fn create_swap_chain(queue_ptr: *mut c_void, hwnd: usize, width: u32, height: u32) -> *mut c_void {
+pub extern "C" fn create_swap_chain(queue_ptr: *mut c_void, hwnd_ptr: *mut c_void, width: u32, height: u32) -> *mut c_void {
     unsafe {
-        debug_println!("\n[create_swap_chain] {}x{}, hwnd: 0x{:X}", width, height, hwnd);
+        debug_println!("\n[create_swap_chain] {}x{}, hwnd: {:p}", width, height, hwnd_ptr);
 
-        let queue = match ptr_to_queue(queue_ptr) {
-            Some(q) => q,
-            None => return std::ptr::null_mut(),
-        };
+        if queue_ptr.is_null() {
+            debug_println!("Queue pointer is null!");
+            return ptr::null_mut();
+        }
+
+        if hwnd_ptr.is_null() {
+            debug_println!("HWND is null!");
+            return ptr::null_mut();
+        }
+
+        let queue = &*(queue_ptr as *const ID3D12CommandQueue);
 
         let factory: IDXGIFactory4 = match CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) {
             Ok(f) => f,
             Err(e) => {
-                debug_println!("[create_swap_chain] Failed to create DXGI factory: {:?}", e);
-                std::mem::forget(queue);
-                return std::ptr::null_mut();
+                debug_println!("Failed to create factory: {:?}", e);
+                return ptr::null_mut();
             }
         };
 
-        let swap_desc = DXGI_SWAP_CHAIN_DESC1 {
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: width,
             Height: height,
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -39,66 +48,65 @@ pub extern "C" fn create_swap_chain(queue_ptr: *mut c_void, hwnd: usize, width: 
             Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
             AlphaMode: DXGI_ALPHA_MODE_UNSPECIFIED,
-            Flags: 0,
+            Flags: DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32,
         };
 
-        let swap_chain1 = match factory.CreateSwapChainForHwnd(
-            &queue,
-            HWND(hwnd as *mut std::ffi::c_void),
-            &swap_desc,
-            None,
-            None
-        ) {
+        let hwnd_obj = HWND(hwnd_ptr);
+        debug_println!("[create_swap_chain] HWND object: {:?}", hwnd_obj);
+
+        let swap_chain = match factory.CreateSwapChainForHwnd(queue, hwnd_obj, &desc, None, None) {
             Ok(sc) => sc,
             Err(e) => {
-                debug_println!("[create_swap_chain] Failed to create swap chain: {:?}", e);
-                std::mem::forget(queue);
-                return std::ptr::null_mut();
+                debug_println!("Failed to create swap chain: {:?}", e);
+                debug_println!("Error code: 0x{:08X}", e.code().0);
+                return ptr::null_mut();
             }
         };
 
-        let swap_chain3: IDXGISwapChain3 = match swap_chain1.cast() {
+        debug_println!("Swap chain created successfully!");
+
+        let _ = factory.MakeWindowAssociation(hwnd_obj, DXGI_MWA_NO_ALT_ENTER);
+
+        let swap_chain3: IDXGISwapChain3 = match swap_chain.cast() {
             Ok(sc) => sc,
             Err(e) => {
-                debug_println!("[create_swap_chain] Failed to cast to IDXGISwapChain3: {:?}", e);
-                std::mem::forget(queue);
-                return std::ptr::null_mut();
+                debug_println!("Failed to cast: {:?}", e);
+                return ptr::null_mut();
             }
         };
 
         {
             let mut state = match STATE.lock() {
                 Ok(s) => s,
-                Err(_) => {
-                    std::mem::forget(swap_chain3);
-                    std::mem::forget(queue);
-                    return std::ptr::null_mut();
-                }
+                Err(_) => return ptr::null_mut(),
             };
             state.swap_chain = Some(swap_chain3.clone());
+            state.frame_index = 0;
         }
 
-        let raw_ptr = swap_chain3.as_raw();
-        debug_println!("[create_swap_chain] ✅ Created at {:p}", raw_ptr);
-        std::mem::forget(swap_chain3);
-        std::mem::forget(queue);
-        raw_ptr as *mut c_void
+        swap_chain3.as_raw() as *mut c_void
     }
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_swap_chain(_swap_ptr: *mut c_void) -> bool {
+    debug_println!("[destroy_swap_chain] Swap chain will be cleaned by STATE");
+    true
 }
 
 #[no_mangle]
 pub extern "C" fn present_swap_chain(swap_ptr: *mut c_void, sync_interval: u32) -> bool {
     unsafe {
-        if swap_ptr.is_null() {
-            debug_println!("[present_swap_chain] swap_ptr is null");
-            return false;
-        }
-
-        let swap = match crate::utils::ptr_to_swapchain(swap_ptr) {
-            Some(s) => s,
-            None => {
-                debug_println!("[present_swap_chain] Invalid swap chain pointer");
-                return false;
+        let swap_chain = if !swap_ptr.is_null() {
+            (&*(swap_ptr as *const IDXGISwapChain3)).clone()
+        } else {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            match state.swap_chain.as_ref() {
+                Some(s) => s.clone(),
+                None => return false,
             }
         };
 
@@ -108,45 +116,31 @@ pub extern "C" fn present_swap_chain(swap_ptr: *mut c_void, sync_interval: u32) 
             DXGI_PRESENT(0)
         };
 
-        let hr = swap.Present(sync_interval, flags);
-
-        if hr.is_ok() {
-            std::mem::forget(swap);
-            true
-        } else {
-            debug_println!("[present_swap_chain] Present failed: {:?}", hr);
-            std::mem::forget(swap);
-            false
-        }
+        swap_chain.Present(sync_interval, flags).is_ok()
     }
 }
 
 #[no_mangle]
 pub extern "C" fn swap_chain_get_buffer(swap_ptr: *mut c_void, buffer_index: u32) -> *mut c_void {
     unsafe {
-        if swap_ptr.is_null() {
-            debug_println!("[swap_chain_get_buffer] swap_ptr is null");
-            return std::ptr::null_mut();
-        }
-
-        let swap = match crate::utils::ptr_to_swapchain(swap_ptr) {
-            Some(s) => s,
-            None => {
-                debug_println!("[swap_chain_get_buffer] Invalid swap chain pointer");
-                return std::ptr::null_mut();
+        let swap_chain = if !swap_ptr.is_null() {
+            (&*(swap_ptr as *const IDXGISwapChain3)).clone()
+        } else {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return ptr::null_mut(),
+            };
+            match state.swap_chain.as_ref() {
+                Some(s) => s.clone(),
+                None => return ptr::null_mut(),
             }
         };
 
-        match swap.GetBuffer::<ID3D12Resource>(buffer_index) {
-            Ok(buffer) => {
-                let raw_ptr = buffer.as_raw();
-                std::mem::forget(buffer);
-                raw_ptr as *mut c_void
-            }
+        match swap_chain.GetBuffer::<ID3D12Resource>(buffer_index) {
+            Ok(buffer) => buffer.as_raw() as *mut c_void,
             Err(e) => {
-                debug_println!("[swap_chain_get_buffer] Failed for index {}: {:?}", buffer_index, e);
-                std::mem::forget(swap);
-                std::ptr::null_mut()
+                debug_println!("[swap_chain_get_buffer] Failed: {:?}", e);
+                ptr::null_mut()
             }
         }
     }
@@ -155,79 +149,88 @@ pub extern "C" fn swap_chain_get_buffer(swap_ptr: *mut c_void, buffer_index: u32
 #[no_mangle]
 pub extern "C" fn resize_swap_chain(swap_ptr: *mut c_void, width: u32, height: u32) -> bool {
     unsafe {
-        if swap_ptr.is_null() {
-            return false;
-        }
-
-        let swap = match crate::utils::ptr_to_swapchain(swap_ptr) {
-            Some(s) => s,
-            None => return false,
+        let swap_chain = if !swap_ptr.is_null() {
+            (&*(swap_ptr as *const IDXGISwapChain3)).clone()
+        } else {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            match state.swap_chain.as_ref() {
+                Some(s) => s.clone(),
+                None => return false,
+            }
         };
 
-        let result = swap.ResizeBuffers(
+        swap_chain.ResizeBuffers(
             2,
             width,
             height,
             DXGI_FORMAT_R8G8B8A8_UNORM,
             DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
-        ).is_ok();
-
-        std::mem::forget(swap);
-
-        if result {
-            debug_println!("[resize_swap_chain] ✅ Resized to {}x{}", width, height);
-        }
-        result
+        ).is_ok()
     }
 }
 
 #[no_mangle]
-pub extern "C" fn get_current_back_buffer_index(_swap_ptr: *mut c_void) -> u32 {
-    // Игнорируем swap_ptr, используем глобальное состояние
-    let state = match STATE.lock() {
-        Ok(s) => s,
-        Err(_) => {
-            debug_println!("[get_current_back_buffer_index] Failed to lock state");
-            return 0;
-        }
-    };
-
+pub extern "C" fn get_current_back_buffer_index(swap_ptr: *mut c_void) -> u32 {
     unsafe {
-        match state.swap_chain.as_ref() {
-            Some(swap) => swap.GetCurrentBackBufferIndex(),
-            None => {
-                debug_println!("[get_current_back_buffer_index] No swap chain in state");
-                0
+        let swap_chain = if !swap_ptr.is_null() {
+            (&*(swap_ptr as *const IDXGISwapChain3)).clone()
+        } else {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return 0,
+            };
+            match state.swap_chain.as_ref() {
+                Some(s) => s.clone(),
+                None => return 0,
             }
-        }
+        };
+        swap_chain.GetCurrentBackBufferIndex()
     }
 }
 
 #[no_mangle]
-pub extern "C" fn swap_chain_get_buffer_current(_swap_ptr: *mut c_void) -> *mut c_void {
-    let state = match STATE.lock() {
-        Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    let swap = match state.swap_chain.as_ref() {
-        Some(s) => s,
-        None => return std::ptr::null_mut(),
-    };
-
-    let idx = unsafe { swap.GetCurrentBackBufferIndex() };
-
+pub extern "C" fn swap_chain_get_buffer_current(swap_ptr: *mut c_void) -> *mut c_void {
     unsafe {
-        match swap.GetBuffer::<ID3D12Resource>(idx) {
-            Ok(buffer) => {
-                let raw_ptr = buffer.as_raw();
-                std::mem::forget(buffer);
-                raw_ptr as *mut c_void
+        let swap_chain = if !swap_ptr.is_null() {
+            (&*(swap_ptr as *const IDXGISwapChain3)).clone()
+        } else {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return ptr::null_mut(),
+            };
+            match state.swap_chain.as_ref() {
+                Some(s) => s.clone(),
+                None => return ptr::null_mut(),
             }
+        };
+
+        let idx = swap_chain.GetCurrentBackBufferIndex();
+        match swap_chain.GetBuffer::<ID3D12Resource>(idx) {
+            Ok(buffer) => buffer.as_raw() as *mut c_void,
             Err(e) => {
                 debug_println!("[swap_chain_get_buffer_current] Failed: {:?}", e);
-                std::ptr::null_mut()
+                ptr::null_mut()
             }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_swap_chain(swap_ptr: *mut c_void) -> *mut c_void {
+    if !swap_ptr.is_null() {
+        return swap_ptr;
+    }
+    unsafe {
+        let state = match STATE.lock() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        };
+        match state.swap_chain.as_ref() {
+            Some(s) => s.as_raw() as *mut c_void,
+            None => ptr::null_mut(),
         }
     }
 }

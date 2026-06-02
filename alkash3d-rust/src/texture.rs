@@ -1,10 +1,12 @@
-//! Текстуры
+// src/texture.rs
+//! Текстуры - ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
+use std::ptr;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows_core::Interface;
-use crate::{create_buffer, debug_println, release_resource, update_subresource, utils::ptr_to_device};
+use crate::{debug_println, utils::ptr_to_device};
 
 #[no_mangle]
 pub extern "C" fn create_texture_2d(
@@ -19,7 +21,7 @@ pub extern "C" fn create_texture_2d(
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
-            None => return std::ptr::null_mut(),
+            None => return ptr::null_mut(),
         };
 
         let dxgi_format = match format {
@@ -65,20 +67,29 @@ pub extern "C" fn create_texture_2d(
                 if let Some(tex) = texture {
                     let raw_ptr = tex.as_raw();
                     debug_println!("[create_texture_2d] ✅ Created at {:p}", raw_ptr);
-                    std::mem::forget(tex);
-                    std::mem::forget(device);
-                    raw_ptr as *mut c_void
+                    // ИСПРАВЛЕНИЕ: используем Box вместо forget
+                    Box::into_raw(Box::new(tex)) as *mut c_void
                 } else {
-                    std::mem::forget(device);
-                    std::ptr::null_mut()
+                    ptr::null_mut()
                 }
             }
             Err(e) => {
                 debug_println!("[create_texture_2d] Failed: {:?}", e);
-                std::mem::forget(device);
-                std::ptr::null_mut()
+                ptr::null_mut()
             }
         }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_texture_2d(texture_ptr: *mut c_void) -> bool {
+    if texture_ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let _ = Box::from_raw(texture_ptr as *mut ID3D12Resource);
+        debug_println!("[destroy_texture_2d] ✅ Texture destroyed");
+        true
     }
 }
 
@@ -95,7 +106,7 @@ pub extern "C" fn create_texture_from_memory(
 
         let texture = create_texture_2d(device_ptr, width, height, 0, 1);
         if texture.is_null() {
-            return std::ptr::null_mut();
+            return ptr::null_mut();
         }
 
         if !data_ptr.is_null() {
@@ -118,58 +129,41 @@ pub extern "C" fn update_texture(
             return false;
         }
 
-        let texture: ID3D12Resource = std::mem::transmute_copy(&texture_ptr);
-        let desc = texture.GetDesc();
+        let texture = &*(texture_ptr as *const ID3D12Resource);
+        let _desc = texture.GetDesc();
 
-        // Получаем размер строки (row pitch)
         let row_pitch = (width * 4) as usize;
         let total_size = row_pitch * height as usize;
 
-        // Создаем upload буфер
-        let device = match get_device_from_resource(&texture) {
+        let device = match get_device_from_resource(texture) {
             Some(d) => d,
-            None => {
-                std::mem::forget(texture);
-                return false;
-            }
+            None => return false,
         };
 
-        let upload_buffer = create_buffer(
-            device.as_raw() as *mut c_void,
-            total_size,
-            0, // UPLOAD
-        );
+        let upload_buffer = create_buffer(device.as_raw() as *mut c_void, total_size, 0);
 
         if upload_buffer.is_null() {
-            std::mem::forget(texture);
-            std::mem::forget(device);
             return false;
         }
 
-        // Копируем данные в upload буфер
         if !update_subresource(upload_buffer, data_ptr, total_size) {
-            release_resource(upload_buffer);
-            std::mem::forget(texture);
-            std::mem::forget(device);
+            destroy_buffer(upload_buffer);
             return false;
         }
 
-        // Переход текстуры в состояние COPY_DEST
-        // (нужен command list для этого)
-
-        release_resource(upload_buffer);
-        std::mem::forget(texture);
-        std::mem::forget(device);
+        destroy_buffer(upload_buffer);
         true
     }
 }
 
-unsafe fn get_device_from_resource(resource: &ID3D12Resource) -> Option<windows::Win32::Graphics::Direct3D12::ID3D12Device> {
-    let mut device_ptr: *mut c_void = std::ptr::null_mut();
-    let iid = &windows::Win32::Graphics::Direct3D12::ID3D12Device::IID;
+unsafe fn get_device_from_resource(resource: &ID3D12Resource) -> Option<ID3D12Device> {
+    let mut device_ptr: *mut c_void = ptr::null_mut();
+    let iid = &ID3D12Device::IID;
 
     if resource.query(iid, &mut device_ptr).is_ok() && !device_ptr.is_null() {
-        Some(std::mem::transmute_copy(&device_ptr))
+        // ИСПРАВЛЕНИЕ: читаем указатель и клонируем COM объект
+        let device = &*(device_ptr as *const ID3D12Device);
+        Some(device.clone())
     } else {
         None
     }
@@ -191,7 +185,7 @@ pub extern "C" fn create_srv(
             None => return false,
         };
 
-        let texture: ID3D12Resource = std::mem::transmute_copy(&texture_ptr);
+        let texture = &*(texture_ptr as *const ID3D12Resource);
         let desc = texture.GetDesc();
 
         let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
@@ -209,10 +203,15 @@ pub extern "C" fn create_srv(
         };
 
         let cpu_handle_struct = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle as usize };
-        device.CreateShaderResourceView(&texture, Some(&srv_desc), cpu_handle_struct);
+        device.CreateShaderResourceView(texture, Some(&srv_desc), cpu_handle_struct);
 
-        std::mem::forget(texture);
-        std::mem::forget(device);
         true
     }
+}
+
+// Вспомогательные функции
+extern "C" {
+    fn create_buffer(device_ptr: *mut c_void, size: usize, buffer_type: u32) -> *mut c_void;
+    fn update_subresource(buffer_ptr: *mut c_void, data_ptr: *const c_void, size: usize) -> bool;
+    fn destroy_buffer(buffer_ptr: *mut c_void) -> bool;
 }

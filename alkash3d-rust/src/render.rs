@@ -1,13 +1,12 @@
-//! Функции рендеринга
+// src/render.rs
+//! Функции рендеринга - ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
 use windows::Win32::{
     Foundation::RECT,
     Graphics::{Direct3D12::*, Dxgi::Common::*},
 };
-use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-use windows_core::Interface;
-use crate::utils::{ptr_to_device, ptr_to_resource};
+use crate::utils::ptr_to_device;
 use crate::command::with_command_list;
 use crate::{STATE, debug_println};
 
@@ -36,40 +35,66 @@ pub struct ScissorRect {
     pub bottom: i32,
 }
 
+// ============================================================================
+// УСТАНОВКА PSO И ROOT SIGNATURE
+// ============================================================================
+
 #[no_mangle]
 pub extern "C" fn set_graphics_pipeline(pso_ptr: *mut c_void) -> bool {
     unsafe {
         if pso_ptr.is_null() {
+            debug_println!("[set_graphics_pipeline] pso_ptr is null");
             return false;
         }
 
         with_command_list(|list| {
-            let pso: ID3D12PipelineState = std::mem::transmute_copy(&pso_ptr);
-            list.SetPipelineState(&pso);
+            let pso = &*(pso_ptr as *const ID3D12PipelineState);
+            list.SetPipelineState(pso);
+            debug_println!("[set_graphics_pipeline] ✅ PSO set");
 
             if let Ok(mut state) = STATE.lock() {
                 state.current_pso = Some(pso.clone());
             }
-
-            std::mem::forget(pso);
-        }).is_some()
+            true
+        }).unwrap_or(false)
     }
+}
+
+#[no_mangle]
+pub extern "C" fn set_pipeline(pso_ptr: *mut c_void) -> bool {
+    set_graphics_pipeline(pso_ptr)
+}
+
+#[no_mangle]
+pub extern "C" fn set_pipeline_state(pso_ptr: *mut c_void) -> bool {
+    set_graphics_pipeline(pso_ptr)
 }
 
 #[no_mangle]
 pub extern "C" fn set_root_signature(root_sig_ptr: *mut c_void) -> bool {
     unsafe {
         if root_sig_ptr.is_null() {
+            debug_println!("[set_root_signature] root_sig_ptr is null");
             return false;
         }
 
         with_command_list(|list| {
-            let root_sig: ID3D12RootSignature = std::mem::transmute_copy(&root_sig_ptr);
-            list.SetGraphicsRootSignature(&root_sig);
-            std::mem::forget(root_sig);
-        }).is_some()
+            let root_sig = &*(root_sig_ptr as *const ID3D12RootSignature);
+            list.SetGraphicsRootSignature(root_sig);
+            debug_println!("[set_root_signature] ✅ Root signature set");
+            true
+        }).unwrap_or(false)
     }
 }
+
+#[no_mangle]
+pub extern "C" fn set_root_signature_state(root_sig_ptr: *mut c_void) -> bool {
+    set_root_signature(root_sig_ptr)
+}
+
+// ============================================================================
+// VIEWPORT И SCISSOR
+// ============================================================================
 
 #[no_mangle]
 pub extern "C" fn set_viewport(x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32) -> bool {
@@ -85,7 +110,9 @@ pub extern "C" fn set_viewport(x: f32, y: f32, width: f32, height: f32, min_dept
         unsafe {
             list.RSSetViewports(&[viewport]);
         }
-    }).is_some()
+        debug_println!("[set_viewport] ✅ Viewport set: {}x{}", width, height);
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
@@ -95,8 +122,14 @@ pub extern "C" fn set_scissor_rect(left: i32, top: i32, right: i32, bottom: i32)
         unsafe {
             list.RSSetScissorRects(&[rect]);
         }
-    }).is_some()
+        debug_println!("[set_scissor_rect] ✅ Scissor rect set: ({},{})-({},{})", left, top, right, bottom);
+        true
+    }).unwrap_or(false)
 }
+
+// ============================================================================
+// VERTEX И INDEX BUFFERS
+// ============================================================================
 
 #[no_mangle]
 pub extern "C" fn set_vertex_buffer(gpu_address: u64, size: u32, stride: u32) -> bool {
@@ -114,7 +147,9 @@ pub extern "C" fn set_vertex_buffer(gpu_address: u64, size: u32, stride: u32) ->
             state.bound_vertex_buffers.clear();
             state.bound_vertex_buffers.push(gpu_address);
         }
-    }).is_some()
+        debug_println!("[set_vertex_buffer] ✅ Vertex buffer set: addr={:X}, size={}", gpu_address, size);
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
@@ -132,7 +167,9 @@ pub extern "C" fn set_index_buffer(gpu_address: u64, size: u32, format: u32) -> 
         if let Ok(mut state) = STATE.lock() {
             state.bound_index_buffer = Some(gpu_address);
         }
-    }).is_some()
+        debug_println!("[set_index_buffer] ✅ Index buffer set: addr={:X}, size={}", gpu_address, size);
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
@@ -151,8 +188,14 @@ pub extern "C" fn set_primitive_topology(topology: u32) -> bool {
         unsafe {
             list.IASetPrimitiveTopology(topo);
         }
-    }).is_some()
+        debug_println!("[set_primitive_topology] ✅ Topology set: {}", topology);
+        true
+    }).unwrap_or(false)
 }
+
+// ============================================================================
+// DRAW CALLS
+// ============================================================================
 
 #[no_mangle]
 pub extern "C" fn draw_indexed(index_count: u32, start_index: u32, base_vertex: i32) -> bool {
@@ -160,7 +203,9 @@ pub extern "C" fn draw_indexed(index_count: u32, start_index: u32, base_vertex: 
         unsafe {
             list.DrawIndexedInstanced(index_count, 1, start_index, base_vertex, 0);
         }
-    }).is_some()
+        debug_println!("[draw_indexed] ✅ Draw {} indices", index_count);
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
@@ -175,7 +220,9 @@ pub extern "C" fn draw_indexed_instanced(
         unsafe {
             list.DrawIndexedInstanced(index_count, instance_count, start_index, base_vertex, start_instance);
         }
-    }).is_some()
+        debug_println!("[draw_indexed_instanced] ✅ Draw {} indices, {} instances", index_count, instance_count);
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
@@ -189,7 +236,57 @@ pub extern "C" fn draw_instanced(
         unsafe {
             list.DrawInstanced(vertex_count, instance_count, start_vertex, start_instance);
         }
-    }).is_some()
+        debug_println!("[draw_instanced] ✅ Draw {} vertices, {} instances", vertex_count, instance_count);
+        true
+    }).unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn draw(start_vertex: u32, vertex_count: u32) -> bool {
+    draw_instanced(vertex_count, 1, start_vertex, 0)
+}
+
+// ============================================================================
+// RENDER TARGETS
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn set_render_targets(rtv_cpu_handle: u64, num_rtvs: u32) -> bool {
+    debug_println!("[set_render_targets] handle=0x{:X}, count={}", rtv_cpu_handle, num_rtvs);
+
+    with_command_list(|list: &ID3D12GraphicsCommandList| {
+        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(rtv_cpu_handle) };
+        unsafe {
+            list.OMSetRenderTargets(num_rtvs, Some(&rtv_handle), false, None);
+        }
+        debug_println!("[set_render_targets] ✅ Render targets set");
+        true
+    }).unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn set_render_target(rtv_cpu_handle: u64) -> bool {
+    set_render_targets(rtv_cpu_handle, 1)
+}
+
+#[no_mangle]
+pub extern "C" fn set_render_targets_with_depth(
+    rtv_cpu_handle: u64,
+    dsv_cpu_handle: u64,
+    num_rtvs: u32
+) -> bool {
+    debug_println!("[set_render_targets_with_depth] rtv=0x{:X}, dsv=0x{:X}, count={}",
+                   rtv_cpu_handle, dsv_cpu_handle, num_rtvs);
+
+    with_command_list(|list| {
+        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(rtv_cpu_handle) };
+        let dsv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(dsv_cpu_handle) };
+        unsafe {
+            list.OMSetRenderTargets(num_rtvs, Some(&rtv_handle), false, Some(&dsv_handle));
+        }
+        debug_println!("[set_render_targets_with_depth] ✅ Render targets with depth set");
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
@@ -205,127 +302,57 @@ pub extern "C" fn clear_render_target(rtv_cpu_handle: u64, color: *const f32) ->
         with_command_list(|list: &ID3D12GraphicsCommandList| {
             let rtv = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(rtv_cpu_handle) };
             let clear_color = [*color, *color.add(1), *color.add(2), *color.add(3)];
-            list.ClearRenderTargetView(rtv, &clear_color, Some(&[]));  // &[] вместо Some(&[])
-            debug_println!("[clear_render_target] OK");
-        }).is_some()
+            list.ClearRenderTargetView(rtv, &clear_color, Some(&[]));
+            debug_println!("[clear_render_target] ✅ Clear color: ({:.2},{:.2},{:.2},{:.2})",
+                          clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
+            true
+        }).unwrap_or(false)
     }
 }
 
 #[no_mangle]
-pub extern "C" fn set_render_targets(rtv_cpu_handle: u64, num_rtvs: u32) -> bool {
-    debug_println!("[set_render_targets] handle=0x{:X}, count={}", rtv_cpu_handle, num_rtvs);
-
-    with_command_list(|list: &ID3D12GraphicsCommandList| {
-        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(rtv_cpu_handle) };
-        unsafe {
-            list.OMSetRenderTargets(num_rtvs, Some(&rtv_handle), false, None);
-        }
-        debug_println!("[set_render_targets] OK");
-    }).is_some()
-}
-
-#[no_mangle]
 pub extern "C" fn clear_depth_stencil(dsv_cpu_handle: u64, depth: f32, stencil: u8) -> bool {
+    debug_println!("[clear_depth_stencil] handle=0x{:X}, depth={}, stencil={}", dsv_cpu_handle, depth, stencil);
+
     with_command_list(|list| {
         let dsv = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(dsv_cpu_handle) };
         unsafe {
             list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, depth, stencil, Some(&[]));
         }
-    }).is_some()
-}
-#[no_mangle]
-pub extern "C" fn set_render_targets_with_depth(
-    rtv_cpu_handle: u64,
-    dsv_cpu_handle: u64,
-    num_rtvs: u32
-) -> bool {
-    with_command_list(|list| {
-        let rtv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(rtv_cpu_handle) };
-        let dsv_handle = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(dsv_cpu_handle) };
-        unsafe {
-            list.OMSetRenderTargets(num_rtvs, Some(&rtv_handle), false, Some(&dsv_handle));
-        }
-    }).is_some()
+        debug_println!("[clear_depth_stencil] ✅ Depth stencil cleared");
+        true
+    }).unwrap_or(false)
 }
 
-#[no_mangle]
-pub extern "C" fn get_buffer_gpu_address(buffer_ptr: *mut c_void) -> u64 {
-    unsafe {
-        if buffer_ptr.is_null() {
-            return 0;
-        }
-
-        let buffer: ID3D12Resource = std::mem::transmute_copy(&buffer_ptr);
-        let address = buffer.GetGPUVirtualAddress();
-        std::mem::forget(buffer);
-        address
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn set_root_constant_buffer_view(root_index: u32, gpu_address: u64) -> bool {
-    with_command_list(|list| {
-        unsafe {
-            list.SetGraphicsRootConstantBufferView(root_index, gpu_address);
-        }
-    }).is_some()
-}
-
-#[no_mangle]
-pub extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: u64) -> bool {
-    with_command_list(|list| {
-        unsafe {
-            list.SetGraphicsRootDescriptorTable(root_index, D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu_handle });
-        }
-    }).is_some()
-}
-
-#[no_mangle]
-pub extern "C" fn set_root_32bit_constants(
-    root_index: u32,
-    num_constants: u32,
-    data: *const u32,
-    dest_offset: u32
-) -> bool {
-    unsafe {
-        if data.is_null() {
-            return false;
-        }
-
-        with_command_list(|list| {
-            // Преобразуем *const u32 в *const c_void
-            list.SetGraphicsRoot32BitConstants(
-                root_index,
-                num_constants,
-                data as *const std::ffi::c_void,
-                dest_offset
-            );
-        }).is_some()
-    }
-}
+// ============================================================================
+// CREATE VIEWS
+// ============================================================================
 
 #[no_mangle]
 pub extern "C" fn create_render_target_view(
     device_ptr: *mut c_void,
     resource_ptr: *mut c_void,
-    cpu_handle: u64
+    cpu_handle: u64,
 ) -> bool {
     unsafe {
+        if device_ptr.is_null() || resource_ptr.is_null() || cpu_handle == 0 {
+            debug_println!("[create_render_target_view] Invalid parameters");
+            return false;
+        }
+
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
-            None => return false,
+            None => {
+                debug_println!("[create_render_target_view] Failed to get device");
+                return false;
+            }
         };
 
-        let resource = match ptr_to_resource(resource_ptr) {
-            Some(r) => r,
-            None => return false,
-        };
-
+        let resource = &*(resource_ptr as *const ID3D12Resource);
         let cpu_desc = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(cpu_handle) };
-        device.CreateRenderTargetView(&resource, None, cpu_desc);
 
-        std::mem::forget(resource);
-        std::mem::forget(device);
+        device.CreateRenderTargetView(resource, None, cpu_desc);
+        debug_println!("[create_render_target_view] ✅ RTV created at handle 0x{:X}", cpu_handle);
         true
     }
 }
@@ -334,19 +361,23 @@ pub extern "C" fn create_render_target_view(
 pub extern "C" fn create_depth_stencil_view(
     device_ptr: *mut c_void,
     resource_ptr: *mut c_void,
-    cpu_handle: u64
+    cpu_handle: u64,
 ) -> bool {
     unsafe {
+        if device_ptr.is_null() || resource_ptr.is_null() || cpu_handle == 0 {
+            debug_println!("[create_depth_stencil_view] Invalid parameters");
+            return false;
+        }
+
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
-            None => return false,
+            None => {
+                debug_println!("[create_depth_stencil_view] Failed to get device");
+                return false;
+            }
         };
 
-        let resource = match ptr_to_resource(resource_ptr) {
-            Some(r) => r,
-            None => return false,
-        };
-
+        let resource = &*(resource_ptr as *const ID3D12Resource);
         let cpu_desc = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(cpu_handle) };
 
         let dsv_desc = D3D12_DEPTH_STENCIL_VIEW_DESC {
@@ -358,13 +389,15 @@ pub extern "C" fn create_depth_stencil_view(
             },
         };
 
-        device.CreateDepthStencilView(&resource, Some(&dsv_desc), cpu_desc);
-
-        std::mem::forget(resource);
-        std::mem::forget(device);
+        device.CreateDepthStencilView(resource, Some(&dsv_desc), cpu_desc);
+        debug_println!("[create_depth_stencil_view] ✅ DSV created at handle 0x{:X}", cpu_handle);
         true
     }
 }
+
+// ============================================================================
+// RESOURCE MANAGEMENT
+// ============================================================================
 
 #[no_mangle]
 pub extern "C" fn transition_resource(
@@ -379,9 +412,7 @@ pub extern "C" fn transition_resource(
         }
 
         with_command_list(|list: &ID3D12GraphicsCommandList| {
-            let resource: ID3D12Resource = match std::mem::transmute_copy(&resource_ptr) {
-                r => r,
-            };
+            let resource = &*(resource_ptr as *const ID3D12Resource);
 
             let barrier = D3D12_RESOURCE_BARRIER {
                 Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
@@ -397,21 +428,77 @@ pub extern "C" fn transition_resource(
             };
 
             list.ResourceBarrier(&[barrier]);
-        }).is_some()
+            debug_println!("[transition_resource] ✅ Transition from {} to {}", state_before, state_after);
+            true
+        }).unwrap_or(false)
     }
 }
 
+// ============================================================================
+// ROOT SIGNATURE PARAMETERS
+// ============================================================================
+
 #[no_mangle]
-pub extern "C" fn set_render_target(rtv_cpu_handle: u64) -> bool {
-    set_render_targets(rtv_cpu_handle, 1)
+pub extern "C" fn set_root_constant_buffer_view(root_index: u32, gpu_address: u64) -> bool {
+    with_command_list(|list| {
+        unsafe {
+            list.SetGraphicsRootConstantBufferView(root_index, gpu_address);
+        }
+        debug_println!("[set_root_constant_buffer_view] ✅ Root {} CBV set to 0x{:X}", root_index, gpu_address);
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
-pub extern "C" fn set_pipeline(pso_ptr: *mut c_void) -> bool {
-    set_graphics_pipeline(pso_ptr)
+pub extern "C" fn set_root_descriptor_table(root_index: u32, gpu_handle: u64) -> bool {
+    with_command_list(|list| {
+        unsafe {
+            list.SetGraphicsRootDescriptorTable(root_index, D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu_handle });
+        }
+        debug_println!("[set_root_descriptor_table] ✅ Root {} descriptor table set to 0x{:X}", root_index, gpu_handle);
+        true
+    }).unwrap_or(false)
 }
 
 #[no_mangle]
-pub extern "C" fn draw(start_vertex: u32, vertex_count: u32) -> bool {
-    draw_instanced(vertex_count, 1, start_vertex, 0)
+pub extern "C" fn set_root_32bit_constants(
+    root_index: u32,
+    num_constants: u32,
+    data: *const u32,
+    dest_offset: u32,
+) -> bool {
+    unsafe {
+        if data.is_null() {
+            debug_println!("[set_root_32bit_constants] data is null");
+            return false;
+        }
+
+        with_command_list(|list| {
+            list.SetGraphicsRoot32BitConstants(
+                root_index,
+                num_constants,
+                data as *const std::ffi::c_void,
+                dest_offset
+            );
+            debug_println!("[set_root_32bit_constants] ✅ Root {} constants set, count={}, offset={}",
+                          root_index, num_constants, dest_offset);
+            true
+        }).unwrap_or(false)
+    }
+}
+
+// ============================================================================
+// RESOURCE CLEANUP
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn destroy_render_target_view(_device_ptr: *mut c_void, cpu_handle: u64) -> bool {
+    debug_println!("[destroy_render_target_view] RTV at handle 0x{:X} will be freed with heap", cpu_handle);
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_depth_stencil_view(_device_ptr: *mut c_void, cpu_handle: u64) -> bool {
+    debug_println!("[destroy_depth_stencil_view] DSV at handle 0x{:X} will be freed with heap", cpu_handle);
+    true
 }

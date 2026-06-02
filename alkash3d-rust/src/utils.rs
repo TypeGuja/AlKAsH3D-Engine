@@ -63,7 +63,7 @@ pub extern "C" fn get_debug_mode() -> bool {
 
 #[no_mangle]
 pub extern "C" fn enable_debug_layer() -> bool {
-    #[cfg(feature = "debug_layer")]
+    #[cfg(debug_assertions)]
     {
         unsafe {
             use windows::Win32::Graphics::Direct3D12::*;
@@ -77,4 +77,26 @@ pub extern "C" fn enable_debug_layer() -> bool {
         }
     }
     false
+}
+
+// Функции для безопасного освобождения COM объектов
+#[no_mangle]
+pub extern "C" fn release_com_object(ptr: *mut c_void) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        let _ = Box::from_raw(ptr);
+        true
+    }
+}
+
+// Получить raw указатель из Box
+pub fn com_ptr_to_raw<T>(obj: T) -> *mut c_void {
+    Box::into_raw(Box::new(obj)) as *mut c_void
+}
+
+// Восстановить Box из raw указателя
+pub unsafe fn raw_to_com_ptr<T>(ptr: *mut c_void) -> Box<T> {
+    Box::from_raw(ptr as *mut T)
 }
