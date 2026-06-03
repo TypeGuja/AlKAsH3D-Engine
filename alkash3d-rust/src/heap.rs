@@ -48,12 +48,24 @@ pub extern "C" fn create_descriptor_heap(
             Ok(heap) => {
                 debug_println!("[heap] ✅ Created at {:p}", heap.as_raw());
 
+                // Получаем CPU handle для проверки
+                let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
+                debug_println!("[heap] CPU handle base: 0x{:X}", cpu_handle.ptr);
+
+                // Получаем размер инкремента для этого типа кучи
+                let inc_size = device.GetDescriptorHandleIncrementSize(heap_ty);
+                debug_println!("[heap] Descriptor increment size: {} bytes", inc_size);
+
+                // Для проверки, вычисляем handle для второго дескриптора
+                let second_handle = cpu_handle.ptr + inc_size as usize;
+                debug_println!("[heap] Second descriptor CPU handle would be: 0x{:X}", second_handle);
+
                 if let Ok(mut state) = STATE.lock() {
                     state.descriptor_heaps.push(heap.clone());
                 }
 
-                // ИСПРАВЛЕНИЕ: используем Box вместо forget
                 let raw_ptr = Box::into_raw(Box::new(heap)) as *mut c_void;
+                debug_println!("[heap] Returning raw ptr: {:p}", raw_ptr);
                 raw_ptr
             }
             Err(e) => {
@@ -113,9 +125,14 @@ pub extern "C" fn get_descriptor_handle_increment_size(
     heap_type: u32
 ) -> u32 {
     unsafe {
+        debug_println!("[get_descriptor_handle_increment_size] device_ptr={:p}, heap_type={}", device_ptr, heap_type);
+
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
-            None => return 0,
+            None => {
+                debug_println!("  Failed to get device");
+                return 0;
+            }
         };
 
         let ty = match heap_type {
@@ -123,9 +140,14 @@ pub extern "C" fn get_descriptor_handle_increment_size(
             1 => D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
             2 => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             3 => D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-            _ => return 0,
+            _ => {
+                debug_println!("  Invalid heap type: {}", heap_type);
+                return 0;
+            }
         };
 
-        device.GetDescriptorHandleIncrementSize(ty)
+        let size = device.GetDescriptorHandleIncrementSize(ty);
+        debug_println!("  Increment size: {} bytes", size);
+        size
     }
 }

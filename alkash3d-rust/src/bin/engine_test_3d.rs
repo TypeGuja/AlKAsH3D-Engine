@@ -1,26 +1,21 @@
 // src/bin/engine_test_3d.rs
-//! 3D тест - вращающийся куб с использованием движка
+//! 3D тест - вращающийся куб
 
 use alkash3d_rs::*;
 use std::ptr;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::Graphics::Gdi::{UpdateWindow, HBRUSH};
-use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16_UINT;
-use windows::Win32::System::Threading::{CreateEventA, WaitForSingleObject, INFINITE};
-use windows_core::{BOOL, PCSTR};
+use windows_core::PCSTR;
 
 const WIDTH: u32 = 1024;
 const HEIGHT: u32 = 768;
 
 static mut RUNNING: bool = true;
-static mut ANGLE: f32 = 0.0;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -33,7 +28,7 @@ impl Vertex {
     const STRIDE: usize = 28;
 }
 
-// Вершины куба (36 вершин для 12 треугольников)
+// Вершины куба
 const VERTICES: [Vertex; 36] = [
     // Передняя грань (красная)
     Vertex { pos: [-0.5, -0.5,  0.5], color: [1.0, 0.0, 0.0, 1.0] },
@@ -97,14 +92,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-#[link(name = "user32")]
-extern "system" {
-    fn IsWindow(hWnd: HWND) -> BOOL;
-}
-
 unsafe fn create_window() -> HWND {
     let instance = GetModuleHandleA(None).unwrap();
-    let class_name = b"Simple3DTest\0";
+    let class_name = b"3DCubeTest\0";
     let class_ptr = PCSTR(class_name.as_ptr());
 
     let wc = WNDCLASSA {
@@ -122,7 +112,7 @@ unsafe fn create_window() -> HWND {
 
     RegisterClassA(&wc);
 
-    let hwnd = CreateWindowExA(
+    CreateWindowExA(
         WINDOW_EX_STYLE::default(),
         class_ptr,
         PCSTR(b"3D Cube - ESC to exit\0".as_ptr()),
@@ -135,18 +125,7 @@ unsafe fn create_window() -> HWND {
         None,
         Some(HINSTANCE::from(instance)),
         None,
-    ).unwrap();
-
-    hwnd
-}
-
-fn mat4_identity() -> [[f32; 4]; 4] {
-    [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
+    ).unwrap()
 }
 
 fn mat4_perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
@@ -223,90 +202,82 @@ fn main() {
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
     unsafe {
-        // ====================================================================
         // 1. СОЗДАНИЕ ОКНА
-        // ====================================================================
         let hwnd = create_window();
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
+        println!("[1] Window created");
 
-        // Проверка HWND
-        println!("[1] Window created: {:?}", hwnd);
-        println!("    HWND raw: {:p}", hwnd.0);
-        println!("    IsWindow: {}", IsWindow(hwnd).as_bool());
-
-        // ====================================================================
-        // 2. СОЗДАНИЕ DEVICE
-        // ====================================================================
-        let device_ptr = create_device();
-        if device_ptr.is_null() {
-            eprintln!("❌ Failed to create device");
+        // 2. СОЗДАНИЕ DEVICE И QUEUE
+        let pair_ptr = create_device_and_queue();
+        if pair_ptr.is_null() {
+            eprintln!("❌ Failed to create device and queue");
             return;
         }
-        println!("[2] Device created");
+        let device_ptr = get_device_from_pair(pair_ptr);
+        let queue_ptr = get_queue_from_pair(pair_ptr);
+        println!("[2] Device and queue created");
+        println!("    Device ptr: {:p}", device_ptr);
+        println!("    Queue ptr: {:p}", queue_ptr);
 
-        // ====================================================================
-        // 3. СОЗДАНИЕ COMMAND QUEUE
-        // ====================================================================
-        let queue_ptr = create_command_queue(std::ptr::null_mut());
-        if queue_ptr.is_null() {
-            eprintln!("❌ Failed to create command queue");
-            return;
-        }
-        println!("[3] Command queue created");
-
-        // ====================================================================
-        // 4. СОЗДАНИЕ SWAP CHAIN
-        // ====================================================================
+        // 3. СОЗДАНИЕ SWAP CHAIN
         let swap_ptr = create_swap_chain(queue_ptr, hwnd.0, WIDTH, HEIGHT);
         if swap_ptr.is_null() {
             eprintln!("❌ Failed to create swap chain");
             return;
         }
-        println!("[4] Swap chain created");
+        println!("[3] Swap chain created");
+        println!("    Swap ptr: {:p}", swap_ptr);
 
-        // ====================================================================
-        // 5. RENDER TARGET VIEW
-        // ====================================================================
+        // 4. RENDER TARGET VIEW
         let rtv_heap_ptr = create_descriptor_heap(device_ptr, 2, 0, false);
         if rtv_heap_ptr.is_null() {
             eprintln!("❌ Failed to create RTV heap");
             return;
         }
-        let rtv_handle = GetCPUDescriptorHandleForHeapStart(rtv_heap_ptr);
-        println!("[5] RTV heap created");
+        println!("[4] RTV heap created at {:p}", rtv_heap_ptr);
+
+        // Получаем базовый CPU handle
+        let rtv_base_handle = GetCPUDescriptorHandleForHeapStart(rtv_heap_ptr);
+        println!("[4] RTV base handle: 0x{:X}", rtv_base_handle);
+
+        // Получаем размер инкремента для RTV дескрипторов
+        let rtv_increment = get_descriptor_handle_increment_size(device_ptr, 0);
+        println!("[4] RTV increment size: {} bytes", rtv_increment);
+
+        // Смещаем handle для первого дескриптора (если нужно)
+        let rtv_handle = rtv_base_handle; // + (0 * rtv_increment) если нужно несколько дескрипторов
+        println!("[4] RTV handle: 0x{:X}", rtv_handle);
 
         let back_buffer_ptr = swap_chain_get_buffer(swap_ptr, 0);
         if back_buffer_ptr.is_null() {
             eprintln!("❌ Failed to get back buffer");
             return;
         }
+        println!("[4] Back buffer ptr: {:p}", back_buffer_ptr);
 
         if !create_render_target_view(device_ptr, back_buffer_ptr, rtv_handle) {
             eprintln!("❌ Failed to create RTV");
             return;
         }
-        println!("[6] RTV created");
+        println!("[4] RTV created");
 
-        // ====================================================================
-        // 6. ROOT SIGNATURE И PSO
-        // ====================================================================
+        // 5. ROOT SIGNATURE И PSO
         let root_sig_ptr = create_root_signature_simple(device_ptr);
         if root_sig_ptr.is_null() {
             eprintln!("❌ Failed to create root signature");
             return;
         }
+        println!("[5] Root signature created at {:p}", root_sig_ptr);
 
         let pso_ptr = create_simple_pso(device_ptr, root_sig_ptr);
         if pso_ptr.is_null() {
             eprintln!("❌ Failed to create PSO");
             return;
         }
-        println!("[7] Root signature and PSO created");
+        println!("[5] PSO created at {:p}", pso_ptr);
 
-        // ====================================================================
-        // 7. ВЕРТЕКСНЫЙ БУФЕР
-        // ====================================================================
+        // 6. ВЕРТЕКСНЫЙ БУФЕР
         let vb = create_buffer(device_ptr, VERTICES.len() * Vertex::STRIDE, 0);
         if vb.is_null() {
             eprintln!("❌ Failed to create vertex buffer");
@@ -314,7 +285,7 @@ fn main() {
         }
         update_subresource(vb, VERTICES.as_ptr() as *const _, VERTICES.len() * Vertex::STRIDE);
         let vb_gpu = get_buffer_gpu_address(vb);
-        println!("[8] Vertex buffer created");
+        println!("[6] Vertex buffer created, GPU addr: 0x{:X}", vb_gpu);
 
         let vb_view = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: vb_gpu,
@@ -322,9 +293,7 @@ fn main() {
             StrideInBytes: Vertex::STRIDE as u32,
         };
 
-        // ====================================================================
-        // 8. CONSTANT BUFFER
-        // ====================================================================
+        // 7. CONSTANT BUFFER
         let const_buf = create_buffer(device_ptr, 256, 0);
         if const_buf.is_null() {
             eprintln!("❌ Failed to create constant buffer");
@@ -336,21 +305,17 @@ fn main() {
             eprintln!("❌ Failed to map constant buffer");
             return;
         }
-        println!("[9] Constant buffer created and mapped");
+        println!("[7] Constant buffer created, GPU addr: 0x{:X}", const_gpu);
 
-        // ====================================================================
-        // 9. FENCE И ALLOCATOR
-        // ====================================================================
+        // 8. FENCE
         if !create_fence(device_ptr) {
             eprintln!("❌ Failed to create fence");
             return;
         }
-        println!("[10] Fence created");
+        println!("[8] Fence created");
 
-        // ====================================================================
-        // 10. ОСНОВНОЙ ЦИКЛ
-        // ====================================================================
-        println!("\n[11] Starting main loop...\n");
+        // 9. ОСНОВНОЙ ЦИКЛ
+        println!("\n[9] Starting main loop...\n");
 
         let mut msg = std::mem::zeroed();
         let start = Instant::now();
@@ -359,19 +324,6 @@ fn main() {
         let mut fps_counter = 0;
 
         while RUNNING {
-            let elapsed = start.elapsed().as_secs_f32();
-            ANGLE = elapsed * 1.5;
-
-            // Вычисляем MVP матрицу
-            let aspect = WIDTH as f32 / HEIGHT as f32;
-            let proj = mat4_perspective(60.0_f32.to_radians(), aspect, 0.1, 100.0);
-            let view = mat4_look_at([3.0, 2.0, 4.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-            let model = mat4_rotate_y(ANGLE);
-            let mvp = mat4_mul(mat4_mul(model, view), proj);
-
-            // Обновляем constant buffer
-            ptr::copy_nonoverlapping(&mvp as *const _ as *const u8, const_map as *mut u8, 64);
-
             // Обработка сообщений
             while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
@@ -381,65 +333,60 @@ fn main() {
                 DispatchMessageA(&msg);
             }
 
-            // Начинаем кадр
-            let cmd_list = begin_frame_ex(pso_ptr);
-            if cmd_list.is_null() {
-                continue;
+            if !RUNNING {
+                break;
             }
 
-            // Устанавливаем PSO и root signature
-            set_pipeline(pso_ptr);
-            set_root_signature(root_sig_ptr);
+            // Обновление угла
+            let angle = start.elapsed().as_secs_f32() * 1.5;
 
-            // Переход ресурса в RENDER_TARGET
-            transition_resource(back_buffer_ptr, 0, 1); // PRESENT -> RENDER_TARGET
+            // Вычисление MVP
+            let aspect = WIDTH as f32 / HEIGHT as f32;
+            let proj = mat4_perspective(60.0_f32.to_radians(), aspect, 0.1, 100.0);
+            let view = mat4_look_at([3.0, 2.0, 4.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+            let model = mat4_rotate_y(angle);
+            let mvp = mat4_mul(mat4_mul(model, view), proj);
 
-            // Устанавливаем render target
-            set_render_target(rtv_handle);
+            // Обновление constant buffer
+            ptr::copy_nonoverlapping(&mvp as *const _ as *const u8, const_map as *mut u8, 64);
 
-            // Очищаем
-            let clear_color = [0.1f32, 0.1f32, 0.2f32, 1.0f32];
-            clear_render_target(rtv_handle, clear_color.as_ptr());
+            // Рендер
+            let cmd_list = begin_frame();
+            if !cmd_list.is_null() {
+                set_pipeline(pso_ptr);
+                set_root_signature(root_sig_ptr);
+                transition_resource(back_buffer_ptr, 0, 1);
+                set_render_target(rtv_handle);
 
-            // Viewport и Scissor
-            set_viewport(0.0, 0.0, WIDTH as f32, HEIGHT as f32, 0.0, 1.0);
-            set_scissor_rect(0, 0, WIDTH as i32, HEIGHT as i32);
+                let clear_color = [0.1f32, 0.1f32, 0.2f32, 1.0f32];
+                clear_render_target(rtv_handle, clear_color.as_ptr());
 
-            // Устанавливаем буферы
-            set_vertex_buffer(vb_gpu, vb_view.SizeInBytes, vb_view.StrideInBytes);
-            set_primitive_topology(4); // D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
-
-            // Устанавливаем constant buffer
-            set_root_constant_buffer_view(0, const_gpu);
-
-            // Рисуем куб (36 вершин)
-            draw_instanced(36, 1, 0, 0);
-
-            // Переход обратно в PRESENT
-            transition_resource(back_buffer_ptr, 1, 0); // RENDER_TARGET -> PRESENT
-
-            // Завершаем кадр
-            end_frame();
-
-            // Презентуем
-            present_swap_chain(swap_ptr, 1);
+                set_viewport(0.0, 0.0, WIDTH as f32, HEIGHT as f32, 0.0, 1.0);
+                set_scissor_rect(0, 0, WIDTH as i32, HEIGHT as i32);
+                set_vertex_buffer(vb_gpu, vb_view.SizeInBytes, vb_view.StrideInBytes);
+                set_primitive_topology(4);
+                set_root_constant_buffer_view(0, const_gpu);
+                draw_instanced(36, 1, 0, 0);
+                transition_resource(back_buffer_ptr, 1, 0);
+                end_frame();
+                present_swap_chain(swap_ptr, 1);
+            } else {
+                println!("  Command list is null!");
+            }
 
             frame += 1;
             fps_counter += 1;
 
             if last_fps.elapsed().as_secs_f32() >= 1.0 {
-                println!("Frame {} | FPS: {} | Angle: {:.1}°", frame, fps_counter, ANGLE.to_degrees());
+                println!("Frame {} | FPS: {} | Angle: {:.1}°", frame, fps_counter, angle.to_degrees());
                 fps_counter = 0;
                 last_fps = Instant::now();
             }
 
-            sleep(Duration::from_millis(16));
+            sleep(Duration::from_millis(1));
         }
 
-        // ====================================================================
-        // 11. ЗАВЕРШЕНИЕ
-        // ====================================================================
-        println!("\n[12] Shutting down...");
+        println!("\n[10] Shutting down...");
         println!("    Total frames: {}", frame);
 
         wait_for_gpu();

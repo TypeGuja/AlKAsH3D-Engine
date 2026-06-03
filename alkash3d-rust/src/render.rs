@@ -6,6 +6,7 @@ use windows::Win32::{
     Foundation::RECT,
     Graphics::{Direct3D12::*, Dxgi::Common::*},
 };
+use windows_core::Interface;
 use crate::utils::ptr_to_device;
 use crate::command::with_command_list;
 use crate::{STATE, debug_println};
@@ -335,24 +336,43 @@ pub extern "C" fn create_render_target_view(
     cpu_handle: u64,
 ) -> bool {
     unsafe {
-        if device_ptr.is_null() || resource_ptr.is_null() || cpu_handle == 0 {
-            debug_println!("[create_render_target_view] Invalid parameters");
+        debug_println!("[create_render_target_view] START");
+        debug_println!("  device_ptr = {:p}", device_ptr);
+        debug_println!("  resource_ptr = {:p}", resource_ptr);
+        debug_println!("  cpu_handle = 0x{:X}", cpu_handle);
+
+        if cpu_handle == 0 {
+            debug_println!("  ERROR: cpu_handle is 0!");
             return false;
         }
 
-        let device = match ptr_to_device(device_ptr) {
-            Some(d) => d,
-            None => {
-                debug_println!("[create_render_target_view] Failed to get device");
-                return false;
-            }
-        };
+        if resource_ptr.is_null() {
+            debug_println!("  ERROR: resource_ptr is null!");
+            return false;
+        }
 
-        let resource = &*(resource_ptr as *const ID3D12Resource);
-        let cpu_desc = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(cpu_handle) };
+        // НЕ используем device из STATE - он может быть повреждён
+        // Используем переданный device_ptr
+        if device_ptr.is_null() {
+            debug_println!("  ERROR: device_ptr is null!");
+            return false;
+        }
 
-        device.CreateRenderTargetView(resource, None, cpu_desc);
-        debug_println!("[create_render_target_view] ✅ RTV created at handle 0x{:X}", cpu_handle);
+        // Создаём COM объект из raw указателя
+        let device = ID3D12Device::from_raw(device_ptr as *mut _);
+        debug_println!("  device from_raw created: {:p}", device.as_raw());
+
+        let resource = ID3D12Resource::from_raw(resource_ptr as *mut _);
+        debug_println!("  resource from_raw created: {:p}", resource.as_raw());
+
+        let cpu_desc = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle as usize };
+        debug_println!("  cpu_desc.ptr = 0x{:X}", cpu_desc.ptr);
+
+        // Создаём Render Target View
+        device.CreateRenderTargetView(&resource, None, cpu_desc);
+
+        debug_println!("[create_render_target_view] ✅ RTV created");
+
         true
     }
 }
@@ -369,16 +389,9 @@ pub extern "C" fn create_depth_stencil_view(
             return false;
         }
 
-        let device = match ptr_to_device(device_ptr) {
-            Some(d) => d,
-            None => {
-                debug_println!("[create_depth_stencil_view] Failed to get device");
-                return false;
-            }
-        };
-
-        let resource = &*(resource_ptr as *const ID3D12Resource);
-        let cpu_desc = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: to_usize(cpu_handle) };
+        let device = ID3D12Device::from_raw(device_ptr as *mut _);
+        let resource = ID3D12Resource::from_raw(resource_ptr as *mut _);
+        let cpu_desc = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle as usize };
 
         let dsv_desc = D3D12_DEPTH_STENCIL_VIEW_DESC {
             Format: DXGI_FORMAT_D32_FLOAT,
@@ -389,15 +402,39 @@ pub extern "C" fn create_depth_stencil_view(
             },
         };
 
-        device.CreateDepthStencilView(resource, Some(&dsv_desc), cpu_desc);
-        debug_println!("[create_depth_stencil_view] ✅ DSV created at handle 0x{:X}", cpu_handle);
+        device.CreateDepthStencilView(&resource, Some(&dsv_desc), cpu_desc);
+        debug_println!("[create_depth_stencil_view] ✅ DSV created");
         true
     }
 }
 
+// Вспомогательная функция
+unsafe fn get_resource_from_ptr(ptr: *mut c_void) -> Option<ID3D12Resource> {
+    if ptr.is_null() {
+        return None;
+    }
+    // Пробуем получить из STATE
+    let state = match STATE.lock() {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+
+    // Ищем в bound_vertex_buffers
+    for &addr in &state.bound_vertex_buffers {
+        if addr == ptr as u64 {
+            // Нашли, возвращаем resource
+            return Some(ID3D12Resource::from_raw(ptr as *mut _));
+        }
+    }
+
+    // Если не нашли, просто создаём из указателя
+    Some(ID3D12Resource::from_raw(ptr as *mut _))
+}
+
 // ============================================================================
-// RESOURCE MANAGEMENT
+// RESOURCE MANAGEMENT - ИСПРАВЛЕННАЯ ФУНКЦИЯ
 // ============================================================================
+
 
 #[no_mangle]
 pub extern "C" fn transition_resource(
@@ -411,19 +448,21 @@ pub extern "C" fn transition_resource(
             return false;
         }
 
+        let resource = &*(resource_ptr as *const ID3D12Resource);
+
         with_command_list(|list: &ID3D12GraphicsCommandList| {
-            let resource = &*(resource_ptr as *const ID3D12Resource);
+            let transition = D3D12_RESOURCE_TRANSITION_BARRIER {
+                pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                StateBefore: D3D12_RESOURCE_STATES(state_before as i32),
+                StateAfter: D3D12_RESOURCE_STATES(state_after as i32),
+            };
 
             let barrier = D3D12_RESOURCE_BARRIER {
                 Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
                 Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
                 Anonymous: D3D12_RESOURCE_BARRIER_0 {
-                    Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                        pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
-                        Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                        StateBefore: D3D12_RESOURCE_STATES(state_before as i32),
-                        StateAfter: D3D12_RESOURCE_STATES(state_after as i32),
-                    }),
+                    Transition: std::mem::ManuallyDrop::new(transition), // Вот здесь оборачиваем!
                 },
             };
 
