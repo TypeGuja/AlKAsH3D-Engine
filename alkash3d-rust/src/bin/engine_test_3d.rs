@@ -314,16 +314,25 @@ fn main() {
         }
         println!("[8] Fence created");
 
+        // Небольшая пауза для стабилизации
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
         // 9. ОСНОВНОЙ ЦИКЛ
         println!("\n[9] Starting main loop...\n");
+        use std::io::{Write, stdout};
+        stdout().flush().unwrap();
 
         let mut msg = std::mem::zeroed();
         let start = Instant::now();
         let mut frame = 0;
         let mut last_fps = Instant::now();
         let mut fps_counter = 0;
+        let mut frame_count = 0;
 
-        while RUNNING {
+        // Ограничим количество кадров для теста (уберите эту строку для бесконечного цикла)
+        const MAX_FRAMES: u32 = 120;
+
+        while RUNNING && frame_count < MAX_FRAMES {
             // Обработка сообщений
             while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
@@ -368,13 +377,20 @@ fn main() {
                 set_root_constant_buffer_view(0, const_gpu);
                 draw_instanced(36, 1, 0, 0);
                 transition_resource(back_buffer_ptr, 1, 0);
-                end_frame();
-                present_swap_chain(swap_ptr, 1);
+
+                if !end_frame() {
+                    println!("  end_frame failed!");
+                }
+
+                if !present_swap_chain(swap_ptr, 1) {
+                    println!("  present failed!");
+                }
             } else {
                 println!("  Command list is null!");
             }
 
             frame += 1;
+            frame_count += 1;
             fps_counter += 1;
 
             if last_fps.elapsed().as_secs_f32() >= 1.0 {
@@ -383,7 +399,8 @@ fn main() {
                 last_fps = Instant::now();
             }
 
-            sleep(Duration::from_millis(1));
+            // Небольшая задержка для стабильности
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         println!("\n[10] Shutting down...");
