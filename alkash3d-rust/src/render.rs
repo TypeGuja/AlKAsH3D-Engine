@@ -331,48 +331,65 @@ pub extern "C" fn clear_depth_stencil(dsv_cpu_handle: u64, depth: f32, stencil: 
 
 #[no_mangle]
 pub extern "C" fn create_render_target_view(
-    device_ptr: *mut c_void,
+    _device_ptr: *mut c_void,
     resource_ptr: *mut c_void,
     cpu_handle: u64,
 ) -> bool {
     unsafe {
         debug_println!("[create_render_target_view] START");
-        debug_println!("  device_ptr = {:p}", device_ptr);
-        debug_println!("  resource_ptr = {:p}", resource_ptr);
-        debug_println!("  cpu_handle = 0x{:X}", cpu_handle);
-
-        if cpu_handle == 0 {
-            debug_println!("  ERROR: cpu_handle is 0!");
-            return false;
-        }
 
         if resource_ptr.is_null() {
-            debug_println!("  ERROR: resource_ptr is null!");
+            debug_println!("[create_render_target_view] resource_ptr is null");
             return false;
         }
 
-        // НЕ используем device из STATE - он может быть повреждён
-        // Используем переданный device_ptr
-        if device_ptr.is_null() {
-            debug_println!("  ERROR: device_ptr is null!");
+        if cpu_handle == 0 {
+            debug_println!("[create_render_target_view] cpu_handle is 0");
             return false;
         }
 
-        // Создаём COM объект из raw указателя
-        let device = ID3D12Device::from_raw(device_ptr as *mut _);
-        debug_println!("  device from_raw created: {:p}", device.as_raw());
+        // Получаем device из STATE
+        let device_ptr_from_state = {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(e) => {
+                    debug_println!("[create_render_target_view] Failed to lock STATE: {:?}", e);
+                    return false;
+                }
+            };
+            match state.device.as_ref() {
+                Some(d) => d.as_raw(),
+                None => {
+                    debug_println!("[create_render_target_view] No device in STATE");
+                    return false;
+                }
+            }
+        };
 
+        if device_ptr_from_state.is_null() {
+            debug_println!("[create_render_target_view] device_ptr_from_state is null");
+            return false;
+        }
+
+        // Проверяем, что resource_ptr указывает на валидный объект
+        // Пробуем получить IUnknown для проверки
+        let resource_test = ID3D12Resource::from_raw(resource_ptr as *mut _);
+        if resource_test.as_raw().is_null() {
+            debug_println!("[create_render_target_view] resource raw pointer is null!");
+            return false;
+        }
+
+        debug_println!("[create_render_target_view] device raw: {:p}, resource raw: {:p}, cpu_handle: 0x{:X}",
+                      device_ptr_from_state, resource_ptr, cpu_handle);
+
+        let device = ID3D12Device::from_raw(device_ptr_from_state as *mut _);
         let resource = ID3D12Resource::from_raw(resource_ptr as *mut _);
-        debug_println!("  resource from_raw created: {:p}", resource.as_raw());
-
         let cpu_desc = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle as usize };
-        debug_println!("  cpu_desc.ptr = 0x{:X}", cpu_desc.ptr);
 
         // Создаём Render Target View
         device.CreateRenderTargetView(&resource, None, cpu_desc);
 
         debug_println!("[create_render_target_view] ✅ RTV created");
-
         true
     }
 }
