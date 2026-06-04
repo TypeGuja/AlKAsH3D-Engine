@@ -1,12 +1,10 @@
-// src/bin/engine_test_3d.rs
-//! 3D тест - вращающийся куб
+// src/bin/engine_test_3d.rs - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use alkash3d_rs::*;
 use std::ptr;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Direct3D12::D3D12_VERTEX_BUFFER_VIEW;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::Graphics::Gdi::{UpdateWindow, HBRUSH};
@@ -14,6 +12,8 @@ use windows_core::PCSTR;
 
 const WIDTH: u32 = 1024;
 const HEIGHT: u32 = 768;
+const TARGET_FPS: u32 = 60;
+const FRAME_TIME_NS: u64 = 1_000_000_000 / TARGET_FPS as u64;
 
 static mut RUNNING: bool = true;
 
@@ -28,51 +28,19 @@ impl Vertex {
     const STRIDE: usize = 28;
 }
 
-// Вершины куба
-const VERTICES: [Vertex; 36] = [
-    // Передняя грань (красная)
-    Vertex { pos: [-0.5, -0.5,  0.5], color: [1.0, 0.0, 0.0, 1.0] },
-    Vertex { pos: [ 0.5, -0.5,  0.5], color: [1.0, 0.0, 0.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5,  0.5], color: [1.0, 0.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5, -0.5,  0.5], color: [1.0, 0.0, 0.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5,  0.5], color: [1.0, 0.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5,  0.5,  0.5], color: [1.0, 0.0, 0.0, 1.0] },
-    // Задняя грань (зелёная)
-    Vertex { pos: [-0.5, -0.5, -0.5], color: [0.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [ 0.5, -0.5, -0.5], color: [0.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5, -0.5], color: [0.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5, -0.5, -0.5], color: [0.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5, -0.5], color: [0.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5,  0.5, -0.5], color: [0.0, 1.0, 0.0, 1.0] },
-    // Правая грань (синяя)
-    Vertex { pos: [ 0.5, -0.5,  0.5], color: [0.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5, -0.5, -0.5], color: [0.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5, -0.5], color: [0.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5, -0.5,  0.5], color: [0.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5, -0.5], color: [0.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5,  0.5], color: [0.0, 0.0, 1.0, 1.0] },
-    // Левая грань (жёлтая)
-    Vertex { pos: [-0.5, -0.5,  0.5], color: [1.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5, -0.5, -0.5], color: [1.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5,  0.5, -0.5], color: [1.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5, -0.5,  0.5], color: [1.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5,  0.5, -0.5], color: [1.0, 1.0, 0.0, 1.0] },
-    Vertex { pos: [-0.5,  0.5,  0.5], color: [1.0, 1.0, 0.0, 1.0] },
-    // Верхняя грань (пурпурная)
-    Vertex { pos: [-0.5,  0.5,  0.5], color: [1.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5,  0.5], color: [1.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5, -0.5], color: [1.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [-0.5,  0.5,  0.5], color: [1.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5,  0.5, -0.5], color: [1.0, 0.0, 1.0, 1.0] },
-    Vertex { pos: [-0.5,  0.5, -0.5], color: [1.0, 0.0, 1.0, 1.0] },
-    // Нижняя грань (циан)
-    Vertex { pos: [-0.5, -0.5,  0.5], color: [0.0, 1.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5, -0.5,  0.5], color: [0.0, 1.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5, -0.5, -0.5], color: [0.0, 1.0, 1.0, 1.0] },
-    Vertex { pos: [-0.5, -0.5,  0.5], color: [0.0, 1.0, 1.0, 1.0] },
-    Vertex { pos: [ 0.5, -0.5, -0.5], color: [0.0, 1.0, 1.0, 1.0] },
-    Vertex { pos: [-0.5, -0.5, -0.5], color: [0.0, 1.0, 1.0, 1.0] },
+// ПРОСТОЙ ТРЕУГОЛЬНИК ВО ВЕСЬ ЭКРАН
+const VERTICES: [Vertex; 3] = [
+    Vertex { pos: [ 0.0,  1.0, 0.0], color: [1.0, 0.0, 0.0, 1.0] }, // top - red
+    Vertex { pos: [-1.0, -1.0, 0.0], color: [0.0, 1.0, 0.0, 1.0] }, // bottom-left - green
+    Vertex { pos: [ 1.0, -1.0, 0.0], color: [0.0, 0.0, 1.0, 1.0] }, // bottom-right - blue
 ];
+
+macro_rules! log {
+    ($($arg:tt)*) => {
+        println!($($arg)*);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    };
+}
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
@@ -115,7 +83,7 @@ unsafe fn create_window() -> HWND {
     CreateWindowExA(
         WINDOW_EX_STYLE::default(),
         class_ptr,
-        PCSTR(b"3D Cube - ESC to exit\0".as_ptr()),
+        PCSTR(b"3D Triangle Test - ESC to exit\0".as_ptr()),
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -139,11 +107,7 @@ fn mat4_perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 
 }
 
 fn mat4_look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
-    let f = [
-        target[0] - eye[0],
-        target[1] - eye[1],
-        target[2] - eye[2],
-    ];
+    let f = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
     let f_len = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt();
     let forward = [f[0] / f_len, f[1] / f_len, f[2] / f_len];
 
@@ -196,144 +160,169 @@ fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 }
 
 fn main() {
-    println!("\n╔════════════════════════════════════════════════════════════════╗");
-    println!("║                    3D ROTATING CUBE                             ║");
-    println!("║                         ESC - exit                              ║");
-    println!("╚════════════════════════════════════════════════════════════════╝\n");
+    log!("\n╔════════════════════════════════════════════════════════════════╗");
+    log!("║                    3D TRIANGLE TEST                             ║");
+    log!("║                         ESC - exit                              ║");
+    log!("╚════════════════════════════════════════════════════════════════╝\n");
 
     unsafe {
+        // Включаем Debug Layer
+        enable_debug_layer();
+
+        // ===================================================================
         // 1. СОЗДАНИЕ ОКНА
+        // ===================================================================
         let hwnd = create_window();
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
-        println!("[1] Window created");
+        log!("[1] Window created");
 
+        // ===================================================================
         // 2. СОЗДАНИЕ DEVICE И QUEUE
+        // ===================================================================
         let pair_ptr = create_device_and_queue();
         if pair_ptr.is_null() {
             eprintln!("❌ Failed to create device and queue");
             return;
         }
         let device_ptr = get_device_from_pair(pair_ptr);
-        let queue_ptr = get_queue_from_pair(pair_ptr);
-        println!("[2] Device and queue created");
-        println!("    Device ptr: {:p}", device_ptr);
-        println!("    Queue ptr: {:p}", queue_ptr);
+        log!("[2] Device ready");
 
+        // ===================================================================
         // 3. СОЗДАНИЕ SWAP CHAIN
-        let swap_ptr = create_swap_chain(queue_ptr, hwnd.0, WIDTH, HEIGHT);
+        // ===================================================================
+        let swap_ptr = create_swap_chain(std::ptr::null_mut(), hwnd.0, WIDTH, HEIGHT);
         if swap_ptr.is_null() {
             eprintln!("❌ Failed to create swap chain");
             return;
         }
-        println!("[3] Swap chain created");
-        println!("    Swap ptr: {:p}", swap_ptr);
+        log!("[3] Swap chain ready");
 
-        // 4. RENDER TARGET VIEW
-        let rtv_heap_ptr = create_descriptor_heap(device_ptr, 2, 0, false);
-        if rtv_heap_ptr.is_null() {
-            eprintln!("❌ Failed to create RTV heap");
+        // ===================================================================
+        // 4. СОЗДАНИЕ FENCE
+        // ===================================================================
+        if !create_fence(device_ptr) {
+            eprintln!("❌ Failed to create fence");
             return;
         }
-        println!("[4] RTV heap created at {:p}", rtv_heap_ptr);
+        log!("[4] Fence ready");
 
-        // Получаем базовый CPU handle
-        let rtv_base_handle = GetCPUDescriptorHandleForHeapStart(rtv_heap_ptr);
-        println!("[4] RTV base handle: 0x{:X}", rtv_base_handle);
-
-        // Получаем размер инкремента для RTV дескрипторов
-        let rtv_increment = get_descriptor_handle_increment_size(device_ptr, 0);
-        println!("[4] RTV increment size: {} bytes", rtv_increment);
-
-        // Смещаем handle для первого дескриптора (если нужно)
-        let rtv_handle = rtv_base_handle; // + (0 * rtv_increment) если нужно несколько дескрипторов
-        println!("[4] RTV handle: 0x{:X}", rtv_handle);
-
-        let back_buffer_ptr = swap_chain_get_buffer(swap_ptr, 0);
-        if back_buffer_ptr.is_null() {
-            eprintln!("❌ Failed to get back buffer");
-            return;
-        }
-        println!("[4] Back buffer ptr: {:p}", back_buffer_ptr);
-
-        if !create_render_target_view(device_ptr, back_buffer_ptr, rtv_handle) {
-            eprintln!("❌ Failed to create RTV");
-            return;
-        }
-        println!("[4] RTV created");
-
-        // 5. ROOT SIGNATURE И PSO
-        let root_sig_ptr = create_root_signature_simple(device_ptr);
-        if root_sig_ptr.is_null() {
+        // ===================================================================
+        // 5. СОЗДАНИЕ ROOT SIGNATURE И PSO
+        // ===================================================================
+        let root_sig = create_root_signature_simple(device_ptr);
+        if root_sig.is_null() {
             eprintln!("❌ Failed to create root signature");
             return;
         }
-        println!("[5] Root signature created at {:p}", root_sig_ptr);
+        log!("[5] Root signature created");
 
-        let pso_ptr = create_simple_pso(device_ptr, root_sig_ptr);
-        if pso_ptr.is_null() {
+        // ИСПОЛЬЗУЕМ ТЕСТОВЫЙ ШЕЙДЕР
+        let pso = create_pso(device_ptr, root_sig, 2);
+        if pso.is_null() {
             eprintln!("❌ Failed to create PSO");
             return;
         }
-        println!("[5] PSO created at {:p}", pso_ptr);
+        log!("[5] PSO ready (TEST SHADER)");
 
-        // 6. ВЕРТЕКСНЫЙ БУФЕР
+        // ===================================================================
+        // 6. СОЗДАНИЕ VERTEX BUFFER
+        // ===================================================================
         let vb = create_buffer(device_ptr, VERTICES.len() * Vertex::STRIDE, 0);
         if vb.is_null() {
             eprintln!("❌ Failed to create vertex buffer");
             return;
         }
-        update_subresource(vb, VERTICES.as_ptr() as *const _, VERTICES.len() * Vertex::STRIDE);
+
+        log!("[6] Uploading vertex data...");
+        if !update_subresource(vb, VERTICES.as_ptr() as *const _, VERTICES.len() * Vertex::STRIDE) {
+            eprintln!("❌ Failed to update vertex buffer");
+            return;
+        }
+
+        // ВАЖНО: Ждём, чтобы GPU увидел данные
+        wait_for_gpu();
+
         let vb_gpu = get_buffer_gpu_address(vb);
-        println!("[6] Vertex buffer created, GPU addr: 0x{:X}", vb_gpu);
+        log!("[6] Vertex buffer ready, GPU addr: 0x{:X}, size: {} bytes", vb_gpu, VERTICES.len() * Vertex::STRIDE);
 
-        let vb_view = D3D12_VERTEX_BUFFER_VIEW {
-            BufferLocation: vb_gpu,
-            SizeInBytes: (VERTICES.len() * Vertex::STRIDE) as u32,
-            StrideInBytes: Vertex::STRIDE as u32,
-        };
+        // Отладочный вывод вершин
+        log!("  Vertex 0: pos=({:.1},{:.1},{:.1}) color=({:.1},{:.1},{:.1},{:.1})",
+            VERTICES[0].pos[0], VERTICES[0].pos[1], VERTICES[0].pos[2],
+            VERTICES[0].color[0], VERTICES[0].color[1], VERTICES[0].color[2], VERTICES[0].color[3]);
+        log!("  Vertex 1: pos=({:.1},{:.1},{:.1}) color=({:.1},{:.1},{:.1},{:.1})",
+            VERTICES[1].pos[0], VERTICES[1].pos[1], VERTICES[1].pos[2],
+            VERTICES[1].color[0], VERTICES[1].color[1], VERTICES[1].color[2], VERTICES[1].color[3]);
+        log!("  Vertex 2: pos=({:.1},{:.1},{:.1}) color=({:.1},{:.1},{:.1},{:.1})",
+            VERTICES[2].pos[0], VERTICES[2].pos[1], VERTICES[2].pos[2],
+            VERTICES[2].color[0], VERTICES[2].color[1], VERTICES[2].color[2], VERTICES[2].color[3]);
 
-        // 7. CONSTANT BUFFER
-        let const_buf = create_buffer(device_ptr, 256, 0);
-        if const_buf.is_null() {
+        // ===================================================================
+        // 7. СОЗДАНИЕ CONSTANT BUFFER (нужен даже для тестового шейдера)
+        // ===================================================================
+        let cb = create_buffer(device_ptr, 256, 0);
+        if cb.is_null() {
             eprintln!("❌ Failed to create constant buffer");
             return;
         }
-        let const_gpu = get_buffer_gpu_address(const_buf);
-        let const_map = map_buffer(const_buf);
-        if const_map.is_null() {
+
+        let cb_gpu = get_buffer_gpu_address(cb);
+        let cb_map = map_buffer(cb);
+        if cb_map.is_null() {
             eprintln!("❌ Failed to map constant buffer");
             return;
         }
-        println!("[7] Constant buffer created, GPU addr: 0x{:X}", const_gpu);
+        log!("[7] Constant buffer ready, GPU addr: 0x{:X}", cb_gpu);
 
-        // 8. FENCE
-        if !create_fence(device_ptr) {
-            eprintln!("❌ Failed to create fence");
+        // ===================================================================
+        // 8. СОЗДАНИЕ RTV HEAP
+        // ===================================================================
+        let rtv_heap = create_descriptor_heap(device_ptr, 2, 0, false);
+        if rtv_heap.is_null() {
+            eprintln!("❌ Failed to create RTV heap");
             return;
         }
-        println!("[8] Fence created");
 
-        // Небольшая пауза для стабилизации
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let rtv_base_handle = GetCPUDescriptorHandleForHeapStart(rtv_heap);
+        let rtv_increment = get_descriptor_handle_increment_size(device_ptr, 0);
 
-        // 9. ОСНОВНОЙ ЦИКЛ
-        println!("\n[9] Starting main loop...\n");
-        use std::io::{Write, stdout};
-        stdout().flush().unwrap();
+        log!("[8] RTV base handle: 0x{:X}, increment: {}", rtv_base_handle, rtv_increment);
 
+        // ===================================================================
+        // 9. СОЗДАНИЕ RTV ДЛЯ ОБОИХ BACK BUFFER'ОВ
+        // ===================================================================
+        let back_buffer0 = swap_chain_get_buffer(swap_ptr, 0);
+        let back_buffer1 = swap_chain_get_buffer(swap_ptr, 1);
+
+        let rtv_handle0 = rtv_base_handle;
+        let rtv_handle1 = rtv_base_handle + rtv_increment as u64;
+
+        if !create_render_target_view(device_ptr, back_buffer0, rtv_handle0) {
+            eprintln!("❌ Failed to create RTV for buffer 0");
+            return;
+        }
+
+        if !create_render_target_view(device_ptr, back_buffer1, rtv_handle1) {
+            eprintln!("❌ Failed to create RTV for buffer 1");
+            return;
+        }
+
+        log!("[9] RTV handles created: 0x{:X} and 0x{:X}", rtv_handle0, rtv_handle1);
+
+        log!("\n[10] START RENDERING (FULL SCREEN TRIANGLE)\n");
+        log!("     You should see a colorful triangle (Red, Green, Blue)");
+        log!("     Press ESC to exit\n");
+
+        // ===================================================================
+        // 10. ГЛАВНЫЙ РЕНДЕР-ЦИКЛ
+        // ===================================================================
         let mut msg = std::mem::zeroed();
         let start = Instant::now();
         let mut frame = 0;
-        let mut last_fps = Instant::now();
-        let mut fps_counter = 0;
-        let mut frame_count = 0;
+        let mut frame_timer = Instant::now();
 
-        // Ограничим количество кадров для теста (уберите эту строку для бесконечного цикла)
-        const MAX_FRAMES: u32 = 120;
-
-        while RUNNING && frame_count < MAX_FRAMES {
-            // Обработка сообщений
+        while RUNNING && frame < 500 {
+            // Обработка сообщений Windows
             while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
                     RUNNING = false;
@@ -346,69 +335,127 @@ fn main() {
                 break;
             }
 
-            // Обновление угла
-            let angle = start.elapsed().as_secs_f32() * 1.5;
+            // FPS лимитер
+            let elapsed = frame_timer.elapsed();
+            if elapsed.as_nanos() < FRAME_TIME_NS as u128 {
+                sleep(Duration::from_nanos(FRAME_TIME_NS - elapsed.as_nanos() as u64));
+            }
+            frame_timer = Instant::now();
 
-            // Вычисление MVP
-            let aspect = WIDTH as f32 / HEIGHT as f32;
-            let proj = mat4_perspective(60.0_f32.to_radians(), aspect, 0.1, 100.0);
+            // Для тестового шейдера матрица не нужна, но заполним её
+            let angle = start.elapsed().as_secs_f32() * 1.5;
+            let proj = mat4_perspective(60.0_f32.to_radians(), WIDTH as f32 / HEIGHT as f32, 0.1, 100.0);
             let view = mat4_look_at([3.0, 2.0, 4.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
             let model = mat4_rotate_y(angle);
-            let mvp = mat4_mul(mat4_mul(model, view), proj);
+            let mvp = mat4_mul(proj, mat4_mul(view, model));
+            ptr::copy_nonoverlapping(&mvp as *const _ as *const u8, cb_map as *mut u8, 64);
 
-            // Обновление constant buffer
-            ptr::copy_nonoverlapping(&mvp as *const _ as *const u8, const_map as *mut u8, 64);
+            // Получаем текущий back buffer index
+            let back_buffer_idx = get_current_back_buffer_index(swap_ptr);
+            let current_rtv_handle = if back_buffer_idx == 0 { rtv_handle0 } else { rtv_handle1 };
 
-            // Рендер
+            // Начало кадра
             let cmd_list = begin_frame();
-            if !cmd_list.is_null() {
-                set_pipeline(pso_ptr);
-                set_root_signature(root_sig_ptr);
-                transition_resource(back_buffer_ptr, 0, 1);
-                set_render_target(rtv_handle);
+            if cmd_list.is_null() {
+                log!("❌ ERROR: begin_frame failed");
+                break;
+            }
 
-                let clear_color = [0.1f32, 0.1f32, 0.2f32, 1.0f32];
-                clear_render_target(rtv_handle, clear_color.as_ptr());
+            // Установка PSO
+            if !set_pipeline(pso) {
+                log!("❌ ERROR: set_pipeline failed");
+                break;
+            }
 
-                set_viewport(0.0, 0.0, WIDTH as f32, HEIGHT as f32, 0.0, 1.0);
-                set_scissor_rect(0, 0, WIDTH as i32, HEIGHT as i32);
-                set_vertex_buffer(vb_gpu, vb_view.SizeInBytes, vb_view.StrideInBytes);
-                set_primitive_topology(4);
-                set_root_constant_buffer_view(0, const_gpu);
-                draw_instanced(36, 1, 0, 0);
-                transition_resource(back_buffer_ptr, 1, 0);
+            // Установка root signature
+            if !set_root_signature(root_sig) {
+                log!("❌ ERROR: set_root_signature failed");
+                break;
+            }
 
-                if !end_frame() {
-                    println!("  end_frame failed!");
-                }
+            // Установка render target
+            if !set_render_target(current_rtv_handle) {
+                log!("❌ ERROR: set_render_target failed");
+                break;
+            }
 
-                if !present_swap_chain(swap_ptr, 1) {
-                    println!("  present failed!");
-                }
-            } else {
-                println!("  Command list is null!");
+            // Очистка экрана (чёрный фон для контраста)
+            let clear_color = [0.0f32, 0.0f32, 0.0f32, 1.0f32];
+            if !clear_render_target(current_rtv_handle, clear_color.as_ptr()) {
+                log!("❌ ERROR: clear_render_target failed");
+                break;
+            }
+
+            // Установка viewport
+            if !set_viewport(0.0, 0.0, WIDTH as f32, HEIGHT as f32, 0.0, 1.0) {
+                log!("❌ ERROR: set_viewport failed");
+                break;
+            }
+
+            // Установка vertex buffer
+            if !set_vertex_buffer(vb_gpu, (VERTICES.len() * Vertex::STRIDE) as u32, Vertex::STRIDE as u32) {
+                log!("❌ ERROR: set_vertex_buffer failed");
+                break;
+            }
+
+            // Установка топологии треугольника
+            if !set_primitive_topology(4) {
+                log!("❌ ERROR: set_primitive_topology failed");
+                break;
+            }
+
+            // Установка constant buffer
+            if !set_root_constant_buffer_view(0, cb_gpu) {
+                log!("❌ ERROR: set_root_constant_buffer_view failed");
+                break;
+            }
+
+            // Отрисовка треугольника
+            if !draw_instanced(3, 1, 0, 0) {
+                log!("❌ ERROR: draw_instanced failed");
+                break;
+            }
+
+            // Завершение кадра
+            if !end_frame() {
+                log!("❌ ERROR: end_frame failed");
+                break;
+            }
+
+            // Презентация
+            if !present_swap_chain(swap_ptr, 0) {
+                log!("❌ ERROR: present failed");
+                break;
             }
 
             frame += 1;
-            frame_count += 1;
-            fps_counter += 1;
 
-            if last_fps.elapsed().as_secs_f32() >= 1.0 {
-                println!("Frame {} | FPS: {} | Angle: {:.1}°", frame, fps_counter, angle.to_degrees());
-                fps_counter = 0;
-                last_fps = Instant::now();
+            if frame % 60 == 0 {
+                log!("Frame {} | Angle: {:.1}°", frame, angle.to_degrees());
             }
 
-            // Небольшая задержка для стабильности
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // Первые несколько кадров показываем статус
+            if frame == 1 {
+                log!("✓ First frame rendered successfully!");
+            }
         }
 
-        println!("\n[10] Shutting down...");
-        println!("    Total frames: {}", frame);
+        log!("\n[11] Shutdown, {} frames rendered", frame);
 
+        // ===================================================================
+        // 11. ОЧИСТКА
+        // ===================================================================
         wait_for_gpu();
         force_cleanup();
 
-        println!("    ✅ Done!\n");
+        destroy_buffer(vb);
+        destroy_buffer(cb);
+        destroy_pso(pso);
+        destroy_root_signature(root_sig);
+        destroy_descriptor_heap(rtv_heap);
+        destroy_swap_chain(swap_ptr);
+        destroy_device_queue_pair(pair_ptr);
+
+        log!("✅ Done!\n");
     }
 }

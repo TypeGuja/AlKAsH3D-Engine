@@ -1,10 +1,10 @@
-// src/buffer.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ (без утечек памяти)
+// src/buffer.rs - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use windows_core::Interface;
-use crate::{debug_println, utils::ptr_to_device, STATE};
+use crate::{debug_println, utils::ptr_to_device};
 
 #[no_mangle]
 pub extern "C" fn create_buffer(
@@ -17,7 +17,10 @@ pub extern "C" fn create_buffer(
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
-            None => return std::ptr::null_mut(),
+            None => {
+                debug_println!("[create_buffer] No device!");
+                return std::ptr::null_mut();
+            }
         };
 
         let heap_type = match buffer_type {
@@ -68,8 +71,9 @@ pub extern "C" fn create_buffer(
                 if let Some(b) = buffer {
                     let raw_ptr = b.as_raw();
                     debug_println!("[create_buffer] ✅ Created at {:p}", raw_ptr);
-                    // ИСПРАВЛЕНИЕ: передаём владение через Box
-                    Box::into_raw(Box::new(b)) as *mut c_void
+                    // Сохраняем в Box, чтобы управлять временем жизни
+                    let boxed = Box::new(b);
+                    Box::into_raw(boxed) as *mut c_void
                 } else {
                     std::ptr::null_mut()
                 }
@@ -90,31 +94,47 @@ pub extern "C" fn update_buffer(
     offset: usize,
 ) -> bool {
     unsafe {
-        if buffer_ptr.is_null() || data_ptr.is_null() || size == 0 {
+        debug_println!("\n[update_buffer] START: buffer_ptr={:p}, data_ptr={:p}, size={}, offset={}",
+                      buffer_ptr, data_ptr, size, offset);
+
+        if buffer_ptr.is_null() {
+            debug_println!("[update_buffer] buffer_ptr is NULL!");
             return false;
         }
 
-        // Ждем завершения GPU перед маппингом
-        crate::command::wait_for_gpu();
+        if data_ptr.is_null() {
+            debug_println!("[update_buffer] data_ptr is NULL!");
+            return false;
+        }
 
-        std::thread::sleep(std::time::Duration::from_micros(100));
+        if size == 0 {
+            debug_println!("[update_buffer] size is 0!");
+            return false;
+        }
 
-        // ИСПРАВЛЕНИЕ: правильно извлекаем COM объект
-        let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        let desc = buffer.GetDesc();
+        // Восстанавливаем буфер из Box
+        let buffer_ref = &*(buffer_ptr as *const ID3D12Resource);
+
+        // Проверяем, что указатель валидный, пытаясь получить описание
+        let desc = buffer_ref.GetDesc();
+        debug_println!("[update_buffer] Buffer desc: Width={}", desc.Width);
 
         if (desc.Width as usize) < offset + size {
+            debug_println!("[update_buffer] Buffer too small: {} < {}", desc.Width, offset + size);
             return false;
         }
 
         let mut mapped: *mut c_void = std::ptr::null_mut();
 
-        match buffer.Map(0, None, Some(&mut mapped)) {
+        match buffer_ref.Map(0, None, Some(&mut mapped)) {
             Ok(_) => {
                 if mapped.is_null() {
-                    buffer.Unmap(0, None);
+                    debug_println!("[update_buffer] Map returned NULL!");
+                    buffer_ref.Unmap(0, None);
                     return false;
                 }
+
+                debug_println!("[update_buffer] Mapped at {:p}", mapped);
 
                 let dst = (mapped as *mut u8).add(offset);
                 std::ptr::copy_nonoverlapping(data_ptr as *const u8, dst, size);
@@ -123,8 +143,8 @@ pub extern "C" fn update_buffer(
                     Begin: offset,
                     End: offset + size
                 };
-                buffer.Unmap(0, Some(&write_range));
-
+                buffer_ref.Unmap(0, Some(&write_range));
+                debug_println!("[update_buffer] ✅ Data copied successfully");
                 true
             }
             Err(e) => {
@@ -141,53 +161,20 @@ pub extern "C" fn update_subresource(
     data_ptr: *const c_void,
     size: usize,
 ) -> bool {
+    debug_println!("\n[update_subresource] Calling update_buffer with offset 0");
     update_buffer(buffer_ptr, data_ptr, size, 0)
 }
 
 #[no_mangle]
-pub extern "C" fn map_buffer(buffer_ptr: *mut c_void) -> *mut c_void {
-    unsafe {
-        if buffer_ptr.is_null() {
-            return std::ptr::null_mut();
-        }
-
-        let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        let mut mapped: *mut c_void = std::ptr::null_mut();
-
-        match buffer.Map(0, None, Some(&mut mapped)) {
-            Ok(_) => mapped,
-            Err(e) => {
-                debug_println!("[map_buffer] Failed: {:?}", e);
-                std::ptr::null_mut()
-            }
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn unmap_buffer(buffer_ptr: *mut c_void, written_range_start: usize, written_range_end: usize) {
-    unsafe {
-        if buffer_ptr.is_null() {
-            return;
-        }
-
-        let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        let write_range = D3D12_RANGE {
-            Begin: written_range_start,
-            End: written_range_end
-        };
-        buffer.Unmap(0, Some(&write_range));
-    }
-}
-
-// ИСПРАВЛЕНИЕ: функция для освобождения буфера
-#[no_mangle]
 pub extern "C" fn destroy_buffer(buffer_ptr: *mut c_void) -> bool {
     if buffer_ptr.is_null() {
+        debug_println!("[destroy_buffer] buffer_ptr is NULL");
         return false;
     }
     unsafe {
+        debug_println!("[destroy_buffer] Destroying buffer at {:p}", buffer_ptr);
         let _ = Box::from_raw(buffer_ptr as *mut ID3D12Resource);
+        debug_println!("[destroy_buffer] ✅ Buffer destroyed");
         true
     }
 }
@@ -196,20 +183,49 @@ pub extern "C" fn destroy_buffer(buffer_ptr: *mut c_void) -> bool {
 pub extern "C" fn get_buffer_gpu_address(buffer_ptr: *mut c_void) -> u64 {
     unsafe {
         if buffer_ptr.is_null() {
+            debug_println!("[get_buffer_gpu_address] buffer_ptr is NULL");
             return 0;
         }
         let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        buffer.GetGPUVirtualAddress()
+        let addr = buffer.GetGPUVirtualAddress();
+        debug_println!("[get_buffer_gpu_address] GPU addr: 0x{:X}", addr);
+        addr
     }
 }
 
 #[no_mangle]
-pub extern "C" fn get_buffer_size(buffer_ptr: *mut c_void) -> u64 {
+pub extern "C" fn map_buffer (buffer_ptr: *mut c_void) -> *mut c_void {
     unsafe {
         if buffer_ptr.is_null() {
-            return 0;
+            debug_println!("[ma_buffer] buffer_ptr is NULL");
+            return std::ptr::null_mut();
+
         }
         let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        buffer.GetDesc().Width
+        let mut mapped: *mut c_void = std::ptr::null_mut();
+
+        match buffer.Map(0, None, Some(&mut mapped)) {
+            Ok(_) => {
+                debug_println!("[ma_buffer] Mapped at {:p}", mapped);
+                mapped
+            }
+            Err(e) => {
+                debug_println!("[ma_buffer] Map failed: {:?}", e);
+                std::ptr::null_mut()
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn unmap_buffer(buffer_ptr: *mut c_void) -> bool {
+    unsafe {
+        if buffer_ptr.is_null() {
+            return false;
+        }
+        let buffer = &*(buffer_ptr as *const ID3D12Resource);
+        buffer.Unmap(0, None);
+        debug_println!("[unmap_buffer] Unmapped");
+        true
     }
 }
