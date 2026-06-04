@@ -1,11 +1,9 @@
-// src/shader.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ
+// src/shader.rs - ПРАВИЛЬНАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
-use std::path::Path;
 use std::ptr;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows_core::*;
-use crate::debug_println;
 
 #[link(name = "d3dcompiler")]
 extern "system" {
@@ -30,237 +28,30 @@ struct D3D_SHADER_MACRO {
     definition: PCSTR,
 }
 
-const VS_SIMPLE: &str = r#"
-struct VSInput {
-    float3 position : POSITION;
-    float4 color : COLOR;
-};
+// Простые шейдеры
+const VS_SOURCE: &str =
+    "struct VSInput { float3 position : POSITION; float4 color : COLOR; };
+struct VSOutput { float4 position : SV_POSITION; float4 color : COLOR; };
+VSOutput main(VSInput input) { VSOutput output; output.position = float4(input.position, 1.0); output.color = input.color; return output; }";
 
-struct VSOutput {
-    float4 position : SV_POSITION;
-    float4 color : COLOR;
-};
+const PS_SOURCE: &str =
+    "struct PSInput { float4 position : SV_POSITION; float4 color : COLOR; };
+float4 main(PSInput input) : SV_TARGET { return input.color; }";
 
-cbuffer ConstantBuffer : register(b0) {
-    float4x4 mvp;
-};
+// Глобальные данные
+static mut VS_BLOB: *mut c_void = ptr::null_mut();
+static mut PS_BLOB: *mut c_void = ptr::null_mut();
+static mut VS_DATA: *const u8 = ptr::null();
+static mut PS_DATA: *const u8 = ptr::null();
+static mut VS_SIZE: usize = 0;
+static mut PS_SIZE: usize = 0;
 
-VSOutput main(VSInput input) {
-    VSOutput output;
-    output.position = mul(float4(input.position, 1.0), mvp);
-    output.color = input.color;
-    return output;
-}
-"#;
-
-const PS_SIMPLE: &str = r#"
-struct PSInput {
-    float4 position : SV_POSITION;
-    float4 color : COLOR;
-};
-
-float4 main(PSInput input) : SV_TARGET {
-    return input.color;
-}
-"#;
-
-const VS_ADVANCED: &str = r#"
-struct VSInput {
-    float3 position : POSITION;
-    float3 normal : NORMAL;
-    float3 tangent : TANGENT;
-    float3 bitangent : BITANGENT;
-    float2 uv : TEXCOORD0;
-    float2 uv2 : TEXCOORD1;
-    float4 color : COLOR;
-};
-
-struct VSOutput {
-    float4 position : SV_POSITION;
-    float3 worldPos : WORLDPOS;
-    float3 normal : NORMAL;
-    float2 uv : TEXCOORD0;
-    float4 color : COLOR;
-};
-
-cbuffer ConstantBuffer : register(b0) {
-    float4x4 world;
-    float4x4 view;
-    float4x4 proj;
-    float4 tintColor;
-    float3 lightDir;
-    float lightIntensity;
-    float3 ambientColor;
-    float ambientIntensity;
-};
-
-VSOutput main(VSInput input) {
-    VSOutput output;
-    float4 worldPos = mul(float4(input.position, 1.0), world);
-    output.worldPos = worldPos.xyz;
-    output.position = mul(worldPos, view);
-    output.position = mul(output.position, proj);
-    output.normal = normalize(mul(float4(input.normal, 0.0), world).xyz);
-    output.uv = input.uv;
-    output.color = input.color * tintColor;
-    return output;
-}
-"#;
-
-const PS_ADVANCED: &str = r#"
-struct PSInput {
-    float4 position : SV_POSITION;
-    float3 worldPos : WORLDPOS;
-    float3 normal : NORMAL;
-    float2 uv : TEXCOORD0;
-    float4 color : COLOR;
-};
-
-cbuffer ConstantBuffer : register(b0) {
-    float4x4 world;
-    float4x4 view;
-    float4x4 proj;
-    float4 tintColor;
-    float3 lightDir;
-    float lightIntensity;
-    float3 ambientColor;
-    float ambientIntensity;
-};
-
-float4 main(PSInput input) : SV_TARGET {
-    float3 normal = normalize(input.normal);
-    float3 lightDirNorm = normalize(-lightDir);
-    float diff = max(dot(normal, lightDirNorm), 0.0);
-    float3 diffuse = float3(1.0, 1.0, 1.0) * diff * lightIntensity;
-    float3 ambient = ambientColor * ambientIntensity;
-    float3 finalColor = input.color.rgb * (ambient + diffuse);
-    return float4(finalColor, input.color.a);
-}
-"#;
-
-#[repr(u32)]
-pub enum ShaderType {
-    Simple = 0,
-    Advanced = 1,
-    Custom = 2,
-}
-
-#[no_mangle]
-pub extern "C" fn compile_shader_from_source(
-    source: *const i8,
-    entry_point: *const i8,
-    target: *const i8,
-) -> *mut c_void {
-    unsafe {
-        if source.is_null() || entry_point.is_null() || target.is_null() {
-            return ptr::null_mut();
-        }
-
-        let source_str = std::ffi::CStr::from_ptr(source).to_string_lossy();
-        let entry_str = std::ffi::CStr::from_ptr(entry_point).to_string_lossy();
-        let target_str = std::ffi::CStr::from_ptr(target).to_string_lossy();
-
-        compile_shader_internal(&source_str, &target_str, &entry_str)
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn compile_shader_from_file(
-    file_path: *const i8,
-    entry_point: *const i8,
-    target: *const i8,
-) -> *mut c_void {
-    unsafe {
-        if file_path.is_null() {
-            return ptr::null_mut();
-        }
-
-        let path_str = std::ffi::CStr::from_ptr(file_path).to_string_lossy();
-        let path = Path::new(path_str.as_ref());
-
-        match std::fs::read_to_string(path) {
-            Ok(source) => {
-                let entry_str = if entry_point.is_null() {
-                    "main".to_string()
-                } else {
-                    std::ffi::CStr::from_ptr(entry_point).to_string_lossy().to_string()
-                };
-                let target_str = if target.is_null() {
-                    "vs_5_0".to_string()
-                } else {
-                    std::ffi::CStr::from_ptr(target).to_string_lossy().to_string()
-                };
-                compile_shader_internal(&source, &target_str, &entry_str)
-            }
-            Err(e) => {
-                debug_println!("[compile_shader] Failed to read file: {:?}", e);
-                ptr::null_mut()
-            }
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn get_builtin_shader(shader_type: u32, is_vertex: bool) -> *mut c_void {
-    match shader_type {
-        0 => {
-            if is_vertex {
-                compile_shader_internal(VS_SIMPLE, "vs_5_0", "main")
-            } else {
-                compile_shader_internal(PS_SIMPLE, "ps_5_0", "main")
-            }
-        }
-        1 => {
-            if is_vertex {
-                compile_shader_internal(VS_ADVANCED, "vs_5_0", "main")
-            } else {
-                compile_shader_internal(PS_ADVANCED, "ps_5_0", "main")
-            }
-        }
-        _ => ptr::null_mut(),
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn destroy_shader_blob(blob_ptr: *mut c_void) -> bool {
-    if blob_ptr.is_null() {
-        return false;
-    }
-    unsafe {
-        let _ = Box::from_raw(blob_ptr as *mut ID3DBlob);
-        debug_println!("[destroy_shader_blob] ✅ Shader blob destroyed");
-        true
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn get_builtin_vs_blob() -> *mut c_void {
-    get_builtin_shader(0, true)
-}
-
-#[no_mangle]
-pub extern "C" fn get_builtin_ps_blob() -> *mut c_void {
-    get_builtin_shader(0, false)
-}
-
-#[no_mangle]
-pub extern "C" fn get_advanced_vs_blob() -> *mut c_void {
-    get_builtin_shader(1, true)
-}
-
-#[no_mangle]
-pub extern "C" fn get_advanced_ps_blob() -> *mut c_void {
-    get_builtin_shader(1, false)
-}
-
-fn compile_shader_internal(source: &str, target: &str, entry: &str) -> *mut c_void {
+fn compile_shader(source: &str, target: &str, entry: &str) -> (*mut c_void, *const u8, usize) {
     let entry_cstr = std::ffi::CString::new(entry).unwrap();
     let target_cstr = std::ffi::CString::new(target).unwrap();
 
     let mut code_blob: *mut c_void = ptr::null_mut();
     let mut error_blob: *mut c_void = ptr::null_mut();
-
-    let compile_flags = 0;
 
     unsafe {
         let hr = D3DCompile(
@@ -271,71 +62,158 @@ fn compile_shader_internal(source: &str, target: &str, entry: &str) -> *mut c_vo
             ptr::null(),
             PCSTR(entry_cstr.as_ptr() as *const u8),
             PCSTR(target_cstr.as_ptr() as *const u8),
-            compile_flags,
-            0,
+            0, 0,
             &mut code_blob,
             &mut error_blob,
         );
 
         if hr.is_err() {
             if !error_blob.is_null() {
-                let error_interface: ID3DBlob = std::mem::transmute(error_blob);
-                let err_ptr = error_interface.GetBufferPointer();
-                let err_size = error_interface.GetBufferSize();
+                let err_blob = ID3DBlob::from_raw(error_blob as *mut _);
+                let err_ptr = err_blob.GetBufferPointer();
+                let err_size = err_blob.GetBufferSize();
                 if err_size > 0 && !err_ptr.is_null() {
                     let err_msg = std::slice::from_raw_parts(err_ptr as *const u8, err_size);
-                    debug_println!("Shader compilation error:\n{}", String::from_utf8_lossy(err_msg));
+                    eprintln!("Shader error:\n{}", String::from_utf8_lossy(err_msg));
                 }
-                let _ = Box::from_raw(error_blob as *mut ID3DBlob);
-            } else {
-                debug_println!("Shader compilation failed with HRESULT: {:?}", hr);
             }
-            return ptr::null_mut();
+            return (ptr::null_mut(), ptr::null(), 0);
         }
 
         if code_blob.is_null() {
-            debug_println!("Shader compilation succeeded but blob is null");
-            return ptr::null_mut();
+            return (ptr::null_mut(), ptr::null(), 0);
         }
 
-        let blob_check: ID3DBlob = std::mem::transmute(code_blob);
-        let size = blob_check.GetBufferSize();
-        debug_println!("✅ Shader compiled successfully ({} bytes)", size);
+        // Преобразуем в ID3DBlob и получаем данные
+        let blob = ID3DBlob::from_raw(code_blob as *mut _);
+        let data_ptr = blob.GetBufferPointer();
+        let data_size = blob.GetBufferSize();
 
-        // ИСПРАВЛЕНИЕ: возвращаем как Box
-        Box::into_raw(Box::new(blob_check)) as *mut c_void
+        // Увеличиваем счётчик ссылок, чтобы объект не был удалён
+        // и сохраняем указатель
+        let raw_ptr = blob.as_raw();
+        std::mem::forget(blob); // Не удаляем, сохраняем для дальнейшего использования
+
+        println!("[compile_shader] blob={:p}, data_ptr={:p}, size={}", raw_ptr, data_ptr, data_size);
+
+        (raw_ptr as *mut c_void, data_ptr as *const u8, data_size)
     }
 }
 
 #[no_mangle]
-pub extern "C" fn get_blob_size(blob_ptr: *mut c_void) -> usize {
-    if blob_ptr.is_null() {
-        return 0;
-    }
+pub extern "C" fn init_builtin_shaders() {
     unsafe {
-        let blob = &*(blob_ptr as *const ID3DBlob);
+        if VS_BLOB.is_null() {
+            println!("[init_builtin_shaders] Compiling VS...");
+            let (blob, data, size) = compile_shader(VS_SOURCE, "vs_5_0", "main");
+            VS_BLOB = blob;
+            VS_DATA = data;
+            VS_SIZE = size;
+            println!("[init_builtin_shaders] VS blob: {:p}, data: {:p}, size: {}", VS_BLOB, VS_DATA, VS_SIZE);
+        }
+        if PS_BLOB.is_null() {
+            println!("[init_builtin_shaders] Compiling PS...");
+            let (blob, data, size) = compile_shader(PS_SOURCE, "ps_5_0", "main");
+            PS_BLOB = blob;
+            PS_DATA = data;
+            PS_SIZE = size;
+            println!("[init_builtin_shaders] PS blob: {:p}, data: {:p}, size: {}", PS_BLOB, PS_DATA, PS_SIZE);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_builtin_vs_blob() -> *mut c_void {
+    unsafe {
+        if VS_BLOB.is_null() {
+            init_builtin_shaders();
+        }
+        VS_BLOB
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_builtin_ps_blob() -> *mut c_void {
+    unsafe {
+        if PS_BLOB.is_null() {
+            init_builtin_shaders();
+        }
+        PS_BLOB
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_builtin_vs_data() -> *const u8 {
+    unsafe {
+        if VS_DATA.is_null() {
+            init_builtin_shaders();
+        }
+        VS_DATA
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_builtin_ps_data() -> *const u8 {
+    unsafe {
+        if PS_DATA.is_null() {
+            init_builtin_shaders();
+        }
+        PS_DATA
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_builtin_vs_size() -> usize {
+    unsafe {
+        if VS_SIZE == 0 {
+            init_builtin_shaders();
+        }
+        VS_SIZE
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_builtin_ps_size() -> usize {
+    unsafe {
+        if PS_SIZE == 0 {
+            init_builtin_shaders();
+        }
+        PS_SIZE
+    }
+}
+
+// Заглушки
+#[no_mangle]
+pub extern "C" fn get_test_vs_blob() -> *mut c_void { get_builtin_vs_blob() }
+#[no_mangle]
+pub extern "C" fn get_advanced_vs_blob() -> *mut c_void { get_builtin_vs_blob() }
+#[no_mangle]
+pub extern "C" fn get_advanced_ps_blob() -> *mut c_void { get_builtin_ps_blob() }
+#[no_mangle]
+pub extern "C" fn get_builtin_shader(_t: u32, is_vertex: bool) -> *mut c_void {
+    if is_vertex { get_builtin_vs_blob() } else { get_builtin_ps_blob() }
+}
+#[no_mangle]
+pub extern "C" fn destroy_shader_blob(_p: *mut c_void) -> bool { true }
+#[no_mangle]
+pub extern "C" fn free_blob(_p: *mut c_void) -> bool { true }
+#[no_mangle]
+pub extern "C" fn compile_shader_from_file(_a: *const i8, _b: *const i8, _c: *const i8) -> *mut c_void { ptr::null_mut() }
+#[no_mangle]
+pub extern "C" fn compile_shader_from_source(_a: *const i8, _b: *const i8, _c: *const i8) -> *mut c_void { ptr::null_mut() }
+#[no_mangle]
+pub extern "C" fn get_blob_size(p: *mut c_void) -> usize {
+    if p.is_null() { return 0; }
+    unsafe {
+        let blob = &*(p as *const ID3DBlob);
         blob.GetBufferSize()
     }
 }
-
 #[no_mangle]
-pub extern "C" fn get_blob_data(blob_ptr: *mut c_void) -> *const u8 {
-    if blob_ptr.is_null() {
-        return ptr::null();
-    }
+pub extern "C" fn get_blob_data(p: *mut c_void) -> *const u8 {
+    if p.is_null() { return ptr::null(); }
     unsafe {
-        let blob = &*(blob_ptr as *const ID3DBlob);
+        let blob = &*(p as *const ID3DBlob);
         blob.GetBufferPointer() as *const u8
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn free_blob(blob_ptr: *mut c_void) -> bool {
-    if blob_ptr.is_null() {
-        return false;
-    }
-    unsafe {
-        let _ = Box::from_raw(blob_ptr as *mut ID3DBlob);
-        true
     }
 }

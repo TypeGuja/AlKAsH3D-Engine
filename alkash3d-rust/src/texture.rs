@@ -68,7 +68,7 @@ pub extern "C" fn create_texture_2d(
                     let raw_ptr = tex.as_raw();
                     debug_println!("[create_texture_2d] ✅ Created at {:p}", raw_ptr);
                     // ИСПРАВЛЕНИЕ: используем Box вместо forget
-                    Box::into_raw(Box::new(tex)) as *mut c_void
+                    tex.as_raw() as *mut c_void
                 } else {
                     ptr::null_mut()
                 }
@@ -87,7 +87,7 @@ pub extern "C" fn destroy_texture_2d(texture_ptr: *mut c_void) -> bool {
         return false;
     }
     unsafe {
-        let _ = Box::from_raw(texture_ptr as *mut ID3D12Resource);
+        let _ = ID3D12Resource::from_raw(texture_ptr as *mut _);
         debug_println!("[destroy_texture_2d] ✅ Texture destroyed");
         true
     }
@@ -101,7 +101,7 @@ pub extern "C" fn create_texture_from_memory(
     height: u32,
     _fmt: *const u8,
 ) -> *mut c_void {
-    unsafe {
+    {
         debug_println!("\n[create_texture_from_memory] {}x{}", width, height);
 
         let texture = create_texture_2d(device_ptr, width, height, 0, 1);

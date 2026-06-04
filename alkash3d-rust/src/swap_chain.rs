@@ -1,4 +1,4 @@
-// src/swap_chain.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ с правильным владением
+// src/swap_chain.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ (с правильными типами индексов)
 
 use std::ffi::c_void;
 use std::ptr;
@@ -13,11 +13,11 @@ use crate::{STATE, debug_println};
 
 #[link(name = "user32")]
 extern "system" {
-    fn IsWindow(hWnd: HWND) -> i32;
+    fn IsWindow(hwnd: HWND) -> i32;
 }
 
-// Глобальное хранение back buffer с владением
-static mut BACK_BUFFER: Option<ID3D12Resource> = None;
+// Храним back buffer'ы для каждого кадра
+static mut BACK_BUFFERS: [*mut c_void; 2] = [ptr::null_mut(), ptr::null_mut()];
 static mut SWAP_CHAIN_STORED: Option<IDXGISwapChain3> = None;
 
 #[no_mangle]
@@ -114,17 +114,21 @@ pub extern "C" fn create_swap_chain(queue_ptr: *mut c_void, hwnd_ptr: *mut c_voi
                 // Сохраняем swap chain глобально
                 SWAP_CHAIN_STORED = Some(swap_chain3.clone());
 
-                // Получаем и СОХРАНЯЕМ back buffer с владением
-                match swap_chain3.GetBuffer::<ID3D12Resource>(0) {
-                    Ok(buffer) => {
-                        BACK_BUFFER = Some(buffer);
-                        debug_println!("[create_swap_chain] Back buffer stored");
+                // Получаем оба back buffer'а и сохраняем их указатели
+                for i in 0..2 {
+                    match swap_chain3.GetBuffer::<ID3D12Resource>(i) {
+                        Ok(buffer) => {
+                            let raw_ptr = buffer.as_raw() as *mut c_void;
+                            BACK_BUFFERS[i as usize] = raw_ptr;
+                            debug_println!("[create_swap_chain] Back buffer {} stored at {:p}", i, raw_ptr);
+                            // Не забываем освободить COM объект, который мы получили
+                            std::mem::forget(buffer);
+                        }
+                        Err(e) => {
+                            debug_println!("Failed to get back buffer {}: {:?}", i, e);
+                        }
                     }
-                    Err(e) => {
-                        debug_println!("Failed to get back buffer: {:?}", e);
-                        return ptr::null_mut();
-                    }
-                };
+                }
 
                 let raw_ptr = swap_chain3.as_raw() as *mut c_void;
                 debug_println!("[create_swap_chain] ✅ Success, returning {:p}", raw_ptr);
@@ -139,26 +143,42 @@ pub extern "C" fn create_swap_chain(queue_ptr: *mut c_void, hwnd_ptr: *mut c_voi
 }
 
 #[no_mangle]
-pub extern "C" fn get_back_buffer() -> *mut c_void {
+pub extern "C" fn get_current_back_buffer_resource() -> *mut c_void {
     unsafe {
-        match BACK_BUFFER.as_ref() {
-            Some(buffer) => {
-                let ptr = buffer.as_raw() as *mut c_void;
-                debug_println!("[get_back_buffer] Returning {:p}", ptr);
-                ptr
-            }
-            None => {
-                debug_println!("[get_back_buffer] Back buffer is None!");
-                ptr::null_mut()
-            }
+        let state = match STATE.lock() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
+        let swap_chain = match state.swap_chain.as_ref() {
+            Some(sc) => sc,
+            None => return std::ptr::null_mut(),
+        };
+
+        let idx = swap_chain.GetCurrentBackBufferIndex() as usize;
+
+        if idx < 2 {
+            let ptr = BACK_BUFFERS[idx];
+            debug_println!("[get_current_back_buffer_resource] Returning buffer {} at {:p}", idx, ptr);
+            ptr
+        } else {
+            debug_println!("[get_current_back_buffer_resource] Invalid index: {}", idx);
+            std::ptr::null_mut()
         }
     }
 }
 
 #[no_mangle]
+pub extern "C" fn get_back_buffer() -> *mut c_void {
+    get_current_back_buffer_resource()
+}
+
+#[no_mangle]
 pub extern "C" fn destroy_swap_chain(_swap_ptr: *mut c_void) -> bool {
     unsafe {
-        BACK_BUFFER = None;
+        for i in 0..2 {
+            BACK_BUFFERS[i] = ptr::null_mut();
+        }
         SWAP_CHAIN_STORED = None;
     }
     debug_println!("[destroy_swap_chain] Swap chain cleaned");
@@ -168,18 +188,12 @@ pub extern "C" fn destroy_swap_chain(_swap_ptr: *mut c_void) -> bool {
 #[no_mangle]
 pub extern "C" fn present_swap_chain(swap_ptr: *mut c_void, sync_interval: u32) -> bool {
     unsafe {
-        let swap_chain = if !swap_ptr.is_null() {
-            IDXGISwapChain3::from_raw(swap_ptr as *mut _)
-        } else {
-            let state = match STATE.lock() {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-            match state.swap_chain.as_ref() {
-                Some(s) => s.clone(),
-                None => return false,
-            }
-        };
+        if swap_ptr.is_null() {
+            debug_println!("[present_swap_chain] swap_ptr is null");
+            return false;
+        }
+
+        let swap_chain = IDXGISwapChain3::from_raw(swap_ptr as *mut _);
 
         let flags = if sync_interval == 0 {
             DXGI_PRESENT_ALLOW_TEARING
@@ -188,20 +202,28 @@ pub extern "C" fn present_swap_chain(swap_ptr: *mut c_void, sync_interval: u32) 
         };
 
         let result = swap_chain.Present(sync_interval, flags).is_ok();
+        debug_println!("[present_swap_chain] Present result: {}", result);
 
-        // Обновляем back buffer после презентации
+        // После презентации обновляем указатель на текущий back buffer
         if result {
-            let idx = swap_chain.GetCurrentBackBufferIndex();
-            match swap_chain.GetBuffer::<ID3D12Resource>(idx) {
-                Ok(buffer) => {
-                    BACK_BUFFER = Some(buffer);
-                    debug_println!("[present_swap_chain] Back buffer updated to index {}", idx);
-                }
-                Err(e) => {
-                    debug_println!("[present_swap_chain] Failed to get back buffer: {:?}", e);
+            let new_idx = swap_chain.GetCurrentBackBufferIndex() as usize;
+            if new_idx < 2 && BACK_BUFFERS[new_idx].is_null() {
+                // Если почему-то указатель не сохранён, получаем заново
+                match swap_chain.GetBuffer::<ID3D12Resource>(new_idx as u32) {
+                    Ok(buffer) => {
+                        BACK_BUFFERS[new_idx] = buffer.as_raw() as *mut c_void;
+                        std::mem::forget(buffer);
+                        debug_println!("[present_swap_chain] Updated back buffer {} at {:p}", new_idx, BACK_BUFFERS[new_idx]);
+                    }
+                    Err(e) => {
+                        debug_println!("[present_swap_chain] Failed to get back buffer {}: {:?}", new_idx, e);
+                    }
                 }
             }
         }
+
+        // Не забываем, что мы создали новый COM объект - нужно его освободить
+        std::mem::forget(swap_chain);
 
         result
     }
@@ -210,6 +232,13 @@ pub extern "C" fn present_swap_chain(swap_ptr: *mut c_void, sync_interval: u32) 
 #[no_mangle]
 pub extern "C" fn swap_chain_get_buffer(swap_ptr: *mut c_void, buffer_index: u32) -> *mut c_void {
     unsafe {
+        let idx = buffer_index as usize;
+        if idx < 2 && !BACK_BUFFERS[idx].is_null() {
+            debug_println!("[swap_chain_get_buffer] Returning cached buffer {} at {:p}", idx, BACK_BUFFERS[idx]);
+            return BACK_BUFFERS[idx];
+        }
+
+        // Fallback - получаем из swap chain
         let swap_chain = if !swap_ptr.is_null() {
             IDXGISwapChain3::from_raw(swap_ptr as *mut _)
         } else {
@@ -225,9 +254,11 @@ pub extern "C" fn swap_chain_get_buffer(swap_ptr: *mut c_void, buffer_index: u32
 
         match swap_chain.GetBuffer::<ID3D12Resource>(buffer_index) {
             Ok(buffer) => {
-                // Для других буферов (не основной) просто возвращаем указатель
-                // НЕ сохраняем их, чтобы не конфликтовать с основным
                 let raw_ptr = buffer.as_raw() as *mut c_void;
+                if idx < 2 {
+                    BACK_BUFFERS[idx] = raw_ptr;
+                }
+                std::mem::forget(buffer);
                 debug_println!("[swap_chain_get_buffer] Returning buffer {} at {:p}", buffer_index, raw_ptr);
                 raw_ptr
             }
@@ -242,8 +273,10 @@ pub extern "C" fn swap_chain_get_buffer(swap_ptr: *mut c_void, buffer_index: u32
 #[no_mangle]
 pub extern "C" fn resize_swap_chain(swap_ptr: *mut c_void, width: u32, height: u32) -> bool {
     unsafe {
-        // Очищаем старый back buffer перед ресайзом
-        BACK_BUFFER = None;
+        // Очищаем кэш back buffer'ов
+        for i in 0..2 {
+            BACK_BUFFERS[i] = ptr::null_mut();
+        }
 
         let swap_chain = if !swap_ptr.is_null() {
             IDXGISwapChain3::from_raw(swap_ptr as *mut _)
@@ -266,15 +299,19 @@ pub extern "C" fn resize_swap_chain(swap_ptr: *mut c_void, width: u32, height: u
             DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
         ).is_ok();
 
-        // После ресайза получаем новый back buffer
+        // После ресайза получаем новые back buffer'ы
         if result {
-            match swap_chain.GetBuffer::<ID3D12Resource>(0) {
-                Ok(buffer) => {
-                    BACK_BUFFER = Some(buffer);
-                    debug_println!("[resize_swap_chain] Resized to {}x{}, new back buffer stored", width, height);
-                }
-                Err(e) => {
-                    debug_println!("[resize_swap_chain] Failed to get new back buffer: {:?}", e);
+            for i in 0..2 {
+                match swap_chain.GetBuffer::<ID3D12Resource>(i) {
+                    Ok(buffer) => {
+                        let idx = i as usize;
+                        BACK_BUFFERS[idx] = buffer.as_raw() as *mut c_void;
+                        std::mem::forget(buffer);
+                        debug_println!("[resize_swap_chain] Back buffer {} stored at {:p}", i, BACK_BUFFERS[idx]);
+                    }
+                    Err(e) => {
+                        debug_println!("[resize_swap_chain] Failed to get back buffer {}: {:?}", i, e);
+                    }
                 }
             }
         }
@@ -298,16 +335,16 @@ pub extern "C" fn get_current_back_buffer_index(swap_ptr: *mut c_void) -> u32 {
                 None => return 0,
             }
         };
-        swap_chain.GetCurrentBackBufferIndex()
+        let idx = swap_chain.GetCurrentBackBufferIndex();
+        std::mem::forget(swap_chain);
+        idx
     }
 }
 
 #[no_mangle]
 pub extern "C" fn swap_chain_get_buffer_current(swap_ptr: *mut c_void) -> *mut c_void {
-    unsafe {
-        let idx = get_current_back_buffer_index(swap_ptr);
-        swap_chain_get_buffer(swap_ptr, idx)
-    }
+    let idx = get_current_back_buffer_index(swap_ptr);
+    swap_chain_get_buffer(swap_ptr, idx)
 }
 
 #[no_mangle]
@@ -315,7 +352,7 @@ pub extern "C" fn get_swap_chain(swap_ptr: *mut c_void) -> *mut c_void {
     if !swap_ptr.is_null() {
         return swap_ptr;
     }
-    unsafe {
+    {
         let state = match STATE.lock() {
             Ok(s) => s,
             Err(_) => return ptr::null_mut(),

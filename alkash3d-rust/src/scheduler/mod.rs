@@ -10,7 +10,6 @@ pub use pool::*;
 pub use task::*;
 pub use adaptive::*;
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,7 +18,6 @@ pub struct EngineScheduler {
     pub cpu_budget: Arc<CpuBudget>,
     pub worker_pool: Arc<WorkerPool>,
     stats: SchedulerStats,
-    frame_counter: AtomicU32,
     thresholds: AdaptiveThresholds,
 }
 
@@ -48,7 +46,6 @@ impl EngineScheduler {
             cpu_budget: Arc::new(CpuBudget::with_reserve(1)),
             worker_pool: Arc::new(WorkerPool::new(heavy_cores, light_cores)),
             stats: SchedulerStats::default(),
-            frame_counter: AtomicU32::new(0),
             thresholds: AdaptiveThresholds::new(ThresholdConfig::default()),
         }
     }

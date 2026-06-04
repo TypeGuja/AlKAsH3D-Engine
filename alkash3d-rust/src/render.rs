@@ -2,12 +2,12 @@
 //! Функции рендеринга - ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
+use std::io::Write;
 use windows::Win32::{
     Foundation::RECT,
     Graphics::{Direct3D12::*, Dxgi::Common::*},
 };
 use windows_core::Interface;
-use crate::utils::ptr_to_device;
 use crate::command::with_command_list;
 use crate::{STATE, debug_println};
 
@@ -43,21 +43,28 @@ pub struct ScissorRect {
 #[no_mangle]
 pub extern "C" fn set_graphics_pipeline(pso_ptr: *mut c_void) -> bool {
     unsafe {
+        println!("[set_graphics_pipeline] START, pso_ptr={:p}", pso_ptr);
+        std::io::stdout().flush().unwrap();
+
         if pso_ptr.is_null() {
-            debug_println!("[set_graphics_pipeline] pso_ptr is null");
+            println!("[set_graphics_pipeline] pso_ptr is null");
             return false;
         }
 
-        with_command_list(|list| {
+        let result = with_command_list(|list| {
+            println!("[set_graphics_pipeline] inside with_command_list");
             let pso = &*(pso_ptr as *const ID3D12PipelineState);
+            println!("[set_graphics_pipeline] calling SetPipelineState");
             list.SetPipelineState(pso);
-            debug_println!("[set_graphics_pipeline] ✅ PSO set");
-
-            if let Ok(mut state) = STATE.lock() {
-                state.current_pso = Some(pso.clone());
-            }
+            println!("[set_graphics_pipeline] SetPipelineState done");
             true
-        }).unwrap_or(false)
+        });
+
+        println!("[set_graphics_pipeline] result = {:?}", result);
+        let final_result = result.unwrap_or(false);
+        println!("[set_graphics_pipeline] final_result = {}", final_result);
+        std::io::stdout().flush().unwrap();
+        final_result
     }
 }
 
@@ -74,20 +81,24 @@ pub extern "C" fn set_pipeline_state(pso_ptr: *mut c_void) -> bool {
 #[no_mangle]
 pub extern "C" fn set_root_signature(root_sig_ptr: *mut c_void) -> bool {
     unsafe {
+        println!("[set_root_signature] START, ptr={:p}", root_sig_ptr);  // ← ДОБАВИТЬ
+
         if root_sig_ptr.is_null() {
             debug_println!("[set_root_signature] root_sig_ptr is null");
             return false;
         }
 
-        with_command_list(|list| {
+        let result = with_command_list(|list| {
             let root_sig = &*(root_sig_ptr as *const ID3D12RootSignature);
             list.SetGraphicsRootSignature(root_sig);
             debug_println!("[set_root_signature] ✅ Root signature set");
             true
-        }).unwrap_or(false)
+        });
+
+        println!("[set_root_signature] Result: {:?}", result);  // ← ДОБАВИТЬ
+        result.unwrap_or(false)
     }
 }
-
 #[no_mangle]
 pub extern "C" fn set_root_signature_state(root_sig_ptr: *mut c_void) -> bool {
     set_root_signature(root_sig_ptr)
@@ -134,7 +145,10 @@ pub extern "C" fn set_scissor_rect(left: i32, top: i32, right: i32, bottom: i32)
 
 #[no_mangle]
 pub extern "C" fn set_vertex_buffer(gpu_address: u64, size: u32, stride: u32) -> bool {
-    with_command_list(|list| {
+    debug_println!("[set_vertex_buffer] START: addr=0x{:X}, size={}, stride={}", gpu_address, size, stride);
+
+    let result = with_command_list(|list| {
+        debug_println!("[set_vertex_buffer] inside with_command_list");
         let view = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: gpu_address,
             SizeInBytes: size,
@@ -143,14 +157,12 @@ pub extern "C" fn set_vertex_buffer(gpu_address: u64, size: u32, stride: u32) ->
         unsafe {
             list.IASetVertexBuffers(0, Some(&[view]));
         }
-
-        if let Ok(mut state) = STATE.lock() {
-            state.bound_vertex_buffers.clear();
-            state.bound_vertex_buffers.push(gpu_address);
-        }
-        debug_println!("[set_vertex_buffer] ✅ Vertex buffer set: addr={:X}, size={}", gpu_address, size);
+        debug_println!("[set_vertex_buffer] ✅ Vertex buffer set");
         true
-    }).unwrap_or(false)
+    });
+
+    debug_println!("[set_vertex_buffer] result = {:?}", result);
+    result.unwrap_or(false)
 }
 
 #[no_mangle]
@@ -425,29 +437,6 @@ pub extern "C" fn create_depth_stencil_view(
     }
 }
 
-// Вспомогательная функция
-unsafe fn get_resource_from_ptr(ptr: *mut c_void) -> Option<ID3D12Resource> {
-    if ptr.is_null() {
-        return None;
-    }
-    // Пробуем получить из STATE
-    let state = match STATE.lock() {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-
-    // Ищем в bound_vertex_buffers
-    for &addr in &state.bound_vertex_buffers {
-        if addr == ptr as u64 {
-            // Нашли, возвращаем resource
-            return Some(ID3D12Resource::from_raw(ptr as *mut _));
-        }
-    }
-
-    // Если не нашли, просто создаём из указателя
-    Some(ID3D12Resource::from_raw(ptr as *mut _))
-}
-
 // ============================================================================
 // RESOURCE MANAGEMENT - ИСПРАВЛЕННАЯ ФУНКЦИЯ
 // ============================================================================
@@ -460,33 +449,57 @@ pub extern "C" fn transition_resource(
     state_after: u32,
 ) -> bool {
     unsafe {
+        debug_println!("[transition_resource] START, ptr={:p}, before={}, after={}",
+                       resource_ptr, state_before, state_after);
+
         if resource_ptr.is_null() {
             debug_println!("[transition_resource] resource_ptr is null");
             return false;
         }
 
+        // Получаем command list напрямую из STATE
+        let state = match STATE.lock() {
+            Ok(s) => s,
+            Err(e) => {
+                debug_println!("[transition_resource] Failed to lock STATE: {:?}", e);
+                return false;
+            }
+        };
+
+        if !state.command_list_open {
+            debug_println!("[transition_resource] command list not open");
+            return false;
+        }
+
+        let list = match state.command_list.as_ref() {
+            Some(l) => l,
+            None => {
+                debug_println!("[transition_resource] command list is None");
+                return false;
+            }
+        };
+
         let resource = &*(resource_ptr as *const ID3D12Resource);
 
-        with_command_list(|list: &ID3D12GraphicsCommandList| {
-            let transition = D3D12_RESOURCE_TRANSITION_BARRIER {
-                pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
-                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                StateBefore: D3D12_RESOURCE_STATES(state_before as i32),
-                StateAfter: D3D12_RESOURCE_STATES(state_after as i32),
-            };
+        // Создаём барьер напрямую, используя сырой указатель
+        let transition = D3D12_RESOURCE_TRANSITION_BARRIER {
+            pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+            Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+            StateBefore: D3D12_RESOURCE_STATES(state_before as i32),
+            StateAfter: D3D12_RESOURCE_STATES(state_after as i32),
+        };
 
-            let barrier = D3D12_RESOURCE_BARRIER {
-                Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                Anonymous: D3D12_RESOURCE_BARRIER_0 {
-                    Transition: std::mem::ManuallyDrop::new(transition), // Вот здесь оборачиваем!
-                },
-            };
+        let barrier = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                Transition: std::mem::ManuallyDrop::new(transition),
+            },
+        };
 
-            list.ResourceBarrier(&[barrier]);
-            debug_println!("[transition_resource] ✅ Transition from {} to {}", state_before, state_after);
-            true
-        }).unwrap_or(false)
+        list.ResourceBarrier(&[barrier]);
+        debug_println!("[transition_resource] ✅ Transition done");
+        true
     }
 }
 

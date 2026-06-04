@@ -32,7 +32,7 @@ impl Worker {
                         ThreadPriority::Normal => THREAD_PRIORITY_NORMAL,
                         ThreadPriority::Low => THREAD_PRIORITY_LOWEST,
                     };
-                    SetThreadPriority(GetCurrentThread(), priority_class);
+                    let _ = SetThreadPriority(GetCurrentThread(), priority_class);
                 }
 
                 for f in rx {
@@ -114,10 +114,10 @@ impl WorkerPool {
 impl Drop for WorkerPool {
     fn drop(&mut self) {
         for worker in &self.heavy_workers {
-            drop(&worker.sender);
+            let _ = &worker.sender;
         }
         for worker in &self.light_workers {
-            drop(&worker.sender);
+            let _ = &worker.sender;
         }
         for worker in self.heavy_workers.drain(..) {
             let _ = worker.handle.join();
