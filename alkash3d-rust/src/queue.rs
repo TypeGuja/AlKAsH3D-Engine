@@ -2,8 +2,6 @@
 
 use std::ffi::c_void;
 use windows::Win32::Graphics::Direct3D12::*;
-use windows_core::Interface;
-use crate::{STATE, debug_println};
 
 #[no_mangle]
 pub extern "C" fn execute_command_lists(queue_ptr: *mut c_void, lists: *const *mut c_void, count: u32) -> bool {

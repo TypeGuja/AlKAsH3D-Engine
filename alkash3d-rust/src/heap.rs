@@ -1,11 +1,10 @@
-// src/heap.rs
-//! Дескрипторные кучи - ИСПРАВЛЕННАЯ ВЕРСИЯ
+// src/heap.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 use std::ffi::c_void;
 use std::ptr;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows_core::Interface;
-use crate::{STATE, debug_println, utils::ptr_to_device};
+use crate::{debug_println, utils::ptr_to_device};
 
 #[no_mangle]
 pub extern "C" fn create_descriptor_heap(
@@ -15,12 +14,14 @@ pub extern "C" fn create_descriptor_heap(
     shader_visible: bool,
 ) -> *mut c_void {
     unsafe {
-        debug_println!("\n[create_descriptor_heap] num={}, type={}, shader_visible={}",
-                       num_descriptors, heap_type, shader_visible);
+        debug_println!("\n[create_descriptor_heap] START: num={}, type={}", num_descriptors, heap_type);
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
-            None => return ptr::null_mut(),
+            None => {
+                debug_println!("[create_descriptor_heap] No device!");
+                return ptr::null_mut();
+            }
         };
 
         let heap_ty = match heap_type {
@@ -28,7 +29,10 @@ pub extern "C" fn create_descriptor_heap(
             1 => D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
             2 => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             3 => D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-            _ => return ptr::null_mut(),
+            _ => {
+                debug_println!("[create_descriptor_heap] Invalid heap type!");
+                return ptr::null_mut();
+            }
         };
 
         let flags = if shader_visible && heap_ty == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV {
@@ -46,30 +50,17 @@ pub extern "C" fn create_descriptor_heap(
 
         match device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&desc) {
             Ok(heap) => {
-                debug_println!("[heap] ✅ Created at {:p}", heap.as_raw());
+                let raw_ptr = heap.as_raw();
+                debug_println!("[create_descriptor_heap] ✅ Heap created at {:p}", raw_ptr);
 
-                // Получаем CPU handle для проверки
-                let cpu_handle = heap.GetCPUDescriptorHandleForHeapStart();
-                debug_println!("[heap] CPU handle base: 0x{:X}", cpu_handle.ptr);
-
-                // Получаем размер инкремента для этого типа кучи
-                let inc_size = device.GetDescriptorHandleIncrementSize(heap_ty);
-                debug_println!("[heap] Descriptor increment size: {} bytes", inc_size);
-
-                // Для проверки, вычисляем handle для второго дескриптора
-                let second_handle = cpu_handle.ptr + inc_size as usize;
-                debug_println!("[heap] Second descriptor CPU handle would be: 0x{:X}", second_handle);
-
-                if let Ok(mut state) = STATE.lock() {
-                    state.descriptor_heaps.push(heap.clone());
-                }
-
-                let raw_ptr = Box::into_raw(Box::new(heap)) as *mut c_void;
-                debug_println!("[heap] Returning raw ptr: {:p}", raw_ptr);
-                raw_ptr
+                // Сохраняем в Box
+                let boxed = Box::new(heap);
+                let result = Box::into_raw(boxed) as *mut c_void;
+                debug_println!("[create_descriptor_heap] Returning pointer: {:p}", result);
+                result
             }
             Err(e) => {
-                debug_println!("[heap] Failed: {:?}", e);
+                debug_println!("[create_descriptor_heap] Failed: {:?}", e);
                 ptr::null_mut()
             }
         }
@@ -77,45 +68,21 @@ pub extern "C" fn create_descriptor_heap(
 }
 
 #[no_mangle]
-pub extern "C" fn destroy_descriptor_heap(heap_ptr: *mut c_void) -> bool {
-    if heap_ptr.is_null() {
-        return false;
-    }
-    unsafe {
-        let _ = Box::from_raw(heap_ptr as *mut ID3D12DescriptorHeap);
-        debug_println!("[destroy_descriptor_heap] ✅ Heap destroyed");
-        true
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn GetGPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u64 {
-    if heap_ptr.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        let heap = &*(heap_ptr as *const ID3D12DescriptorHeap);
-        let desc = heap.GetDesc();
-
-        if desc.Flags != D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE {
-            return 0;
-        }
-
-        let gpu_handle = heap.GetGPUDescriptorHandleForHeapStart();
-        gpu_handle.ptr as u64
-    }
-}
-
-#[no_mangle]
 pub extern "C" fn GetCPUDescriptorHandleForHeapStart(heap_ptr: *mut c_void) -> u64 {
+    debug_println!("\n[GetCPUDescriptorHandleForHeapStart] heap_ptr={:p}", heap_ptr);
+
     if heap_ptr.is_null() {
+        debug_println!("[GetCPUDescriptorHandleForHeapStart] heap_ptr is NULL!");
         return 0;
     }
+
     unsafe {
+        // Восстанавливаем Box, но не забираем владение (используем &)
         let heap = &*(heap_ptr as *const ID3D12DescriptorHeap);
         let handle = heap.GetCPUDescriptorHandleForHeapStart();
-        handle.ptr as u64
+        let ptr_value = handle.ptr as u64;
+        debug_println!("[GetCPUDescriptorHandleForHeapStart] handle ptr: 0x{:X}", ptr_value);
+        ptr_value
     }
 }
 
@@ -125,12 +92,12 @@ pub extern "C" fn get_descriptor_handle_increment_size(
     heap_type: u32
 ) -> u32 {
     unsafe {
-        debug_println!("[get_descriptor_handle_increment_size] device_ptr={:p}, heap_type={}", device_ptr, heap_type);
+        debug_println!("\n[get_descriptor_handle_increment_size] heap_type={}", heap_type);
 
         let device = match ptr_to_device(device_ptr) {
             Some(d) => d,
             None => {
-                debug_println!("  Failed to get device");
+                debug_println!("  No device!");
                 return 0;
             }
         };
@@ -141,7 +108,7 @@ pub extern "C" fn get_descriptor_handle_increment_size(
             2 => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             3 => D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
             _ => {
-                debug_println!("  Invalid heap type: {}", heap_type);
+                debug_println!("  Invalid heap type!");
                 return 0;
             }
         };
@@ -149,5 +116,19 @@ pub extern "C" fn get_descriptor_handle_increment_size(
         let size = device.GetDescriptorHandleIncrementSize(ty);
         debug_println!("  Increment size: {} bytes", size);
         size
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_descriptor_heap(heap_ptr: *mut c_void) -> bool {
+    if heap_ptr.is_null() {
+        debug_println!("[destroy_descriptor_heap] heap_ptr is NULL");
+        return false;
+    }
+    unsafe {
+        debug_println!("[destroy_descriptor_heap] Destroying heap at {:p}", heap_ptr);
+        let _ = Box::from_raw(heap_ptr as *mut ID3D12DescriptorHeap);
+        debug_println!("[destroy_descriptor_heap] ✅ Heap destroyed");
+        true
     }
 }

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use libloading::{Library, Symbol};
 
 use crate::scheduler::*;
-use crate::*;
 
 // ===================================================================
 // Plugin ABI - общий для всех плагинов

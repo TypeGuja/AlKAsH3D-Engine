@@ -1,9 +1,11 @@
-// src/command.rs - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
+// src/command.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ
+
+// src/command.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ (без дублирования COM объектов)
 
 use std::ffi::c_void;
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE},
     Graphics::Direct3D12::*,
@@ -16,14 +18,9 @@ thread_local! {
     static FENCE_EVENT: RefCell<Option<HANDLE>> = RefCell::new(None);
 }
 
+// 3 аллокатора для 2-буферного swap chain
 const ALLOCATOR_POOL_SIZE: usize = 3;
 static FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
-static mut ALLOCATOR_FENCE_VALUES: [u64; ALLOCATOR_POOL_SIZE] = [0; ALLOCATOR_POOL_SIZE];
-
-#[no_mangle]
-pub extern "C" fn create_command_allocators(_device_ptr: *mut c_void, _count: u32) -> bool {
-    true
-}
 
 pub fn with_command_list<F, R>(f: F) -> Option<R>
 where
@@ -38,24 +35,15 @@ where
     };
 
     if !state.command_list_open {
-        debug_println!("[with_command_list] Command list not open");
         return None;
     }
 
     let list = match state.command_list.as_ref() {
         Some(l) => l,
-        None => {
-            debug_println!("[with_command_list] Command list is None");
-            return None;
-        }
+        None => return None,
     };
 
     Some(f(list))
-}
-
-#[no_mangle]
-pub extern "C" fn create_command_list(_device_ptr: *mut c_void) -> *mut c_void {
-    std::ptr::null_mut()
 }
 
 #[no_mangle]
@@ -76,12 +64,7 @@ pub extern "C" fn create_fence(device_ptr: *mut c_void) -> bool {
                         Err(_) => return false,
                     };
                     state.fence = Some(fence);
-                    // Инициализируем fence_values
-                    for i in 0..ALLOCATOR_POOL_SIZE {
-                        if i < state.fence_values.len() {
-                            state.fence_values[i] = 0;
-                        }
-                    }
+                    state.fence_values = vec![0; ALLOCATOR_POOL_SIZE];
                 }
 
                 match CreateEventA(None, false, false, None) {
@@ -116,8 +99,8 @@ unsafe fn wait_for_allocator(allocator_idx: usize) {
             None => return,
         };
 
-        let fence_val = if allocator_idx < ALLOCATOR_FENCE_VALUES.len() {
-            ALLOCATOR_FENCE_VALUES[allocator_idx]
+        let fence_val = if allocator_idx < state.fence_values.len() {
+            state.fence_values[allocator_idx]
         } else {
             0
         };
@@ -131,8 +114,7 @@ unsafe fn wait_for_allocator(allocator_idx: usize) {
 
     let completed = fence.GetCompletedValue();
     if completed < fence_value {
-        debug_println!("[wait] Allocator {} waiting ({} < {})",
-                      allocator_idx, completed, fence_value);
+        debug_println!("[wait] Allocator {} waiting for fence {}", allocator_idx, fence_value);
         if let Some(event) = event {
             let _ = fence.SetEventOnCompletion(fence_value, event);
             WaitForSingleObject(event, INFINITE);
@@ -205,17 +187,12 @@ pub extern "C" fn begin_frame_ex(pso_ptr: *mut c_void) -> *mut c_void {
             Some(ID3D12PipelineState::from_raw(pso_ptr as *mut _))
         };
 
-        // Проверяем и создаём аллокатор
-        let allocator = if allocator_idx < state.command_allocators.len() {
-            if let Some(ref a) = state.command_allocators[allocator_idx] {
-                a.clone()
-            } else {
-                drop(state);
-                match create_new_allocator(&device, allocator_idx) {
-                    Some(a) => a,
-                    None => return std::ptr::null_mut(),
-                }
-            }
+        while state.command_allocators.len() <= allocator_idx {
+            state.command_allocators.push(None);
+        }
+
+        let allocator = if let Some(ref a) = state.command_allocators[allocator_idx] {
+            a.clone()
         } else {
             drop(state);
             match create_new_allocator(&device, allocator_idx) {
@@ -228,14 +205,14 @@ pub extern "C" fn begin_frame_ex(pso_ptr: *mut c_void) -> *mut c_void {
     };
 
     unsafe {
-        // Сбрасываем аллокатор
+        debug_println!("[begin_frame] Resetting allocator...");
         if let Err(e) = allocator.Reset() {
             debug_println!("[begin_frame] Allocator reset failed: {:?}", e);
             return std::ptr::null_mut();
         }
+        debug_println!("[begin_frame] Allocator reset OK");
 
         debug_println!("[begin_frame] Creating command list...");
-
         match device.CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
             0,
             D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -244,6 +221,7 @@ pub extern "C" fn begin_frame_ex(pso_ptr: *mut c_void) -> *mut c_void {
         ) {
             Ok(list) => {
                 let list_ptr = list.as_raw();
+                debug_println!("[begin_frame] Command list created at {:p}", list_ptr);
 
                 {
                     let mut state = match STATE.lock() {
@@ -255,7 +233,6 @@ pub extern "C" fn begin_frame_ex(pso_ptr: *mut c_void) -> *mut c_void {
                     state.reset_bindings();
                 }
 
-                debug_println!("[begin_frame] ✅ Ready");
                 list_ptr as *mut c_void
             }
             Err(e) => {
@@ -283,7 +260,8 @@ pub extern "C" fn end_frame() -> bool {
 
     debug_println!("\n[end_frame] Frame {} (allocator {})", frame_id - 1, allocator_idx);
 
-    let (queue, list, fence) = {
+    // Забираем command list из STATE
+    let (queue, list, fence, fence_val) = {
         let mut state = match STATE.lock() {
             Ok(s) => s,
             Err(e) => {
@@ -323,74 +301,115 @@ pub extern "C" fn end_frame() -> bool {
 
         state.command_list_open = false;
 
-        (queue, list, fence)
+        while state.fence_values.len() <= allocator_idx {
+            state.fence_values.push(0);
+        }
+        let val = state.fence_values[allocator_idx] + 1;
+        state.fence_values[allocator_idx] = val;
+
+        (queue, list, fence, val)
     };
 
-    let list = ManuallyDrop::new(list);
-
     unsafe {
-        debug_println!("[end_frame] Closing command list...");
+        // Закрываем command list
         if let Err(e) = list.Close() {
             debug_println!("[end_frame] Close failed: {:?}", e);
             return false;
         }
-        debug_println!("[end_frame] Command list closed");
 
-        debug_println!("[end_frame] Executing command list...");
-        let cmd_list_raw = list.as_raw();
-        let cmd_list: ID3D12CommandList = std::mem::transmute_copy(&cmd_list_raw);
-        let cmd_lists = [Some(cmd_list)];
+        // Получаем сырой указатель и передаём в ExecuteCommandLists
+        let list_raw = list.as_raw();
+
+        // Используем ID3D12CommandList::from_raw для создания временного объекта
+        // НО нужно быть осторожным - не удалять его дважды
+        let cmd_list = ID3D12CommandList::from_raw(list_raw);
+        let cmd_lists = [Some(cmd_list.clone())];
         queue.ExecuteCommandLists(&cmd_lists);
-        debug_println!("[end_frame] Command list executed");
 
-        let next_fence_value = {
-            let mut state = match STATE.lock() {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-            if allocator_idx >= state.fence_values.len() {
-                while state.fence_values.len() <= allocator_idx {
-                    state.fence_values.push(0);
-                }
-            }
-            let val = state.fence_values[allocator_idx] + 1;
-            state.fence_values[allocator_idx] = val;
-            val
-        };
+        // Не забываем, что мы создали новый COM объект - нужно его освободить
+        // Но оригинальный list уже будет удалён в конце функции
+        std::mem::forget(cmd_list);
 
-        debug_println!("[end_frame] Fence value for allocator {}: {}", allocator_idx, next_fence_value);
-
-        debug_println!("[end_frame] Signaling fence...");
-        if let Err(e) = queue.Signal(&fence, next_fence_value) {
+        // Сигналим fence
+        if let Err(e) = queue.Signal(&fence, fence_val) {
             debug_println!("[end_frame] Signal failed: {:?}", e);
             return false;
         }
-        debug_println!("[end_frame] Fence signaled");
-
-        if allocator_idx < ALLOCATOR_FENCE_VALUES.len() {
-            ALLOCATOR_FENCE_VALUES[allocator_idx] = next_fence_value;
-        }
-
-        debug_println!("[end_frame] ✅ Done");
     }
 
+    // list будет удалён здесь (Drop)
     true
 }
 
 #[no_mangle]
 pub extern "C" fn wait_for_gpu() -> bool {
-    debug_println!("[wait_for_gpu] Waiting for all frames...");
-
     unsafe {
+        debug_println!("[wait_for_gpu] Waiting for all frames...");
+
+        let fence_values = {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            state.fence_values.clone()
+        };
+
         for i in 0..ALLOCATOR_POOL_SIZE {
-            if i < ALLOCATOR_FENCE_VALUES.len() && ALLOCATOR_FENCE_VALUES[i] > 0 {
+            if i < fence_values.len() && fence_values[i] > 0 {
                 wait_for_allocator(i);
             }
         }
-    }
 
-    debug_println!("[wait_for_gpu] ✅ All frames complete");
-    true
+        debug_println!("[wait_for_gpu] ✅ All frames complete");
+        true
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn wait_for_frame(frame_id: u64) -> bool {
+    unsafe {
+        let allocator_idx = (frame_id % ALLOCATOR_POOL_SIZE as u64) as usize;
+
+        let (fence, fence_value) = {
+            let state = match STATE.lock() {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+
+            let fence = match state.fence.as_ref() {
+                Some(f) => f.clone(),
+                None => return false,
+            };
+
+            let fence_val = if allocator_idx < state.fence_values.len() {
+                state.fence_values[allocator_idx]
+            } else {
+                0
+            };
+
+            (fence, fence_val)
+        };
+
+        if fence_value == 0 {
+            return true;
+        }
+
+        let event = FENCE_EVENT.with(|cell| cell.borrow().clone());
+
+        let completed = fence.GetCompletedValue();
+        if completed < fence_value {
+            if let Some(event) = event {
+                let _ = fence.SetEventOnCompletion(fence_value, event);
+                WaitForSingleObject(event, INFINITE);
+            } else {
+                while fence.GetCompletedValue() < fence_value {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+            }
+        }
+
+        true
+    }
 }
 
 #[no_mangle]

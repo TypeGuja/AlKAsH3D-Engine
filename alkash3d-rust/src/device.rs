@@ -176,7 +176,7 @@ pub extern "C" fn get_device_from_pair(pair_ptr: *mut c_void) -> *mut c_void {
 
 #[no_mangle]
 pub extern "C" fn get_device_from_state() -> *mut c_void {
-    unsafe {
+    {
         let state = match STATE.lock() {
             Ok(s) => s,
             Err(_) => return ptr::null_mut(),
