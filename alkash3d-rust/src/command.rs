@@ -1,10 +1,7 @@
-// src/command.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ
-
-// src/command.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ (без дублирования COM объектов)
+// src/command.rs - ИСПРАВЛЕННАЯ ВЕРСИЯ (убрана ошибка типа)
 
 use std::ffi::c_void;
 use std::cell::RefCell;
-use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE},
@@ -18,8 +15,7 @@ thread_local! {
     static FENCE_EVENT: RefCell<Option<HANDLE>> = RefCell::new(None);
 }
 
-// 3 аллокатора для 2-буферного swap chain
-const ALLOCATOR_POOL_SIZE: usize = 3;
+const ALLOCATOR_POOL_SIZE: usize = 16;
 static FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn with_command_list<F, R>(f: F) -> Option<R>
@@ -40,7 +36,10 @@ where
 
     let list = match state.command_list.as_ref() {
         Some(l) => l,
-        None => return None,
+        None => {
+            debug_println!("[with_command_list] command_list is None but open=true");
+            return None;
+        }
     };
 
     Some(f(list))
@@ -127,119 +126,100 @@ unsafe fn wait_for_allocator(allocator_idx: usize) {
     }
 }
 
-unsafe fn create_new_allocator(device: &ID3D12Device, idx: usize) -> Option<ID3D12CommandAllocator> {
-    debug_println!("[create_new_allocator] Creating allocator {}", idx);
-
-    match device.CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT) {
-        Ok(a) => {
-            debug_println!("[create_new_allocator] ✅ Created allocator {}", idx);
-
-            let mut state = match STATE.lock() {
-                Ok(s) => s,
-                Err(_) => return None,
-            };
-
-            while state.command_allocators.len() <= idx {
-                state.command_allocators.push(None);
-            }
-            state.command_allocators[idx] = Some(a.clone());
-
-            Some(a)
-        }
-        Err(e) => {
-            debug_println!("[create_new_allocator] Failed: {:?}", e);
-            None
-        }
-    }
-}
-
 #[no_mangle]
 pub extern "C" fn begin_frame_ex(pso_ptr: *mut c_void) -> *mut c_void {
     let frame_id = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let allocator_idx = (frame_id % ALLOCATOR_POOL_SIZE as u64) as usize;
+    let allocator_idx = 0;
 
-    debug_println!("\n[begin_frame] Frame {} (allocator {})", frame_id, allocator_idx);
+    println!("\n[begin_frame] Frame {} (allocator {})", frame_id, allocator_idx);
 
     unsafe {
-        wait_for_allocator(allocator_idx);
-    }
-
-    let (device, allocator, pso) = unsafe {
-        let mut state = match STATE.lock() {
-            Ok(s) => s,
-            Err(e) => {
-                debug_println!("[begin_frame] Failed to lock state: {:?}", e);
-                return std::ptr::null_mut();
-            }
-        };
-
-        let device = match state.device.as_ref() {
-            Some(d) => d.clone(),
-            None => {
-                debug_println!("[begin_frame] No device!");
-                return std::ptr::null_mut();
-            }
-        };
-
-        let pso = if pso_ptr.is_null() {
-            state.current_pso.clone()
-        } else {
-            Some(ID3D12PipelineState::from_raw(pso_ptr as *mut _))
-        };
-
-        while state.command_allocators.len() <= allocator_idx {
-            state.command_allocators.push(None);
+        if frame_id > 0 {
+            println!("[begin_frame] Waiting for allocator...");
+            wait_for_allocator(allocator_idx);
+            println!("[begin_frame] Wait done");
         }
 
-        let allocator = if let Some(ref a) = state.command_allocators[allocator_idx] {
-            a.clone()
-        } else {
-            drop(state);
-            match create_new_allocator(&device, allocator_idx) {
-                Some(a) => a,
-                None => return std::ptr::null_mut(),
+        println!("[begin_frame] Resetting state...");
+        {
+            let mut state = STATE.lock().unwrap();
+            state.command_list_open = false;
+            state.command_list = None;
+        }
+        println!("[begin_frame] State reset");
+
+        let (device, allocator) = {
+            println!("[begin_frame] Locking state for device/allocator...");
+            let mut state = STATE.lock().unwrap();
+
+            let device = state.device.as_ref().unwrap().clone();
+            println!("[begin_frame] Device obtained");
+
+            if state.command_allocators.is_empty() {
+                state.command_allocators.push(None);
             }
+
+            let allocator = if let Some(ref a) = state.command_allocators[0] {
+                println!("[begin_frame] Using existing allocator");
+                a.clone()
+            } else {
+                println!("[begin_frame] Creating new allocator...");
+                match device.CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT) {
+                    Ok(a) => {
+                        println!("[begin_frame] Allocator created");
+                        state.command_allocators[0] = Some(a.clone());
+                        a
+                    }
+                    Err(e) => {
+                        println!("[begin_frame] Failed to create allocator: {:?}", e);
+                        return std::ptr::null_mut();
+                    }
+                }
+            };
+
+            println!("[begin_frame] Allocator ready");
+            (device, allocator)
         };
 
-        (device, allocator, pso)
-    };
-
-    unsafe {
-        debug_println!("[begin_frame] Resetting allocator...");
+        println!("[begin_frame] Resetting allocator...");
         if let Err(e) = allocator.Reset() {
-            debug_println!("[begin_frame] Allocator reset failed: {:?}", e);
+            println!("[begin_frame] Allocator reset failed: {:?}", e);
             return std::ptr::null_mut();
         }
-        debug_println!("[begin_frame] Allocator reset OK");
+        println!("[begin_frame] Allocator reset OK");
 
-        debug_println!("[begin_frame] Creating command list...");
-        match device.CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
+        println!("[begin_frame] Creating command list...");
+        let list = match device.CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
             0,
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             &allocator,
-            pso.as_ref(),
+            None,
         ) {
-            Ok(list) => {
-                let list_ptr = list.as_raw();
-                debug_println!("[begin_frame] Command list created at {:p}", list_ptr);
-
-                {
-                    let mut state = match STATE.lock() {
-                        Ok(s) => s,
-                        Err(_) => return std::ptr::null_mut(),
-                    };
-                    state.command_list = Some(list);
-                    state.command_list_open = true;
-                    state.reset_bindings();
-                }
-
-                list_ptr as *mut c_void
-            }
+            Ok(l) => {
+                println!("[begin_frame] Command list created successfully");
+                l
+            },
             Err(e) => {
-                debug_println!("[begin_frame] CreateCommandList failed: {:?}", e);
-                std::ptr::null_mut()
+                println!("[begin_frame] CreateCommandList failed: {:?}", e);
+                return std::ptr::null_mut();
             }
+        };
+
+        let list_ptr = list.as_raw();
+        println!("[begin_frame] Command list raw ptr: {:p}", list_ptr);
+
+        {
+            println!("[begin_frame] Saving to state...");
+            let mut state = STATE.lock().unwrap();
+            state.command_list = Some(list);
+            state.command_list_open = true;
+            state.reset_bindings();
+            // НЕ СОХРАНЯЕМ PSO ЗДЕСЬ!
+            println!("[begin_frame] State saved");
         }
+
+        println!("[begin_frame] Returning {:p}", list_ptr);
+        list_ptr as *mut c_void
     }
 }
 
@@ -252,15 +232,9 @@ pub extern "C" fn begin_frame() -> *mut c_void {
 pub extern "C" fn end_frame() -> bool {
     let frame_id = FRAME_COUNTER.load(Ordering::Relaxed);
     if frame_id == 0 {
-        debug_println!("[end_frame] No frames to end");
         return false;
     }
 
-    let allocator_idx = ((frame_id - 1) % ALLOCATOR_POOL_SIZE as u64) as usize;
-
-    debug_println!("\n[end_frame] Frame {} (allocator {})", frame_id - 1, allocator_idx);
-
-    // Забираем command list из STATE
     let (queue, list, fence, fence_val) = {
         let mut state = match STATE.lock() {
             Ok(s) => s,
@@ -301,43 +275,32 @@ pub extern "C" fn end_frame() -> bool {
 
         state.command_list_open = false;
 
-        while state.fence_values.len() <= allocator_idx {
-            state.fence_values.push(0);
-        }
-        let val = state.fence_values[allocator_idx] + 1;
-        state.fence_values[allocator_idx] = val;
+        let val = state.fence_values[0] + 1;
+        state.fence_values[0] = val;
 
         (queue, list, fence, val)
     };
 
     unsafe {
-        // Закрываем command list
+        // ЗАКРЫВАЕМ command list
         if let Err(e) = list.Close() {
             debug_println!("[end_frame] Close failed: {:?}", e);
             return false;
         }
 
-        // Получаем сырой указатель и передаём в ExecuteCommandLists
-        let list_raw = list.as_raw();
-
-        // Используем ID3D12CommandList::from_raw для создания временного объекта
-        // НО нужно быть осторожным - не удалять его дважды
-        let cmd_list = ID3D12CommandList::from_raw(list_raw);
+        // ВЫПОЛНЯЕМ command list на GPU
+        let cmd_list = ID3D12CommandList::from_raw(list.as_raw());
         let cmd_lists = [Some(cmd_list.clone())];
         queue.ExecuteCommandLists(&cmd_lists);
-
-        // Не забываем, что мы создали новый COM объект - нужно его освободить
-        // Но оригинальный list уже будет удалён в конце функции
         std::mem::forget(cmd_list);
 
-        // Сигналим fence
+        // СИГНАЛИМ fence
         if let Err(e) = queue.Signal(&fence, fence_val) {
             debug_println!("[end_frame] Signal failed: {:?}", e);
             return false;
         }
     }
 
-    // list будет удалён здесь (Drop)
     true
 }
 

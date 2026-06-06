@@ -48,6 +48,7 @@ pub use alscript_format::*;
 pub use aluv_format::*;
 pub use scheduler::*;
 pub use engine::*;
+pub use render::copy_buffer;
 
 use std::sync::{LazyLock, Mutex};
 
