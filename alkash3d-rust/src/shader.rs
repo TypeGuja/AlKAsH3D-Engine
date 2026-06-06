@@ -1,4 +1,4 @@
-// src/shader.rs - ПРАВИЛЬНАЯ ВЕРСИЯ
+// src/shader.rs - ИСПРАВЛЕННЫЙ ШЕЙДЕР
 
 use std::ffi::c_void;
 use std::ptr;
@@ -28,15 +28,37 @@ struct D3D_SHADER_MACRO {
     definition: PCSTR,
 }
 
-// Простые шейдеры
-const VS_SOURCE: &str =
-    "struct VSInput { float3 position : POSITION; float4 color : COLOR; };
-struct VSOutput { float4 position : SV_POSITION; float4 color : COLOR; };
-VSOutput main(VSInput input) { VSOutput output; output.position = float4(input.position, 1.0); output.color = input.color; return output; }";
+// ПРАВИЛЬНЫЙ VERTEX SHADER - читает из вершинного буфера
+const VS_SOURCE: &str = r"
+struct VSInput {
+    float3 position : POSITION;
+    float4 color : COLOR;
+};
 
-const PS_SOURCE: &str =
-    "struct PSInput { float4 position : SV_POSITION; float4 color : COLOR; };
-float4 main(PSInput input) : SV_TARGET { return input.color; }";
+struct VSOutput {
+    float4 position : SV_POSITION;
+    float4 color : COLOR;
+};
+
+VSOutput main(VSInput input) {
+    VSOutput output;
+    output.position = float4(input.position, 1.0);
+    output.color = input.color;
+    return output;
+}
+";
+
+// PIXEL SHADER
+const PS_SOURCE: &str = r"
+struct PSInput {
+    float4 position : SV_POSITION;
+    float4 color : COLOR;
+};
+
+float4 main(PSInput input) : SV_TARGET {
+    return input.color;
+}
+";
 
 // Глобальные данные
 static mut VS_BLOB: *mut c_void = ptr::null_mut();
@@ -84,17 +106,14 @@ fn compile_shader(source: &str, target: &str, entry: &str) -> (*mut c_void, *con
             return (ptr::null_mut(), ptr::null(), 0);
         }
 
-        // Преобразуем в ID3DBlob и получаем данные
         let blob = ID3DBlob::from_raw(code_blob as *mut _);
         let data_ptr = blob.GetBufferPointer();
         let data_size = blob.GetBufferSize();
 
-        // Увеличиваем счётчик ссылок, чтобы объект не был удалён
-        // и сохраняем указатель
         let raw_ptr = blob.as_raw();
-        std::mem::forget(blob); // Не удаляем, сохраняем для дальнейшего использования
+        std::mem::forget(blob);
 
-        println!("[compile_shader] blob={:p}, data_ptr={:p}, size={}", raw_ptr, data_ptr, data_size);
+        println!("[compile_shader] {} compiled, size={}", target, data_size);
 
         (raw_ptr as *mut c_void, data_ptr as *const u8, data_size)
     }
@@ -109,7 +128,6 @@ pub extern "C" fn init_builtin_shaders() {
             VS_BLOB = blob;
             VS_DATA = data;
             VS_SIZE = size;
-            println!("[init_builtin_shaders] VS blob: {:p}, data: {:p}, size: {}", VS_BLOB, VS_DATA, VS_SIZE);
         }
         if PS_BLOB.is_null() {
             println!("[init_builtin_shaders] Compiling PS...");
@@ -117,7 +135,6 @@ pub extern "C" fn init_builtin_shaders() {
             PS_BLOB = blob;
             PS_DATA = data;
             PS_SIZE = size;
-            println!("[init_builtin_shaders] PS blob: {:p}, data: {:p}, size: {}", PS_BLOB, PS_DATA, PS_SIZE);
         }
     }
 }

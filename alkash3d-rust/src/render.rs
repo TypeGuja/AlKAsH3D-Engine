@@ -503,6 +503,69 @@ pub extern "C" fn transition_resource(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn copy_buffer(
+    cmd_list_ptr: *mut c_void,
+    src_buffer_ptr: *mut c_void,
+    dst_buffer_ptr: *mut c_void,
+    size: u64,
+) -> bool {
+    unsafe {
+        println!("[copy_buffer] START: src={:p}, dst={:p}, size={}", src_buffer_ptr, dst_buffer_ptr, size);
+
+        if cmd_list_ptr.is_null() || src_buffer_ptr.is_null() || dst_buffer_ptr.is_null() {
+            println!("[copy_buffer] Null pointer detected!");
+            return false;
+        }
+
+        let cmd_list = &*(cmd_list_ptr as *const ID3D12GraphicsCommandList);
+        let src_buffer = &*(src_buffer_ptr as *const ID3D12Resource);
+        let dst_buffer = &*(dst_buffer_ptr as *const ID3D12Resource);
+
+        // Переводим dst в COPY_DEST состояние
+        let transition_dst = D3D12_RESOURCE_TRANSITION_BARRIER {
+            pResource: std::mem::ManuallyDrop::new(Some(dst_buffer.clone())),
+            Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+            StateBefore: D3D12_RESOURCE_STATE_COMMON,
+            StateAfter: D3D12_RESOURCE_STATE_COPY_DEST,
+        };
+
+        let barrier_dst = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                Transition: std::mem::ManuallyDrop::new(transition_dst),
+            },
+        };
+
+        cmd_list.ResourceBarrier(&[barrier_dst]);
+
+        // Копируем данные
+        cmd_list.CopyBufferRegion(dst_buffer, 0, src_buffer, 0, size);
+
+        // Переводим dst обратно в COMMON
+        let transition_back = D3D12_RESOURCE_TRANSITION_BARRIER {
+            pResource: std::mem::ManuallyDrop::new(Some(dst_buffer.clone())),
+            Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+            StateBefore: D3D12_RESOURCE_STATE_COPY_DEST,
+            StateAfter: D3D12_RESOURCE_STATE_COMMON,
+        };
+
+        let barrier_back = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                Transition: std::mem::ManuallyDrop::new(transition_back),
+            },
+        };
+
+        cmd_list.ResourceBarrier(&[barrier_back]);
+
+        println!("[copy_buffer] ✅ Copy completed!");
+        true
+    }
+}
+
 // ============================================================================
 // ROOT SIGNATURE PARAMETERS
 // ============================================================================

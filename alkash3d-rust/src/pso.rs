@@ -7,7 +7,7 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows_core::{s, Interface};
-use crate::{debug_println, utils::ptr_to_device};
+use crate::{debug_println, utils::ptr_to_device, STATE};
 
 #[no_mangle]
 pub extern "C" fn create_root_signature_simple(device_ptr: *mut c_void) -> *mut c_void {
@@ -146,11 +146,9 @@ unsafe fn create_pso_internal(
         return ptr::null_mut();
     }
 
-    // Получаем root signature из Box
     let root_sig_ref = &*(root_sig_ptr as *const ID3D12RootSignature);
     let root_sig = root_sig_ref.clone();
 
-    // Получаем данные шейдеров
     let vs_data = crate::shader::get_builtin_vs_data();
     let vs_size = crate::shader::get_builtin_vs_size();
     let ps_data = crate::shader::get_builtin_ps_data();
@@ -164,6 +162,7 @@ unsafe fn create_pso_internal(
         return ptr::null_mut();
     }
 
+    // Input layout для Vertex { position (3 floats), color (4 floats) }
     let input_elements = vec![
         D3D12_INPUT_ELEMENT_DESC {
             SemanticName: s!("POSITION"),
@@ -179,15 +178,17 @@ unsafe fn create_pso_internal(
             SemanticIndex: 0,
             Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
             InputSlot: 0,
-            AlignedByteOffset: 12,  // 3 floats * 4 bytes = 12
+            AlignedByteOffset: 12,  // 3 floats * 4 = 12
             InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
     ];
 
+    debug_println!("[create_pso] Input layout: POSITION offset 0, COLOR offset 12");
+
     let rasterizer = D3D12_RASTERIZER_DESC {
         FillMode: D3D12_FILL_MODE_SOLID,
-        CullMode: D3D12_CULL_MODE_NONE,
+        CullMode: D3D12_CULL_MODE_NONE,  // Отключаем culling, чтобы видеть треугольник с обеих сторон
         FrontCounterClockwise: false.into(),
         DepthBias: 0,
         DepthBiasClamp: 0.0,
@@ -217,8 +218,14 @@ unsafe fn create_pso_internal(
     let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
     rtv_formats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 
+    debug_println!("[create_pso] Creating PSO with:");
+    debug_println!("  - Vertex shader size: {}", vs_size);
+    debug_println!("  - Pixel shader size: {}", ps_size);
+    debug_println!("  - RTV format: R8G8B8A8_UNORM");
+    debug_println!("  - Cull mode: NONE");
+
     let pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-        pRootSignature: ManuallyDrop::new(Some(root_sig)),  // ПРЯМО передаём Some!
+        pRootSignature: ManuallyDrop::new(Some(root_sig)),
         VS: D3D12_SHADER_BYTECODE {
             pShaderBytecode: vs_data as *const std::ffi::c_void,
             BytecodeLength: vs_size
@@ -268,7 +275,7 @@ unsafe fn create_pso_internal(
 
     match device.CreateGraphicsPipelineState::<ID3D12PipelineState>(&pso_desc) {
         Ok(pso) => {
-            debug_println!("[create_pso] ✅ PSO created!");
+            debug_println!("[create_pso] ✅ PSO created successfully!");
             let boxed = Box::new(pso);
             let ptr = Box::into_raw(boxed) as *mut c_void;
             debug_println!("[create_pso] PSO pointer: {:p}", ptr);
@@ -278,5 +285,17 @@ unsafe fn create_pso_internal(
             debug_println!("[create_pso] Failed: {:?}", e);
             ptr::null_mut()
         }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_pso_from_state() -> *mut c_void {
+    let state = match STATE.lock() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match state.current_pso.as_ref() {
+        Some(pso) => pso.as_raw() as *mut c_void,
+        None => std::ptr::null_mut(),
     }
 }
