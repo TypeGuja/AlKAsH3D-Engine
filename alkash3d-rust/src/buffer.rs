@@ -23,18 +23,11 @@ pub extern "C" fn create_buffer(
             }
         };
 
-        let heap_type = match buffer_type {
-            0 => D3D12_HEAP_TYPE_UPLOAD,
-            1 => D3D12_HEAP_TYPE_DEFAULT,
-            2 => D3D12_HEAP_TYPE_READBACK,
-            _ => D3D12_HEAP_TYPE_UPLOAD,
-        };
-
-        let resource_state = match buffer_type {
-            0 => D3D12_RESOURCE_STATE_GENERIC_READ,
-            1 => D3D12_RESOURCE_STATE_COMMON,
-            2 => D3D12_RESOURCE_STATE_COPY_DEST,
-            _ => D3D12_RESOURCE_STATE_GENERIC_READ,
+        let (heap_type, resource_state) = match buffer_type {
+            0 => (D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ),
+            1 => (D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON),
+            2 => (D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST),
+            _ => (D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON),
         };
 
         let heap_props = D3D12_HEAP_PROPERTIES {
@@ -71,7 +64,6 @@ pub extern "C" fn create_buffer(
                 if let Some(b) = buffer {
                     let raw_ptr = b.as_raw();
                     debug_println!("[create_buffer] ✅ Created at {:p}", raw_ptr);
-                    // Сохраняем в Box, чтобы управлять временем жизни
                     let boxed = Box::new(b);
                     Box::into_raw(boxed) as *mut c_void
                 } else {
