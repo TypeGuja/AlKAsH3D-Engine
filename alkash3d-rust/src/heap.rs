@@ -127,7 +127,8 @@ pub extern "C" fn destroy_descriptor_heap(heap_ptr: *mut c_void) -> bool {
     }
     unsafe {
         debug_println!("[destroy_descriptor_heap] Destroying heap at {:p}", heap_ptr);
-        let _ = Box::from_raw(heap_ptr as *mut ID3D12DescriptorHeap);
+        let _heap = ID3D12DescriptorHeap::from_raw(heap_ptr as *mut _);
+        // Объект автоматически освободится через Drop
         debug_println!("[destroy_descriptor_heap] ✅ Heap destroyed");
         true
     }
