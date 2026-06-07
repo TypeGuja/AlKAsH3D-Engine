@@ -23,6 +23,14 @@ const VERTICES: [Vertex; 3] = [
     Vertex { x:  0.0, y:  1.0, z: 0.0, r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
 ];
 
+// Матрица трансформации (identity для NDC координат)
+const IDENTITY_MATRIX: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 1.0,
+];
+
 fn main() {
     println!("\n╔═══════════════════════════════════════════════════════════════════════════════╗");
     println!("║                         SIMPLE TRIANGLE TEST                                    ║");
@@ -95,7 +103,11 @@ fn main() {
         }
 
         // Заполняем буфер данными
-        update_subresource(vb, VERTICES.as_ptr() as *const _, std::mem::size_of_val(&VERTICES));
+        if !update_subresource(vb, VERTICES.as_ptr() as *const _, std::mem::size_of_val(&VERTICES)) {
+            println!("❌ Failed to update vertex buffer!");
+            return;
+        }
+        println!("[12] Vertex buffer filled");
 
         let vb_gpu = get_buffer_gpu_address(vb);
         println!("[12] Vertex buffer GPU addr: 0x{:X}", vb_gpu);
@@ -108,6 +120,27 @@ fn main() {
                      verts[0].x, verts[0].y, verts[0].z, verts[0].r, verts[0].g, verts[0].b);
             unmap_buffer(vb);
         }
+
+        // Переводим вершинный буфер в состояние VERTEX_AND_CONSTANT_BUFFER
+        transition_resource(vb, 0, 0x8); // D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER = 0x8
+
+        println!("[12.5] Creating constant buffer...");
+        let cbv_buffer = create_buffer(device, 256, 0); // UPLOAD heap
+        if cbv_buffer.is_null() {
+            println!("❌ Failed to create constant buffer!");
+            return;
+        }
+
+        if !update_subresource(cbv_buffer, IDENTITY_MATRIX.as_ptr() as *const _, 64) {
+            println!("❌ Failed to update constant buffer!");
+            return;
+        }
+
+        let cbv_gpu = get_buffer_gpu_address(cbv_buffer);
+        println!("[12.6] Constant buffer GPU addr: 0x{:X}", cbv_gpu);
+
+        // Переводим constant buffer в состояние VERTEX_AND_CONSTANT_BUFFER
+        transition_resource(cbv_buffer, 0, 0x8);
 
         wait_for_gpu();
 
@@ -136,6 +169,7 @@ fn main() {
         let mut running = true;
 
         while running && frame < 200 {
+            // Обработка сообщений
             while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT || (msg.message == WM_KEYDOWN && msg.wParam.0 as u32 == 0x1B) {
                     running = false;
@@ -144,47 +178,84 @@ fn main() {
                 DispatchMessageA(&msg);
             }
 
+            if !running {
+                break;
+            }
+
+            // Получаем текущий back buffer
             let idx = get_current_back_buffer_index(swap);
+            let back_buffer = swap_chain_get_buffer(swap, idx);
             let rtv = if idx == 0 { rtv_base } else { rtv_base + rtv_inc as u64 };
 
+            // Переводим back buffer в состояние RENDER_TARGET
+            transition_resource(back_buffer, 0x0, 0x4); // PRESENT -> RENDER_TARGET
+
+            // Начинаем кадр
             let cmd_list = begin_frame();
             if cmd_list.is_null() {
                 println!("❌ Failed to begin frame!");
                 break;
             }
 
+            // Устанавливаем PSO и root signature
             set_pipeline_state(pso);
             set_root_signature(root_sig);
+
+            // Устанавливаем constant buffer
+            set_root_constant_buffer_view(0, cbv_gpu);
+
+            // Устанавливаем render target
             set_render_target(rtv);
 
-            // ЯРКО-КРАСНЫЙ ФОН ДЛЯ ТЕСТА
-            let clear_color = [1.0, 0.0, 0.0, 1.0];
+            // Очищаем экран синим цветом для теста
+            let clear_color = [0.0, 0.0, 1.0, 1.0]; // Синий фон
             clear_render_target(rtv, clear_color.as_ptr());
 
+            // Устанавливаем viewport
             set_viewport(0.0, 0.0, WIDTH as f32, HEIGHT as f32, 0.0, 1.0);
-            set_vertex_buffer(vb_gpu, std::mem::size_of_val(&VERTICES) as u32, 28);
-            set_primitive_topology(4);
 
+            // Устанавливаем вершинный буфер (stride = 28 байт: 3*4 + 4*4 = 12 + 16 = 28)
+            set_vertex_buffer(vb_gpu, std::mem::size_of_val(&VERTICES) as u32, 28);
+
+            // Устанавливаем топологию треугольников
+            set_primitive_topology(4); // D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+
+            // Рисуем!
             draw_instanced(3, 1, 0, 0);
 
+            // Заканчиваем кадр
             end_frame();
+
+            // Переводим back buffer обратно в состояние PRESENT
+            transition_resource(back_buffer, 0x4, 0x0); // RENDER_TARGET -> PRESENT
+
+            // Отображаем
             present_swap_chain(swap, 1);
 
+            // Ждём GPU для первого кадра
             if frame == 0 {
-                println!("✓ First frame rendered! You should see a RED background with a COLORFUL triangle!");
+                wait_for_gpu();
+                println!("✓ First frame rendered! You should see a BLUE background with a COLORFUL triangle!");
             }
+
             frame += 1;
+
+            // Маленькая задержка для стабильности
+            std::thread::sleep(std::time::Duration::from_millis(16));
         }
 
         println!("\n[17] Cleaning up...");
         wait_for_gpu();
         force_cleanup();
+
         destroy_buffer(vb);
+        destroy_buffer(cbv_buffer);
         destroy_pso(pso);
         destroy_root_signature(root_sig);
         destroy_descriptor_heap(rtv_heap);
         destroy_swap_chain(swap);
         destroy_device_queue_pair(pair);
+
         println!("✓ Done!");
     }
 }
