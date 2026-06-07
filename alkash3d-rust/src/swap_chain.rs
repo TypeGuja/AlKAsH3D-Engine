@@ -174,14 +174,18 @@ pub extern "C" fn get_back_buffer() -> *mut c_void {
 }
 
 #[no_mangle]
-pub extern "C" fn destroy_swap_chain(_swap_ptr: *mut c_void) -> bool {
+pub extern "C" fn destroy_swap_chain(swap_ptr: *mut c_void) -> bool {
     unsafe {
+        if !swap_ptr.is_null() {
+            let _swap = IDXGISwapChain3::from_raw(swap_ptr as *mut _);
+            // Объект автоматически освободится через Drop
+        }
         for i in 0..2 {
             BACK_BUFFERS[i] = ptr::null_mut();
         }
         SWAP_CHAIN_STORED = None;
     }
-    debug_println!("[destroy_swap_chain] Swap chain cleaned");
+    debug_println!("[destroy_swap_chain] ✅ Swap chain cleaned");
     true
 }
 
