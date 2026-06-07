@@ -96,12 +96,13 @@ pub extern "C" fn destroy_root_signature(root_sig_ptr: *mut c_void) -> bool {
         return false;
     }
     unsafe {
-        // Восстанавливаем Box, он автоматически вызовет Drop
-        let _ = Box::from_raw(root_sig_ptr as *mut ID3D12RootSignature);
+        let _sig = ID3D12RootSignature::from_raw(root_sig_ptr as *mut _);
+        // Объект автоматически освободится через Drop
         debug_println!("[destroy_root_signature] ✅ Root signature destroyed");
         true
     }
 }
+
 
 #[no_mangle]
 pub extern "C" fn create_pso(
@@ -120,7 +121,8 @@ pub extern "C" fn destroy_pso(pso_ptr: *mut c_void) -> bool {
         return false;
     }
     unsafe {
-        let _ = Box::from_raw(pso_ptr as *mut ID3D12PipelineState);
+        let _pso = ID3D12PipelineState::from_raw(pso_ptr as *mut _);
+        // Объект автоматически освободится через Drop
         debug_println!("[destroy_pso] ✅ PSO destroyed");
         true
     }
