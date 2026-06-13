@@ -1,168 +1,395 @@
 // src/bin/main.rs
-//! Alkash3D Engine - Main Entry Point
+#![allow(never_type_fallback_flowing_into_unsafe)]
 
-use alkash3d_rs::engine::*;
+use windows::core::*;
+use windows::Win32::Foundation::*;
+use windows::Win32::System::LibraryLoader::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST};
+use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
 use alkash3d_rs::*;
-use std::time::Instant;
 
-fn main() {
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║              Alkash3D Engine v{}                          ║", VERSION);
-    println!("║                    DirectX 12 + Rust                          ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+const WINDOW_WIDTH: u32 = 1280;
+const WINDOW_HEIGHT: u32 = 720;
 
-    // ===================================================================
-    // 1. Инициализация D3D12
-    // ===================================================================
-    println!("[1] Initializing D3D12...");
-    let device = create_device();
-    if device.is_null() {
-        eprintln!("❌ Failed to create D3D12 device!");
-        return;
-    }
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Vertex {
+    position: [f32; 4],
+    color: [f32; 4],
+}
 
-    println!("    GPU: {:?}", unsafe {
-        let ptr = get_gpu_name(std::ptr::null_mut());
-        if ptr.is_null() { "Unknown" } else {
-            std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or("Unknown")
-        }
-    });
-    println!("    VRAM: {} MB", get_gpu_vram_mb());
-    println!("    Real GPU: {}", is_real_gpu());
+const VERTEX_SHADER_SOURCE: &str = r#"
+float4 main(float4 pos : POSITION) : SV_POSITION {
+    return pos;
+}
+"#;
 
-    // ===================================================================
-    // 2. Создание движка
-    // ===================================================================
-    println!("\n[2] Creating Engine...");
-    let mut engine = AlkashEngine::new(device);
-    let scheduler = EngineScheduler::new();
-    println!("    CPU cores: {}", num_cpus::get());
-    println!("    Available cores (budget): {}", scheduler.cpu_budget.available_cores());
+const PIXEL_SHADER_SOURCE: &str = r#"
+float4 main() : SV_TARGET {
+    return float4(1.0, 0.0, 0.0, 1.0);
+}
+"#;
 
-    // ===================================================================
-    // 3. Загрузка плагинов
-    // ===================================================================
-    println!("\n[3] Loading Plugins...");
-
-    let physics_config = PhysicsConfig {
-        max_bodies: 10000,
-        world_size: 1000.0,
-        cell_size: 10.0,
-        solver_iterations: 8,
-        use_simd: 1,
+macro_rules! debug_print {
+    ($($arg:tt)*) => {
+        println!("[DEBUG] {}", format!($($arg)*));
     };
+}
 
-    match engine.init_physics(physics_config) {
-        Ok(_) => println!("    ✅ Physics plugin loaded (inertial.dll)"),
-        Err(e) => println!("    ⚠️ Physics plugin not loaded: {}", e),
-    }
+fn main() -> Result<()> {
+    println!("==========================================");
+    println!("Alkash3D Engine v{} - Starting DirectX 12...", alkash3d_rs::VERSION);
+    println!("==========================================");
 
-    // ===================================================================
-    // 4. Добавление тестовых тел
-    // ===================================================================
-    println!("\n[4] Adding Test Bodies...");
+    unsafe {
+        debug_print!("Создание окна...");
+        let hinstance = GetModuleHandleA(None)?;
+        let window_class = "ALKASH3D_WINDOW";
 
-    let mut body_count = 0;
-    for i in 0..10 {
-        let x = (i as f32 - 5.0) * 2.0;
-        let body = PhysicsBody {
-            position: [x, 10.0 + (i % 3) as f32 * 2.0, 0.0],
-            velocity: [0.0, 0.0, 0.0],
-            acceleration: [0.0, 0.0, 0.0],
-            angular_velocity: [0.0, 0.0, 0.0],
-            angular_acceleration: [0.0, 0.0, 0.0],
-            mass: 1.0,
-            inv_mass: 1.0,
-            restitution: 0.5,
-            friction: 0.5,
-            linear_damping: 0.01,
-            angular_damping: 0.01,
-            is_static: 0,
-            is_asleep: 0,
+        let wc = WNDCLASSA {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wndproc),
+            hInstance: hinstance.into(),
+            lpszClassName: PCSTR(window_class.as_ptr()),
+            hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as isize as _),
+            hCursor: LoadCursorW(None, IDC_ARROW)?,
+            ..Default::default()
         };
-        let id = engine.add_physics_body(body);
-        if id >= 0 {
-            body_count += 1;
-            println!("    Body {}: position ({:.1}, {:.1}, {:.1})",
-                     id, body.position[0], body.position[1], body.position[2]);
+
+        RegisterClassA(&wc);
+        debug_print!("Класс окна зарегистрирован");
+
+        let hwnd = CreateWindowExA(
+            WINDOW_EX_STYLE::default(),
+            PCSTR(window_class.as_ptr()),
+            PCSTR(b"Alkash3D Engine - DirectX 12\0".as_ptr()),
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            WINDOW_WIDTH as i32,
+            WINDOW_HEIGHT as i32,
+            None,
+            None,
+            Some(HINSTANCE::from(hinstance)),
+            None,
+        )?;
+
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+        debug_print!("Окно создано, HWND: {:?}", hwnd);
+
+        println!("\n=== INITIALIZING DIRECTX 12 ===\n");
+
+        debug_print!("D3D12Device::create()...");
+        D3D12Device::create()?;
+        debug_print!("✓ Device created");
+
+        debug_print!("CommandQueue::create()...");
+        CommandQueue::create()?;
+        debug_print!("✓ Command queue created");
+
+        debug_print!("SwapChain::create()...");
+        SwapChain::create(hwnd.0 as isize, WINDOW_WIDTH, WINDOW_HEIGHT, 2)?;
+        debug_print!("✓ Swap chain created");
+
+        debug_print!("CommandList::create_allocators(2)...");
+        CommandList::create_allocators(2)?;
+        debug_print!("✓ Allocators created");
+
+        debug_print!("create_fence()...");
+        let fence = create_fence()?;
+        STATE.lock().unwrap().fence = Some(fence.clone());
+        debug_print!("✓ Fence created");
+
+        debug_print!("DescriptorHeap::create_rtv_heap(2)...");
+        let rtv_heap = DescriptorHeap::create_rtv_heap(2)?;
+        debug_print!("✓ RTV heap created");
+
+        debug_print!("DescriptorHeap::create_dsv_heap(1)...");
+        let dsv_heap = DescriptorHeap::create_dsv_heap(1)?;
+        debug_print!("✓ DSV heap created");
+
+        let rtv_size;
+        let dsv_size;
+        {
+            let state = STATE.lock().unwrap();
+            rtv_size = state.rtv_descriptor_size;
+            dsv_size = state.dsv_descriptor_size;
+            debug_print!("RTV size: {}, DSV size: {}", rtv_size, dsv_size);
+        }
+
+        debug_print!("Получение swap_chain и device...");
+        let swap_chain = STATE.lock().unwrap().swap_chain.as_ref().unwrap().clone();
+        let device = STATE.lock().unwrap().device.as_ref().unwrap().clone();
+        debug_print!("✓ Swap chain и device получены");
+
+        debug_print!("Создание RTV хендлов...");
+        let mut rtv_handles = Vec::new();
+        for i in 0..2 {
+            let back_buffer: ID3D12Resource = swap_chain.GetBuffer(i)?;
+            let rtv_handle = DescriptorHeap::get_cpu_handle(&rtv_heap, i, rtv_size);
+            device.CreateRenderTargetView(&back_buffer, None, rtv_handle);
+            rtv_handles.push(rtv_handle);
+            debug_print!("  ✓ RTV {} создан", i);
+        }
+        debug_print!("✓ RTVs created");
+
+        debug_print!("Создание depth stencil...");
+        let depth_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: WINDOW_WIDTH as u64,
+            Height: WINDOW_HEIGHT,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_D32_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+        };
+
+        let clear_value = D3D12_CLEAR_VALUE {
+            Format: DXGI_FORMAT_D32_FLOAT,
+            Anonymous: D3D12_CLEAR_VALUE_0 { DepthStencil: D3D12_DEPTH_STENCIL_VALUE { Depth: 1.0, Stencil: 0 } },
+        };
+
+        let heap_props = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+
+        let mut depth_stencil: Option<ID3D12Resource> = None;
+        device.CreateCommittedResource(
+            &heap_props,
+            D3D12_HEAP_FLAG_NONE,
+            &depth_desc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            Some(&clear_value),
+            &mut depth_stencil,
+        )?;
+        let depth_stencil = depth_stencil.unwrap();
+        debug_print!("✓ Depth stencil resource создан");
+
+        let dsv_handle = DescriptorHeap::get_cpu_handle(&dsv_heap, 0, dsv_size);
+        device.CreateDepthStencilView(&depth_stencil, None, dsv_handle);
+        debug_print!("✓ Depth stencil view создан");
+
+        // Vertex buffer
+        debug_print!("Создание вершинного буфера...");
+        let vertices = [
+            Vertex { position: [-0.9, -0.9, 0.0, 1.0], color: [1.0, 0.0, 0.0, 1.0] },  // красный - левый нижний
+            Vertex { position: [0.0, 0.9, 0.0, 1.0], color: [0.0, 1.0, 0.0, 1.0] },    // зелёный - верх
+            Vertex { position: [0.9, -0.9, 0.0, 1.0], color: [0.0, 0.0, 1.0, 1.0] },   // синий - правый нижний
+        ];
+        println!("[MAIN] Vertex data:");
+        for (i, v) in vertices.iter().enumerate() {
+            println!("  Vertex {}: pos=({:.1}, {:.1}, {:.1}), color=({:.1}, {:.1}, {:.1}, {:.1})",
+                     i, v.position[0], v.position[1], v.position[2],
+                     v.color[0], v.color[1], v.color[2], v.color[3]);
+        }
+
+        let vertex_buffer_size = (vertices.len() * std::mem::size_of::<Vertex>()) as u64;
+        let upload_heap_props = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_UPLOAD,
+            ..Default::default()
+        };
+
+        let buffer_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: vertex_buffer_size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+
+        let mut vertex_buffer: Option<ID3D12Resource> = None;
+        device.CreateCommittedResource(
+            &upload_heap_props,
+            D3D12_HEAP_FLAG_NONE,
+            &buffer_desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            None,
+            &mut vertex_buffer,
+        )?;
+        let vertex_buffer = vertex_buffer.unwrap();
+        println!("[MAIN] Vertex buffer created, size: {} bytes", vertex_buffer_size);
+
+        let mut mapped = std::ptr::null_mut();
+        vertex_buffer.Map(0, None, Some(&mut mapped));
+        if !mapped.is_null() {
+            std::ptr::copy_nonoverlapping(vertices.as_ptr() as *const u8, mapped as *mut u8, vertex_buffer_size as usize);
+            println!("[MAIN] Vertex data copied to buffer");
+        }
+        vertex_buffer.Unmap(0, None);
+
+        let vertex_gpu_addr = vertex_buffer.GetGPUVirtualAddress();
+        println!("[MAIN] Vertex buffer GPU address: {:?}", vertex_gpu_addr);
+
+        // Compile shaders
+        debug_print!("Компиляция шейдеров...");
+        let vs = ShaderBlob::compile(VERTEX_SHADER_SOURCE, "vs_5_0", "main")?;
+        let ps = ShaderBlob::compile(PIXEL_SHADER_SOURCE, "ps_5_0", "main")?;
+        debug_print!("✓ Шейдеры скомпилированы (VS: {} байт, PS: {} байт)", vs.size(), ps.size());
+
+        // Root signature
+        debug_print!("Создание корневой сигнатуры...");
+        let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
+            NumParameters: 0,
+            pParameters: std::ptr::null(),
+            NumStaticSamplers: 0,
+            pStaticSamplers: std::ptr::null(),
+            Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        };
+
+        let mut signature_serialized: Option<ID3DBlob> = None;
+        let mut error_blob: Option<ID3DBlob> = None;
+
+        let hr = D3D12SerializeRootSignature(
+            &root_signature_desc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &mut signature_serialized,
+            Some(&mut error_blob),
+        );
+
+        if hr.is_err() {
+            debug_print!("Ошибка сериализации корневой сигнатуры: {:?}", hr);
+            return Err(Error::from_hresult(HRESULT::from(hr)));
+        }
+        let signature_serialized = signature_serialized.unwrap();
+        println!("[MAIN] Root signature serialized, size: {} bytes", signature_serialized.GetBufferSize());
+
+        let blob_data = std::slice::from_raw_parts(
+            signature_serialized.GetBufferPointer() as *const u8,
+            signature_serialized.GetBufferSize(),
+        );
+
+        let root_signature: ID3D12RootSignature = device.CreateRootSignature(0, blob_data)?;
+        debug_print!("✓ Корневая сигнатура создана");
+
+        // PSO
+        debug_print!("Создание PSO...");
+        let pso: ID3D12PipelineState = PipelineState::create_graphics(
+            &vs, &ps, &root_signature,
+            std::mem::size_of::<Vertex>() as u32,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_D32_FLOAT,
+        )?;
+        debug_print!("✓ PSO создан");
+
+        println!("\n=== RENDER LOOP STARTING ===\n");
+
+        let mut running = true;
+        let mut frame_count = 0u32;
+        let mut fence_value = 0u64;
+
+        while running {
+            let mut msg = MSG::default();
+            while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    running = false;
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+
+            if !running { break; }
+
+            let frame_index = swap_chain.GetCurrentBackBufferIndex();
+            println!("\n=== FRAME {} (BackBuffer {}) ===", frame_count, frame_index);
+
+            let allocator = {
+                let state = STATE.lock().unwrap();
+                state.command_allocators[frame_index as usize].as_ref().unwrap().clone()
+            };
+            allocator.Reset();
+            println!("[FRAME] Allocator reset");
+
+            let cmd_list: ID3D12GraphicsCommandList = device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?;
+            println!("[FRAME] Command list created");
+
+            let rtv = rtv_handles[frame_index as usize];
+            println!("[FRAME] Setting render targets");
+            cmd_list.OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv_handle));
+
+            let clear_color = [0.2, 0.5, 0.2, 1.0];
+            cmd_list.ClearRenderTargetView(rtv, &clear_color, None);
+            println!("[FRAME] Render target cleared");
+
+            cmd_list.SetPipelineState(Some(&pso));
+            cmd_list.SetGraphicsRootSignature(Some(&root_signature));
+            println!("[FRAME] Pipeline state and root signature set");
+
+            let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: vertex_gpu_addr,
+                SizeInBytes: vertex_buffer_size as u32,
+                StrideInBytes: std::mem::size_of::<Vertex>() as u32,
+            };
+
+            cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+            cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            cmd_list.DrawInstanced(3, 1, 0, 0);
+            println!("[FRAME] DrawInstanced(3) called - triangle drawn");
+
+            cmd_list.Close()?;
+            println!("[FRAME] Command list closed");
+
+            let queue = STATE.lock().unwrap().command_queue.as_ref().unwrap().clone();
+            let cmd_lists = [Some(cmd_list.into())];
+            queue.ExecuteCommandLists(&cmd_lists);
+            println!("[FRAME] Command list executed");
+
+            let _ = swap_chain.Present(1, DXGI_PRESENT(0));
+            println!("[FRAME] Present called");
+
+            fence_value += 1;
+            queue.Signal(&fence, fence_value)?;
+
+            while fence.GetCompletedValue() < fence_value {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            println!("[FRAME] GPU fence signaled");
+
+            frame_count += 1;
+            if frame_count % 60 == 0 {
+                println!("[MAIN] Frames rendered: {}", frame_count);
+            }
+
+            if frame_count == 1 {
+                println!("\n*** FIRST FRAME COMPLETED - CHECK WINDOW FOR TRIANGLE ***\n");
+            }
+        }
+
+        println!("\n=== ENGINE SHUTDOWN ===\n");
+        println!("Engine shutdown complete");
+    }
+
+    Ok(())
+}
+
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+            WM_KEYDOWN => {
+                if wparam.0 == 0x1B {
+                    PostQuitMessage(0);
+                }
+                LRESULT(0)
+            }
+            _ => DefWindowProcA(hwnd, msg, wparam, lparam),
         }
     }
-    println!("    Added {} bodies", body_count);
-
-    // Добавляем пол
-    let ground = PhysicsBody {
-        position: [0.0, -1.0, 0.0],
-        velocity: [0.0, 0.0, 0.0],
-        acceleration: [0.0, 0.0, 0.0],
-        angular_velocity: [0.0, 0.0, 0.0],
-        angular_acceleration: [0.0, 0.0, 0.0],
-        mass: 0.0,
-        inv_mass: 0.0,
-        restitution: 0.5,
-        friction: 0.8,
-        linear_damping: 0.0,
-        angular_damping: 0.0,
-        is_static: 1,
-        is_asleep: 1,
-    };
-    engine.add_physics_body(ground);
-    println!("    Ground added");
-
-    // ===================================================================
-    // 5. Симуляция
-    // ===================================================================
-    println!("\n[5] Running Simulation (120 frames)...");
-
-    let dt = 1.0 / 60.0;
-    let gravity = -9.81;
-    let mut frame_times = Vec::new();
-
-    for frame in 0..120 {
-        let frame_start = Instant::now();
-
-        engine.update_physics(dt, gravity);
-
-        let frame_time = frame_start.elapsed().as_secs_f32() * 1000.0;
-        frame_times.push(frame_time);
-
-        if frame % 30 == 0 {
-            let stats = engine.get_physics_stats();
-            let contacts = engine.get_physics_contacts();
-            println!("    Frame {}: {} bodies, {} contacts, time: {:.2}ms",
-                     frame, stats.bodies_count, contacts.len(), frame_time);
-        }
-    }
-
-    // ===================================================================
-    // 6. Статистика
-    // ===================================================================
-    println!("\n[6] Statistics:");
-
-    let stats = engine.get_physics_stats();
-    let avg_time = frame_times.iter().sum::<f32>() / frame_times.len() as f32;
-    let min_time = frame_times.iter().fold(f32::MAX, |a, &b| a.min(b));
-    let max_time = frame_times.iter().fold(f32::MIN, |a, &b| a.max(b));
-
-    println!("    Physics Stats:");
-    println!("      Bodies: {}", stats.bodies_count);
-    println!("      Active: {}", stats.active_bodies);
-    println!("      Contacts: {}", stats.contacts_count);
-    println!("      Pairs: {}", stats.pairs_count);
-    println!("      Broad phase: {:.2}ms", stats.broad_phase_time_ms);
-    println!("      Narrow phase: {:.2}ms", stats.narrow_phase_time_ms);
-    println!("      Solver: {:.2}ms", stats.solver_time_ms);
-    println!("    Frame Times:");
-    println!("      Average: {:.2}ms ({:.1} FPS)", avg_time, 1000.0 / avg_time);
-    println!("      Min: {:.2}ms", min_time);
-    println!("      Max: {:.2}ms", max_time);
-
-    // ===================================================================
-    // 7. Очистка
-    // ===================================================================
-    println!("\n[7] Cleanup...");
-    force_cleanup();
-
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║                    Engine Shutdown Complete!                  ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
 }

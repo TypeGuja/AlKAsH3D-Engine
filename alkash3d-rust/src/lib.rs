@@ -1,5 +1,6 @@
-//! alkash3d_rs - DirectX 12 рендерер на Rust
-//! Полностью функциональный движок с поддержкой игрового режима и редактора
+// src/lib.rs - добавьте в начало файла
+#![allow(unused)]
+#![allow(non_snake_case)]
 
 mod device;
 mod queue;
@@ -30,16 +31,16 @@ pub use queue::*;
 pub use swap_chain::*;
 pub use heap::*;
 pub use buffer::*;
-pub use texture::*;
+pub use texture::Texture;
 pub use shader::*;
 pub use pso::*;
 pub use command::*;
 pub use render::*;
+pub use utils::*;
 pub use altex_format::*;
 pub use alfar_format::*;
 pub use alcar_format::*;
 pub use alroute_format::*;
-pub use utils::*;
 pub use alworld_format::*;
 pub use almat_format::*;
 pub use alps_format::*;
@@ -47,32 +48,31 @@ pub use alsnd_format::*;
 pub use alscript_format::*;
 pub use aluv_format::*;
 pub use scheduler::*;
-pub use engine::*;
-pub use render::copy_buffer;
 
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Dxgi::*;
+use windows_core::{Error, HRESULT};
 
-// Глобальное состояние движка
-pub static STATE: LazyLock<Mutex<GlobalState>> =
-    LazyLock::new(|| Mutex::new(GlobalState::new()));
+pub static STATE: std::sync::LazyLock<Mutex<GlobalState>> =
+    std::sync::LazyLock::new(|| Mutex::new(GlobalState::new()));
 
-// GlobalState больше не содержит плагины (они вынесены в engine)
 pub struct GlobalState {
-    pub device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device>,
-    pub command_queue: Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandQueue>,
-    pub swap_chain: Option<windows::Win32::Graphics::Dxgi::IDXGISwapChain3>,
-    pub command_list: Option<windows::Win32::Graphics::Direct3D12::ID3D12GraphicsCommandList>,
-    pub command_allocators: Vec<Option<windows::Win32::Graphics::Direct3D12::ID3D12CommandAllocator>>,
-    pub root_signature: Option<windows::Win32::Graphics::Direct3D12::ID3D12RootSignature>,
+    pub device: Option<ID3D12Device>,
+    pub command_queue: Option<ID3D12CommandQueue>,
+    pub swap_chain: Option<IDXGISwapChain3>,
+    pub command_list: Option<ID3D12GraphicsCommandList>,
+    pub command_allocators: Vec<Option<ID3D12CommandAllocator>>,
+    pub root_signature: Option<ID3D12RootSignature>,
     pub rtv_descriptor_size: u32,
     pub dsv_descriptor_size: u32,
     pub cbv_srv_uav_descriptor_size: u32,
     pub frame_index: u32,
-    pub fence: Option<windows::Win32::Graphics::Direct3D12::ID3D12Fence>,
+    pub fence: Option<ID3D12Fence>,
     pub fence_values: Vec<u64>,
-    pub descriptor_heaps: Vec<windows::Win32::Graphics::Direct3D12::ID3D12DescriptorHeap>,
+    pub descriptor_heaps: Vec<ID3D12DescriptorHeap>,
     pub command_list_open: bool,
-    pub current_pso: Option<windows::Win32::Graphics::Direct3D12::ID3D12PipelineState>,
+    pub current_pso: Option<ID3D12PipelineState>,
     pub bound_vertex_buffers: Vec<u64>,
     pub bound_index_buffer: Option<u64>,
     pub scheduler: Option<EngineScheduler>,
@@ -101,14 +101,6 @@ impl GlobalState {
             scheduler: None,
         }
     }
-
-    pub fn reset_bindings(&mut self) {
-        self.bound_vertex_buffers.clear();
-        self.bound_index_buffer = None;
-    }
 }
 
-// Версия движка
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-pub fn init_logger() {}

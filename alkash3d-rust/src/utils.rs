@@ -1,99 +1,45 @@
 // src/utils.rs
-//! Вспомогательные утилиты
-
-use std::ffi::c_void;
+use windows::core::*;
 use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Dxgi::IDXGISwapChain3;
-use windows_core::Interface;
+use crate::STATE;
 
-pub const DEBUG: bool = cfg!(debug_assertions);
-
-#[macro_export]
-macro_rules! debug_println {
-    ($($arg:tt)*) => {
-        if $crate::utils::DEBUG {
-            eprintln!($($arg)*);
-        }
-    };
-}
-
-pub unsafe fn ptr_to_device(ptr: *mut c_void) -> Option<ID3D12Device> {
-    if ptr.is_null() {
-        return None;
-    }
-    Some(ID3D12Device::from_raw(ptr as *mut _))
-}
-
-pub unsafe fn ptr_to_queue(ptr: *mut c_void) -> Option<ID3D12CommandQueue> {
-    if ptr.is_null() {
-        return None;
-    }
-    Some(ID3D12CommandQueue::from_raw(ptr as *mut _))
-}
-
-pub unsafe fn ptr_to_swapchain(ptr: *mut c_void) -> Option<IDXGISwapChain3> {
-    if ptr.is_null() {
-        return None;
-    }
-    Some(IDXGISwapChain3::from_raw(ptr as *mut _))
-}
-
-pub unsafe fn ptr_to_resource(ptr: *mut c_void) -> Option<ID3D12Resource> {
-    if ptr.is_null() {
-        return None;
-    }
-    Some(ID3D12Resource::from_raw(ptr as *mut _))
-}
-
-#[no_mangle]
-pub extern "C" fn release_resource(ptr: *mut c_void) -> bool {
-    if ptr.is_null() {
-        return false;
-    }
+pub fn create_fence() -> Result<ID3D12Fence> {
+    println!("[UTILS] Creating fence...");
+    let state = STATE.lock().unwrap();
+    let device = state.device.as_ref().unwrap();
     unsafe {
-        let _ = ID3D12Resource::from_raw(ptr as *mut _);
-        true
+        let fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
+        println!("[UTILS] ✓ Fence created");
+        Ok(fence)
     }
 }
 
-#[no_mangle]
-pub extern "C" fn get_debug_mode() -> bool {
-    DEBUG
+pub fn create_event() -> windows::Win32::Foundation::HANDLE {
+    unsafe {
+        let event = windows::Win32::System::Threading::CreateEventW(None, true, false, None)
+            .expect("Failed to create event");
+        println!("[UTILS] Event created");
+        event
+    }
 }
 
-#[no_mangle]
-pub extern "C" fn enable_debug_layer() -> bool {
-    #[cfg(debug_assertions)]
-    {
-        unsafe {
-            use windows::Win32::Graphics::Direct3D12::*;
-            let mut debug: Option<ID3D12Debug> = None;
-            if D3D12GetDebugInterface(&mut debug).is_ok() {
-                if let Some(d) = debug {
-                    d.EnableDebugLayer();
-                    return true;
-                }
-            }
+pub fn wait_for_fence(fence: &ID3D12Fence, value: u64) -> Result<()> {
+    println!("[UTILS] Waiting for fence value {}", value);
+    unsafe {
+        if fence.GetCompletedValue() < value {
+            let event = create_event();
+            fence.SetEventOnCompletion(value, event)?;
+            windows::Win32::System::Threading::WaitForSingleObject(event, 0xFFFFFFFF);
+            println!("[UTILS] Wait completed");
+        } else {
+            println!("[UTILS] Fence already at or above target value");
         }
     }
-    false
+    Ok(())
 }
 
-#[no_mangle]
-pub extern "C" fn release_com_object(ptr: *mut c_void) -> bool {
-    if ptr.is_null() {
-        return false;
-    }
-    unsafe {
-        let _ = Box::from_raw(ptr);
-        true
-    }
-}
-
-pub fn com_ptr_to_raw<T>(obj: T) -> *mut c_void {
-    Box::into_raw(Box::new(obj)) as *mut c_void
-}
-
-pub unsafe fn raw_to_com_ptr<T>(ptr: *mut c_void) -> Box<T> {
-    Box::from_raw(ptr as *mut T)
+pub fn align_up(value: u64, alignment: u64) -> u64 {
+    let result = (value + alignment - 1) & !(alignment - 1);
+    println!("[UTILS] align_up({}, {}) = {}", value, alignment, result);
+    result
 }

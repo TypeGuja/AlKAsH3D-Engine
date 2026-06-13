@@ -1,47 +1,39 @@
-// src/buffer.rs - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
-
-use std::ffi::c_void;
+// src/buffer.rs
+use windows::core::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
-use windows_core::Interface;
-use crate::{debug_println, utils::ptr_to_device};
+use crate::STATE;
 
-#[no_mangle]
-pub extern "C" fn create_buffer(
-    device_ptr: *mut c_void,
-    size: usize,
-    buffer_type: u32,
-) -> *mut c_void {
-    unsafe {
-        debug_println!("\n[create_buffer] size={}, type={}", size, buffer_type);
+#[derive(Clone)]
+pub struct Buffer {
+    pub resource: ID3D12Resource,
+    pub size: u64,
+    pub vertex_stride: u32,
+}
 
-        let device = match ptr_to_device(device_ptr) {
-            Some(d) => d,
-            None => {
-                debug_println!("[create_buffer] No device!");
-                return std::ptr::null_mut();
-            }
+impl Buffer {
+    pub fn create_vertex_buffer(data: &[u8], stride: u32) -> Result<Self> {
+        println!("[BUFFER] Creating vertex buffer, size: {} bytes, stride: {}", data.len(), stride);
+
+        let device = {
+            let state = STATE.lock().unwrap();
+            state.device.as_ref().unwrap().clone()
         };
 
-        let (heap_type, resource_state) = match buffer_type {
-            0 => (D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ),
-            1 => (D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON),
-            2 => (D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST),
-            _ => (D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON),
-        };
+        let size = data.len() as u64;
 
-        let heap_props = D3D12_HEAP_PROPERTIES {
-            Type: heap_type,
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_UPLOAD,
             CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
             MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-            CreationNodeMask: 0,
-            VisibleNodeMask: 0,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
         };
 
-        let desc = D3D12_RESOURCE_DESC {
+        let resource_desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
             Alignment: 0,
-            Width: size as u64,
+            Width: size,
             Height: 1,
             DepthOrArraySize: 1,
             MipLevels: 1,
@@ -51,173 +43,121 @@ pub extern "C" fn create_buffer(
             Flags: D3D12_RESOURCE_FLAG_NONE,
         };
 
-        let mut buffer: Option<ID3D12Resource> = None;
-        match device.CreateCommittedResource(
-            &heap_props,
-            D3D12_HEAP_FLAG_NONE,
-            &desc,
-            resource_state,
-            None,
-            &mut buffer
-        ) {
-            Ok(_) => {
-                if let Some(b) = buffer {
-                    let raw_ptr = b.as_raw();
-                    debug_println!("[create_buffer] ✅ Created at {:p}", raw_ptr);
-                    let boxed = Box::new(b);
-                    Box::into_raw(boxed) as *mut c_void
-                } else {
-                    std::ptr::null_mut()
-                }
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            let hr = device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
+                &mut resource,
+            );
+            if hr.is_err() {
+                eprintln!("[BUFFER] CreateCommittedResource failed: {:?}", hr);
+                return Err(Error::from_hresult(HRESULT::from(hr)));
             }
-            Err(e) => {
-                debug_println!("[create_buffer] Failed: {:?}", e);
-                std::ptr::null_mut()
+
+            let resource = resource.ok_or_else(|| {
+                eprintln!("[BUFFER] Resource is None");
+                Error::from_hresult(HRESULT(1))
+            })?;
+
+            let mut mapped = std::ptr::null_mut();
+            let hr = resource.Map(0, None, Some(&mut mapped));
+            if hr.is_err() {
+                eprintln!("[BUFFER] Map failed: {:?}", hr);
+                return Err(Error::from_hresult(HRESULT::from(hr)));
             }
+
+            if !mapped.is_null() {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len());
+                println!("[BUFFER] Data copied successfully");
+            } else {
+                eprintln!("[BUFFER] Mapped pointer is null");
+            }
+            resource.Unmap(0, None);
+
+            println!("[BUFFER] Vertex buffer created successfully");
+            Ok(Self {
+                resource,
+                size,
+                vertex_stride: stride,
+            })
         }
     }
-}
 
-#[no_mangle]
-pub extern "C" fn update_buffer(
-    buffer_ptr: *mut c_void,
-    data_ptr: *const c_void,
-    size: usize,
-    offset: usize,
-) -> bool {
-    unsafe {
-        debug_println!("\n[update_buffer] START: buffer_ptr={:p}, data_ptr={:p}, size={}, offset={}",
-                      buffer_ptr, data_ptr, size, offset);
+    pub fn create_index_buffer(data: &[u32]) -> Result<Self> {
+        println!("[BUFFER] Creating index buffer, {} indices", data.len());
+        let bytes: Vec<u8> = data.iter().flat_map(|&x| x.to_le_bytes()).collect();
+        Self::create_vertex_buffer(&bytes, 4)
+    }
 
-        if buffer_ptr.is_null() {
-            debug_println!("[update_buffer] buffer_ptr is NULL!");
-            return false;
-        }
+    pub fn create_constant_buffer(size: u64) -> Result<Self> {
+        println!("[BUFFER] Creating constant buffer, size: {} bytes", size);
+        let device = {
+            let state = STATE.lock().unwrap();
+            state.device.as_ref().unwrap().clone()
+        };
 
-        if data_ptr.is_null() {
-            debug_println!("[update_buffer] data_ptr is NULL!");
-            return false;
-        }
+        let aligned_size = (size + 255) & !255;
 
-        if size == 0 {
-            debug_println!("[update_buffer] size is 0!");
-            return false;
-        }
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_UPLOAD,
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+        };
 
-        // Восстанавливаем буфер из Box
-        let buffer_ref = &*(buffer_ptr as *const ID3D12Resource);
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: aligned_size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
 
-        // Проверяем, что указатель валидный, пытаясь получить описание
-        let desc = buffer_ref.GetDesc();
-        debug_println!("[update_buffer] Buffer desc: Width={}", desc.Width);
-
-        if (desc.Width as usize) < offset + size {
-            debug_println!("[update_buffer] Buffer too small: {} < {}", desc.Width, offset + size);
-            return false;
-        }
-
-        let mut mapped: *mut c_void = std::ptr::null_mut();
-
-        match buffer_ref.Map(0, None, Some(&mut mapped)) {
-            Ok(_) => {
-                if mapped.is_null() {
-                    debug_println!("[update_buffer] Map returned NULL!");
-                    buffer_ref.Unmap(0, None);
-                    return false;
-                }
-
-                debug_println!("[update_buffer] Mapped at {:p}", mapped);
-
-                let dst = (mapped as *mut u8).add(offset);
-                std::ptr::copy_nonoverlapping(data_ptr as *const u8, dst, size);
-
-                let write_range = D3D12_RANGE {
-                    Begin: offset,
-                    End: offset + size
-                };
-                buffer_ref.Unmap(0, Some(&write_range));
-                debug_println!("[update_buffer] ✅ Data copied successfully");
-                true
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            let hr = device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
+                &mut resource,
+            );
+            if hr.is_err() {
+                eprintln!("[BUFFER] CreateConstantBuffer failed: {:?}", hr);
+                return Err(Error::from_hresult(HRESULT::from(hr)));
             }
-            Err(e) => {
-                debug_println!("[update_buffer] Map failed: {:?}", e);
-                false
+
+            let resource = resource.ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
+
+            println!("[BUFFER] Constant buffer created successfully");
+            Ok(Self {
+                resource,
+                size: aligned_size,
+                vertex_stride: 0,
+            })
+        }
+    }
+
+    pub fn update_constant_buffer(&self, data: &[u8]) -> Result<()> {
+        unsafe {
+            let mut mapped = std::ptr::null_mut();
+            let _ = self.resource.Map(0, None, Some(&mut mapped));
+            if !mapped.is_null() {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len().min(self.size as usize));
             }
+            self.resource.Unmap(0, None);
         }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn update_subresource(
-    buffer_ptr: *mut c_void,
-    data_ptr: *const c_void,
-    size: usize,
-) -> bool {
-    debug_println!("\n[update_subresource] Calling update_buffer with offset 0");
-    update_buffer(buffer_ptr, data_ptr, size, 0)
-}
-
-#[no_mangle]
-pub extern "C" fn destroy_buffer(buffer_ptr: *mut c_void) -> bool {
-    if buffer_ptr.is_null() {
-        debug_println!("[destroy_buffer] buffer_ptr is NULL");
-        return false;
-    }
-    unsafe {
-        debug_println!("[destroy_buffer] Destroying buffer at {:p}", buffer_ptr);
-        let _ = Box::from_raw(buffer_ptr as *mut ID3D12Resource);
-        debug_println!("[destroy_buffer] ✅ Buffer destroyed");
-        true
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn get_buffer_gpu_address(buffer_ptr: *mut c_void) -> u64 {
-    unsafe {
-        if buffer_ptr.is_null() {
-            debug_println!("[get_buffer_gpu_address] buffer_ptr is NULL");
-            return 0;
-        }
-        let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        let addr = buffer.GetGPUVirtualAddress();
-        debug_println!("[get_buffer_gpu_address] GPU addr: 0x{:X}", addr);
-        addr
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn map_buffer (buffer_ptr: *mut c_void) -> *mut c_void {
-    unsafe {
-        if buffer_ptr.is_null() {
-            debug_println!("[ma_buffer] buffer_ptr is NULL");
-            return std::ptr::null_mut();
-
-        }
-        let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        let mut mapped: *mut c_void = std::ptr::null_mut();
-
-        match buffer.Map(0, None, Some(&mut mapped)) {
-            Ok(_) => {
-                debug_println!("[ma_buffer] Mapped at {:p}", mapped);
-                mapped
-            }
-            Err(e) => {
-                debug_println!("[ma_buffer] Map failed: {:?}", e);
-                std::ptr::null_mut()
-            }
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn unmap_buffer(buffer_ptr: *mut c_void) -> bool {
-    unsafe {
-        if buffer_ptr.is_null() {
-            return false;
-        }
-        let buffer = &*(buffer_ptr as *const ID3D12Resource);
-        buffer.Unmap(0, None);
-        debug_println!("[unmap_buffer] Unmapped");
-        true
+        Ok(())
     }
 }

@@ -1,217 +1,213 @@
 // src/texture.rs
-//! Текстуры - ИСПРАВЛЕННАЯ ВЕРСИЯ
-
-use std::ffi::c_void;
-use std::ptr;
+use windows::core::*;
 use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Dxgi::Common::*;
-use windows_core::Interface;
-use crate::{debug_println, utils::ptr_to_device};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT, DXGI_SAMPLE_DESC};
+use crate::STATE;
 
-#[no_mangle]
-pub extern "C" fn create_texture_2d(
-    device_ptr: *mut c_void,
-    width: u32,
-    height: u32,
-    format: u32,
-    mip_levels: u32,
-) -> *mut c_void {
-    unsafe {
-        debug_println!("\n[create_texture_2d] {}x{}, mips={}", width, height, mip_levels);
+pub struct Texture {
+    pub resource: ID3D12Resource,
+    pub width: u32,
+    pub height: u32,
+    pub format: DXGI_FORMAT,
+    pub mip_levels: u32,
+}
 
-        let device = match ptr_to_device(device_ptr) {
-            Some(d) => d,
-            None => return ptr::null_mut(),
+impl Texture {
+    pub fn create_texture2d(width: u32, height: u32, format: DXGI_FORMAT, data: Option<&[u8]>) -> Result<Self> {
+        println!("[TEXTURE] Creating 2D texture: {}x{}, format={:?}, data={}", width, height, format, data.is_some());
+
+        let device = {
+            let state = STATE.lock().unwrap();
+            state.device.as_ref().unwrap().clone()
         };
 
-        let dxgi_format = match format {
-            0 => DXGI_FORMAT_R8G8B8A8_UNORM,
-            1 => DXGI_FORMAT_R32G32B32A32_FLOAT,
-            2 => DXGI_FORMAT_BC1_UNORM,
-            3 => DXGI_FORMAT_BC3_UNORM,
-            4 => DXGI_FORMAT_BC5_UNORM,
-            _ => DXGI_FORMAT_R8G8B8A8_UNORM,
+        let heap_properties = if data.is_some() {
+            D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_UPLOAD, ..Default::default() }
+        } else {
+            D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_DEFAULT, ..Default::default() }
         };
+        println!("[TEXTURE] Heap type: {:?}", heap_properties.Type);
 
-        let heap_props = D3D12_HEAP_PROPERTIES {
-            Type: D3D12_HEAP_TYPE_DEFAULT,
-            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-            CreationNodeMask: 0,
-            VisibleNodeMask: 0,
-        };
-
-        let desc = D3D12_RESOURCE_DESC {
+        let resource_desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
             Alignment: 0,
             Width: width as u64,
-            Height: height,
+            Height: height as u32,
             DepthOrArraySize: 1,
-            MipLevels: mip_levels as u16,
-            Format: dxgi_format,
+            MipLevels: 1,
+            Format: format,
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: D3D12_RESOURCE_FLAG_NONE,
         };
 
-        let mut texture: Option<ID3D12Resource> = None;
-        match device.CreateCommittedResource(
-            &heap_props,
-            D3D12_HEAP_FLAG_NONE,
-            &desc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            None,
-            &mut texture
-        ) {
-            Ok(_) => {
-                if let Some(tex) = texture {
-                    let raw_ptr = tex.as_raw();
-                    debug_println!("[create_texture_2d] ✅ Created at {:p}", raw_ptr);
-                    // ИСПРАВЛЕНИЕ: используем Box вместо forget
-                    tex.as_raw() as *mut c_void
+        let initial_state = if data.is_some() {
+            D3D12_RESOURCE_STATE_GENERIC_READ
+        } else {
+            D3D12_RESOURCE_STATE_COMMON
+        };
+
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            println!("[TEXTURE] Creating committed resource...");
+            device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                initial_state,
+                None,
+                &mut resource,
+            )?;
+
+            let resource = resource.ok_or_else(|| {
+                eprintln!("[TEXTURE] ERROR: Resource is None!");
+                Error::from_hresult(HRESULT(1))
+            })?;
+            println!("[TEXTURE] ✓ Resource created");
+
+            if let Some(bytes) = data {
+                println!("[TEXTURE] Uploading texture data...");
+                let mut mapped = std::ptr::null_mut();
+                let _ = resource.Map(0, None, Some(&mut mapped));
+                if !mapped.is_null() {
+                    let row_pitch = width * 4;
+                    for y in 0..height {
+                        let src = &bytes[(y * row_pitch) as usize..];
+                        let dst = (mapped as *mut u8).add((y * row_pitch) as usize);
+                        std::ptr::copy_nonoverlapping(src.as_ptr(), dst, row_pitch as usize);
+                    }
+                    println!("[TEXTURE] Data uploaded");
                 } else {
-                    ptr::null_mut()
+                    eprintln!("[TEXTURE] ERROR: Mapped pointer is null!");
                 }
+                resource.Unmap(0, None);
             }
-            Err(e) => {
-                debug_println!("[create_texture_2d] Failed: {:?}", e);
-                ptr::null_mut()
-            }
+
+            Ok(Self {
+                resource,
+                width,
+                height,
+                format,
+                mip_levels: 1,
+            })
         }
     }
-}
 
-#[no_mangle]
-pub extern "C" fn destroy_texture_2d(texture_ptr: *mut c_void) -> bool {
-    if texture_ptr.is_null() {
-        return false;
-    }
-    unsafe {
-        let _ = ID3D12Resource::from_raw(texture_ptr as *mut _);
-        debug_println!("[destroy_texture_2d] ✅ Texture destroyed");
-        true
-    }
-}
+    pub fn create_render_target(width: u32, height: u32, format: DXGI_FORMAT) -> Result<Self> {
+        println!("[TEXTURE] Creating render target: {}x{}, format={:?}", width, height, format);
 
-#[no_mangle]
-pub extern "C" fn create_texture_from_memory(
-    device_ptr: *mut c_void,
-    data_ptr: *mut c_void,
-    width: u32,
-    height: u32,
-    _fmt: *const u8,
-) -> *mut c_void {
-    {
-        debug_println!("\n[create_texture_from_memory] {}x{}", width, height);
-
-        let texture = create_texture_2d(device_ptr, width, height, 0, 1);
-        if texture.is_null() {
-            return ptr::null_mut();
-        }
-
-        if !data_ptr.is_null() {
-            update_texture(texture, data_ptr, width, height);
-        }
-
-        texture
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn update_texture(
-    texture_ptr: *mut c_void,
-    data_ptr: *const c_void,
-    width: u32,
-    height: u32,
-) -> bool {
-    unsafe {
-        if texture_ptr.is_null() || data_ptr.is_null() {
-            return false;
-        }
-
-        let texture = &*(texture_ptr as *const ID3D12Resource);
-        let _desc = texture.GetDesc();
-
-        let row_pitch = (width * 4) as usize;
-        let total_size = row_pitch * height as usize;
-
-        let device = match get_device_from_resource(texture) {
-            Some(d) => d,
-            None => return false,
+        let device = {
+            let state = STATE.lock().unwrap();
+            state.device.as_ref().unwrap().clone()
         };
 
-        let upload_buffer = create_buffer(device.as_raw() as *mut c_void, total_size, 0);
-
-        if upload_buffer.is_null() {
-            return false;
-        }
-
-        if !update_subresource(upload_buffer, data_ptr, total_size) {
-            destroy_buffer(upload_buffer);
-            return false;
-        }
-
-        destroy_buffer(upload_buffer);
-        true
-    }
-}
-
-unsafe fn get_device_from_resource(resource: &ID3D12Resource) -> Option<ID3D12Device> {
-    let mut device_ptr: *mut c_void = ptr::null_mut();
-    let iid = &ID3D12Device::IID;
-
-    if resource.query(iid, &mut device_ptr).is_ok() && !device_ptr.is_null() {
-        // ИСПРАВЛЕНИЕ: читаем указатель и клонируем COM объект
-        let device = &*(device_ptr as *const ID3D12Device);
-        Some(device.clone())
-    } else {
-        None
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn create_srv(
-    device_ptr: *mut c_void,
-    texture_ptr: *mut c_void,
-    cpu_handle: u64,
-) -> bool {
-    unsafe {
-        if device_ptr.is_null() || texture_ptr.is_null() || cpu_handle == 0 {
-            return false;
-        }
-
-        let device = match ptr_to_device(device_ptr) {
-            Some(d) => d,
-            None => return false,
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
         };
 
-        let texture = &*(texture_ptr as *const ID3D12Resource);
-        let desc = texture.GetDesc();
-
-        let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-            Format: desc.Format,
-            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                Texture2D: D3D12_TEX2D_SRV {
-                    MostDetailedMip: 0,
-                    MipLevels: desc.MipLevels as u32,
-                    PlaneSlice: 0,
-                    ResourceMinLODClamp: 0.0,
-                },
-            },
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: width as u64,
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
         };
 
-        let cpu_handle_struct = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: cpu_handle as usize };
-        device.CreateShaderResourceView(texture, Some(&srv_desc), cpu_handle_struct);
+        let clear_value = D3D12_CLEAR_VALUE {
+            Format: format,
+            Anonymous: D3D12_CLEAR_VALUE_0 { Color: [0.1, 0.1, 0.2, 1.0] },
+        };
 
-        true
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            println!("[TEXTURE] Creating render target resource...");
+            device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                Some(&clear_value),
+                &mut resource,
+            )?;
+
+            let resource = resource.ok_or_else(|| {
+                eprintln!("[TEXTURE] ERROR: Render target resource is None!");
+                Error::from_hresult(HRESULT(1))
+            })?;
+            println!("[TEXTURE] ✓ Render target created");
+
+            Ok(Self {
+                resource,
+                width,
+                height,
+                format,
+                mip_levels: 1,
+            })
+        }
     }
-}
 
-// Вспомогательные функции
-extern "C" {
-    fn create_buffer(device_ptr: *mut c_void, size: usize, buffer_type: u32) -> *mut c_void;
-    fn update_subresource(buffer_ptr: *mut c_void, data_ptr: *const c_void, size: usize) -> bool;
-    fn destroy_buffer(buffer_ptr: *mut c_void) -> bool;
+    pub fn create_depth_stencil(width: u32, height: u32) -> Result<Self> {
+        println!("[TEXTURE] Creating depth stencil: {}x{}", width, height);
+
+        let device = {
+            let state = STATE.lock().unwrap();
+            state.device.as_ref().unwrap().clone()
+        };
+
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: width as u64,
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_D32_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+        };
+
+        let clear_value = D3D12_CLEAR_VALUE {
+            Format: DXGI_FORMAT_D32_FLOAT,
+            Anonymous: D3D12_CLEAR_VALUE_0 { DepthStencil: D3D12_DEPTH_STENCIL_VALUE { Depth: 1.0, Stencil: 0 } },
+        };
+
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            println!("[TEXTURE] Creating depth stencil resource...");
+            device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                Some(&clear_value),
+                &mut resource,
+            )?;
+
+            let resource = resource.ok_or_else(|| {
+                eprintln!("[TEXTURE] ERROR: Depth stencil resource is None!");
+                Error::from_hresult(HRESULT(1))
+            })?;
+            println!("[TEXTURE] ✓ Depth stencil created");
+
+            Ok(Self {
+                resource,
+                width,
+                height,
+                format: DXGI_FORMAT_D32_FLOAT,
+                mip_levels: 1,
+            })
+        }
+    }
 }
