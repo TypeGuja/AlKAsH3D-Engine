@@ -22,15 +22,36 @@ struct Vertex {
     color: [f32; 4],
 }
 
+// Вершинный шейдер с отладочным выводом через системные значения
 const VERTEX_SHADER_SOURCE: &str = r#"
-float4 main(float4 pos : POSITION) : SV_POSITION {
-    return pos;
+struct VS_INPUT {
+    float4 pos : POSITION;
+    float4 color : COLOR;
+};
+
+struct VS_OUTPUT {
+    float4 pos : SV_POSITION;
+    float4 color : COLOR;
+};
+
+VS_OUTPUT main(VS_INPUT input) {
+    VS_OUTPUT output;
+    output.pos = input.pos;
+    output.color = input.color;
+    return output;
 }
 "#;
 
+// Пиксельный шейдер - всегда возвращает ярко-белый цвет для теста
 const PIXEL_SHADER_SOURCE: &str = r#"
-float4 main() : SV_TARGET {
-    return float4(1.0, 0.0, 0.0, 1.0);
+struct PS_INPUT {
+    float4 pos : SV_POSITION;
+    float4 color : COLOR;
+};
+
+float4 main(PS_INPUT input) : SV_TARGET {
+    // Для отладки - возвращаем ярко-белый цвет
+    return float4(1.0, 1.0, 1.0, 1.0);
 }
 "#;
 
@@ -178,13 +199,15 @@ fn main() -> Result<()> {
         device.CreateDepthStencilView(&depth_stencil, None, dsv_handle);
         debug_print!("✓ Depth stencil view создан");
 
-        // Vertex buffer
         debug_print!("Создание вершинного буфера...");
+        // Используем треугольник, который гарантированно виден
+        // Изменяем координаты: делаем треугольник больше и в центре
         let vertices = [
-            Vertex { position: [-0.9, -0.9, 0.0, 1.0], color: [1.0, 0.0, 0.0, 1.0] },  // красный - левый нижний
-            Vertex { position: [0.0, 0.9, 0.0, 1.0], color: [0.0, 1.0, 0.0, 1.0] },    // зелёный - верх
-            Vertex { position: [0.9, -0.9, 0.0, 1.0], color: [0.0, 0.0, 1.0, 1.0] },   // синий - правый нижний
+            Vertex { position: [-0.8, -0.8, 0.5, 1.0], color: [1.0, 0.0, 0.0, 1.0] },  // красный
+            Vertex { position: [0.0, 0.8, 0.5, 1.0], color: [0.0, 1.0, 0.0, 1.0] },    // зелёный
+            Vertex { position: [0.8, -0.8, 0.5, 1.0], color: [0.0, 0.0, 1.0, 1.0] },   // синий
         ];
+
         println!("[MAIN] Vertex data:");
         for (i, v) in vertices.iter().enumerate() {
             println!("  Vertex {}: pos=({:.1}, {:.1}, {:.1}), color=({:.1}, {:.1}, {:.1}, {:.1})",
@@ -224,23 +247,25 @@ fn main() -> Result<()> {
         println!("[MAIN] Vertex buffer created, size: {} bytes", vertex_buffer_size);
 
         let mut mapped = std::ptr::null_mut();
-        vertex_buffer.Map(0, None, Some(&mut mapped));
-        if !mapped.is_null() {
+        let hr = vertex_buffer.Map(0, None, Some(&mut mapped));
+        if hr.is_err() {
+            println!("[MAIN] ERROR: Map failed with HRESULT: {:?}", hr);
+        } else if !mapped.is_null() {
             std::ptr::copy_nonoverlapping(vertices.as_ptr() as *const u8, mapped as *mut u8, vertex_buffer_size as usize);
-            println!("[MAIN] Vertex data copied to buffer");
+            println!("[MAIN] Vertex data copied to buffer at address: {:p}", mapped);
+        } else {
+            println!("[MAIN] ERROR: Mapped pointer is null!");
         }
         vertex_buffer.Unmap(0, None);
 
         let vertex_gpu_addr = vertex_buffer.GetGPUVirtualAddress();
         println!("[MAIN] Vertex buffer GPU address: {:?}", vertex_gpu_addr);
 
-        // Compile shaders
         debug_print!("Компиляция шейдеров...");
         let vs = ShaderBlob::compile(VERTEX_SHADER_SOURCE, "vs_5_0", "main")?;
         let ps = ShaderBlob::compile(PIXEL_SHADER_SOURCE, "ps_5_0", "main")?;
         debug_print!("✓ Шейдеры скомпилированы (VS: {} байт, PS: {} байт)", vs.size(), ps.size());
 
-        // Root signature
         debug_print!("Создание корневой сигнатуры...");
         let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
             NumParameters: 0,
@@ -261,6 +286,14 @@ fn main() -> Result<()> {
         );
 
         if hr.is_err() {
+            if let Some(error_blob) = error_blob {
+                let error = std::slice::from_raw_parts(
+                    error_blob.GetBufferPointer() as *const u8,
+                    error_blob.GetBufferSize(),
+                );
+                let error_str = String::from_utf8_lossy(error);
+                eprintln!("Root signature serialization error:\n{}", error_str);
+            }
             debug_print!("Ошибка сериализации корневой сигнатуры: {:?}", hr);
             return Err(Error::from_hresult(HRESULT::from(hr)));
         }
@@ -275,7 +308,6 @@ fn main() -> Result<()> {
         let root_signature: ID3D12RootSignature = device.CreateRootSignature(0, blob_data)?;
         debug_print!("✓ Корневая сигнатура создана");
 
-        // PSO
         debug_print!("Создание PSO...");
         let pso: ID3D12PipelineState = PipelineState::create_graphics(
             &vs, &ps, &root_signature,
@@ -305,67 +337,98 @@ fn main() -> Result<()> {
             if !running { break; }
 
             let frame_index = swap_chain.GetCurrentBackBufferIndex();
-            println!("\n=== FRAME {} (BackBuffer {}) ===", frame_count, frame_index);
 
+            if frame_count % 60 == 0 {
+                println!("\n=== FRAME {} (BackBuffer {}) ===", frame_count, frame_index);
+            }
+
+            // Сброс allocator
             let allocator = {
                 let state = STATE.lock().unwrap();
                 state.command_allocators[frame_index as usize].as_ref().unwrap().clone()
             };
             allocator.Reset();
-            println!("[FRAME] Allocator reset");
 
+            // Создание command list
             let cmd_list: ID3D12GraphicsCommandList = device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?;
-            println!("[FRAME] Command list created");
 
+            // Установка render targets
             let rtv = rtv_handles[frame_index as usize];
-            println!("[FRAME] Setting render targets");
             cmd_list.OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv_handle));
 
-            let clear_color = [0.2, 0.5, 0.2, 1.0];
+            // Очистка цветного буфера (ярко-красный фон для теста)
+            let clear_color = [1.0, 0.0, 0.0, 1.0];  // Ярко-красный фон
             cmd_list.ClearRenderTargetView(rtv, &clear_color, None);
-            println!("[FRAME] Render target cleared");
+            cmd_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
 
+            // Установка PSO и root signature
             cmd_list.SetPipelineState(Some(&pso));
             cmd_list.SetGraphicsRootSignature(Some(&root_signature));
-            println!("[FRAME] Pipeline state and root signature set");
 
+            // Установка viewport и scissor rect
+            let viewport = D3D12_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: WINDOW_WIDTH as f32,
+                Height: WINDOW_HEIGHT as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            cmd_list.RSSetViewports(&[viewport]);
+
+            let scissor_rect = RECT {
+                left: 0,
+                top: 0,
+                right: WINDOW_WIDTH as i32,
+                bottom: WINDOW_HEIGHT as i32,
+            };
+            cmd_list.RSSetScissorRects(&[scissor_rect]);
+
+            // Установка vertex buffer
             let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
                 BufferLocation: vertex_gpu_addr,
                 SizeInBytes: vertex_buffer_size as u32,
                 StrideInBytes: std::mem::size_of::<Vertex>() as u32,
             };
-
             cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
             cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            cmd_list.DrawInstanced(3, 1, 0, 0);
-            println!("[FRAME] DrawInstanced(3) called - triangle drawn");
 
+            // Draw
+            cmd_list.DrawInstanced(3, 1, 0, 0);
+
+            if frame_count % 60 == 0 {
+                println!("[FRAME] DrawInstanced(3) called - Triangle should be white on red background");
+            }
+
+            // Close и execute
             cmd_list.Close()?;
-            println!("[FRAME] Command list closed");
 
             let queue = STATE.lock().unwrap().command_queue.as_ref().unwrap().clone();
             let cmd_lists = [Some(cmd_list.into())];
             queue.ExecuteCommandLists(&cmd_lists);
-            println!("[FRAME] Command list executed");
 
+            // Present
             let _ = swap_chain.Present(1, DXGI_PRESENT(0));
-            println!("[FRAME] Present called");
 
+            // Fence synchronization
             fence_value += 1;
             queue.Signal(&fence, fence_value)?;
 
             while fence.GetCompletedValue() < fence_value {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            println!("[FRAME] GPU fence signaled");
 
             frame_count += 1;
-            if frame_count % 60 == 0 {
-                println!("[MAIN] Frames rendered: {}", frame_count);
-            }
 
             if frame_count == 1 {
-                println!("\n*** FIRST FRAME COMPLETED - CHECK WINDOW FOR TRIANGLE ***\n");
+                println!("\n*** FIRST FRAME COMPLETED ***");
+                println!("*** Screen should be RED with a WHITE triangle ***");
+                println!("*** If you see RED screen, triangle is not rendering ***");
+                println!("*** If you see WHITE triangle, rendering works! ***\n");
+            }
+
+            if frame_count == 60 {
+                println!("[INFO] 60 frames rendered - check if triangle appears");
             }
         }
 
@@ -384,7 +447,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_KEYDOWN => {
-                if wparam.0 == 0x1B {
+                if wparam.0 == 0x1B {  // ESC key
                     PostQuitMessage(0);
                 }
                 LRESULT(0)
