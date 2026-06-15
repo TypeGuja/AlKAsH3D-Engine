@@ -1,601 +1,512 @@
 // src/engine/mod.rs
-//! Основной движок Alkash3D с поддержкой плагинов
+//! Основной движок Alkash3D
 
-use std::ffi::c_void;
 use std::sync::Arc;
-use libloading::{Library, Symbol};
+use windows::core::*;
+use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Direct3D::D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 
-use crate::scheduler::*;
-
-// ===================================================================
-// Plugin ABI - общий для всех плагинов
-// ===================================================================
-
-/// Версия API плагинов
-pub const PLUGIN_API_VERSION: u32 = 1;
-
-/// Тип плагина
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginType {
-    Physics = 0,
-    LightCulling = 1,
-    Audio = 2,
-    Scripting = 3,
-}
-
-/// Базовый ABI для всех плагинов
-#[repr(C)]
-pub struct PluginAPI {
-    pub version: u32,
-    pub plugin_type: PluginType,
-    pub name: *const std::os::raw::c_char,
-
-    // Жизненный цикл
-    pub init: extern "C" fn(device_ptr: *mut c_void, config_ptr: *const c_void) -> *mut c_void,
-    pub shutdown: extern "C" fn(instance: *mut c_void),
-    pub update: extern "C" fn(instance: *mut c_void, dt: f32),
-
-    // Получение специфических API
-    pub get_physics_api: extern "C" fn(instance: *mut c_void) -> *const c_void,
-    pub get_light_api: extern "C" fn(instance: *mut c_void) -> *const c_void,
-}
+use crate::*;
 
 // ===================================================================
-// Send-безопасный указатель для FFI
+// Vertex definition for rendering
 // ===================================================================
 
-#[derive(Debug, Clone, Copy)]
-pub struct SendPtr(pub *mut c_void);
-
-unsafe impl Send for SendPtr {}
-unsafe impl Sync for SendPtr {}
-
-impl SendPtr {
-    pub fn as_ptr(&self) -> *mut c_void {
-        self.0
-    }
-}
-
-// ===================================================================
-// Physics API
-// ===================================================================
-
-/// Конфигурация физики
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct PhysicsConfig {
-    pub max_bodies: i32,
-    pub world_size: f32,
-    pub cell_size: f32,
-    pub solver_iterations: i32,
-    pub use_simd: i32,
-}
-
-/// Структура тела (совместима с Fortran)
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct PhysicsBody {
-    pub position: [f32; 3],
-    pub velocity: [f32; 3],
-    pub acceleration: [f32; 3],
-    pub angular_velocity: [f32; 3],
-    pub angular_acceleration: [f32; 3],
-    pub mass: f32,
-    pub inv_mass: f32,
-    pub restitution: f32,
-    pub friction: f32,
-    pub linear_damping: f32,
-    pub angular_damping: f32,
-    pub is_static: i32,
-    pub is_asleep: i32,
-}
-
-/// Структура контакта
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct PhysicsContact {
-    pub body_a: i32,
-    pub body_b: i32,
-    pub normal: [f32; 3],
-    pub penetration: f32,
-    pub point: [f32; 3],
-}
-
-/// Статистика физики
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PhysicsStats {
-    pub bodies_count: u32,
-    pub active_bodies: u32,
-    pub contacts_count: u32,
-    pub pairs_count: u32,
-    pub broad_phase_time_ms: f32,
-    pub narrow_phase_time_ms: f32,
-    pub solver_time_ms: f32,
-}
-
-/// API физического плагина
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PhysicsAPI {
-    pub add_body: extern "C" fn(instance: *mut c_void, body: *const PhysicsBody) -> i32,
-    pub remove_body: extern "C" fn(instance: *mut c_void, id: i32),
-    pub get_body: extern "C" fn(instance: *mut c_void, id: i32) -> PhysicsBody,
-    pub get_bodies_count: extern "C" fn(instance: *mut c_void) -> i32,
-    pub update: extern "C" fn(instance: *mut c_void, dt: f32, gravity: f32),
-    pub get_contacts: extern "C" fn(instance: *mut c_void) -> *const PhysicsContact,
-    pub get_contacts_count: extern "C" fn(instance: *mut c_void) -> i32,
-    pub get_pairs: extern "C" fn(instance: *mut c_void) -> *const i32,
-    pub get_pairs_count: extern "C" fn(instance: *mut c_void) -> i32,
-    pub get_stats: extern "C" fn(instance: *mut c_void) -> PhysicsStats,
-}
-
-// Safety: PhysicsAPI содержит только функции, которые можно вызывать из любого потока
-unsafe impl Send for PhysicsAPI {}
-unsafe impl Sync for PhysicsAPI {}
-
-/// Плагин физики
-pub struct PhysicsPlugin {
-    pub _lib: Library,
-    pub api: PhysicsAPI,
-    pub instance: SendPtr,
-}
-
-impl PhysicsPlugin {
-    pub fn load(path: &str, config: PhysicsConfig) -> Result<Self, String> {
-        unsafe {
-            let lib = Library::new(path).map_err(|e| format!("Failed to load {}: {}", path, e))?;
-
-            let get_api: Symbol<extern "C" fn() -> PluginAPI> = lib
-                .get(b"get_plugin_api")
-                .map_err(|_| "get_plugin_api not found in DLL")?;
-
-            let plugin_api = get_api();
-
-            if plugin_api.version != PLUGIN_API_VERSION {
-                return Err(format!("API version mismatch: {} != {}", plugin_api.version, PLUGIN_API_VERSION));
-            }
-
-            if plugin_api.plugin_type != PluginType::Physics {
-                return Err(format!("Invalid plugin type: expected Physics, got {:?}", plugin_api.plugin_type));
-            }
-
-            let instance = (plugin_api.init)(std::ptr::null_mut(), &config as *const _ as *const c_void);
-            if instance.is_null() {
-                return Err("Physics plugin init failed".into());
-            }
-
-            let physics_api_ptr = (plugin_api.get_physics_api)(instance);
-            if physics_api_ptr.is_null() {
-                (plugin_api.shutdown)(instance);
-                return Err("Physics plugin has no PhysicsAPI".into());
-            }
-
-            let api = *(physics_api_ptr as *const PhysicsAPI);
-
-            Ok(Self { _lib: lib, api, instance: SendPtr(instance) })
-        }
-    }
-
-    pub fn update(&mut self, dt: f32, gravity: f32) {
-        (self.api.update)(self.instance.as_ptr(), dt, gravity);
-    }
-
-    pub fn add_body(&mut self, body: &PhysicsBody) -> i32 {
-        (self.api.add_body)(self.instance.as_ptr(), body)
-    }
-
-    pub fn get_contacts(&self) -> &[PhysicsContact] {
-        unsafe {
-            let ptr = (self.api.get_contacts)(self.instance.as_ptr());
-            let count = (self.api.get_contacts_count)(self.instance.as_ptr()) as usize;
-            if count == 0 || ptr.is_null() { &[] } else { std::slice::from_raw_parts(ptr, count) }
-        }
-    }
-
-    pub fn get_stats(&self) -> PhysicsStats {
-        (self.api.get_stats)(self.instance.as_ptr())
-    }
-}
-
-impl Drop for PhysicsPlugin {
-    fn drop(&mut self) {
-        unsafe {
-            let get_api: Symbol<extern "C" fn() -> PluginAPI> = match self._lib.get(b"get_plugin_api") {
-                Ok(f) => f,
-                Err(_) => return,
-            };
-            let plugin_api = get_api();
-            (plugin_api.shutdown)(self.instance.as_ptr());
-        }
-    }
-}
-
-// ===================================================================
-// Light API
-// ===================================================================
-
-/// Конфигурация света
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LightConfig {
-    pub max_lights: u32,
-    pub tile_size: u32,
-    pub far_plane: f32,
-    pub lod_distances: [f32; 3],
-    pub grid_cell_size: f32,
-}
-
-/// GPU-совместимая структура света
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct GPULight {
+pub struct Vertex {
     pub position: [f32; 4],
     pub color: [f32; 4],
-    pub direction: [f32; 4],
-    pub params: [f32; 4],
 }
 
-unsafe impl bytemuck::Zeroable for GPULight {}
-unsafe impl bytemuck::Pod for GPULight {}
+impl Vertex {
+    pub const STRIDE: u32 = std::mem::size_of::<Vertex>() as u32;
 
-/// Ячейка световой сетки
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LightGridCell {
-    pub offset: u32,
-    pub count: u32,
-}
-
-/// Запись в сетке
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LightGridEntry {
-    pub light_index: u32,
-    pub lod_level: u32,
-    pub depth: f32,
-    pub padding: u32,
-}
-
-/// Статистика каллинга
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LightStats {
-    pub total_lights: u32,
-    pub visible_lights: u32,
-    pub culled_by_lod: u32,
-    pub culled_by_distance: u32,
-    pub culled_by_frustum: u32,
-    pub culling_time_ms: f32,
-}
-
-/// API плагина Light Culling
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LightAPI {
-    pub add_light: extern "C" fn(instance: *mut c_void, light: *const GPULight) -> u32,
-    pub remove_light: extern "C" fn(instance: *mut c_void, id: u32),
-    pub update_light: extern "C" fn(instance: *mut c_void, id: u32, light: *const GPULight),
-    pub get_lights_count: extern "C" fn(instance: *mut c_void) -> u32,
-    pub cull: extern "C" fn(instance: *mut c_void, camera_pos: *const f32, view_proj: *const f32, dt: f32),
-    pub get_gpu_lights: extern "C" fn(instance: *mut c_void) -> *const GPULight,
-    pub get_gpu_lights_count: extern "C" fn(instance: *mut c_void) -> u32,
-    pub get_light_grid_cells: extern "C" fn(instance: *mut c_void) -> *const LightGridCell,
-    pub get_light_grid_entries: extern "C" fn(instance: *mut c_void) -> *const LightGridEntry,
-    pub get_grid_cells_count: extern "C" fn(instance: *mut c_void) -> u32,
-    pub get_grid_entries_count: extern "C" fn(instance: *mut c_void) -> u32,
-    pub get_stats: extern "C" fn(instance: *mut c_void) -> LightStats,
-}
-
-// Safety: LightAPI содержит только функции, которые можно вызывать из любого потока
-unsafe impl Send for LightAPI {}
-unsafe impl Sync for LightAPI {}
-
-/// Плагин света
-pub struct LightPlugin {
-    pub _lib: Library,
-    pub api: LightAPI,
-    pub instance: SendPtr,
-}
-
-impl LightPlugin {
-    pub fn load(path: &str, device_ptr: *mut c_void, config: LightConfig) -> Result<Self, String> {
-        unsafe {
-            let lib = Library::new(path).map_err(|e| format!("Failed to load {}: {}", path, e))?;
-
-            let get_api: Symbol<extern "C" fn() -> PluginAPI> = lib
-                .get(b"get_plugin_api")
-                .map_err(|_| "get_plugin_api not found in DLL")?;
-
-            let plugin_api = get_api();
-
-            if plugin_api.version != PLUGIN_API_VERSION {
-                return Err(format!("API version mismatch: {} != {}", plugin_api.version, PLUGIN_API_VERSION));
-            }
-
-            if plugin_api.plugin_type != PluginType::LightCulling {
-                return Err(format!("Invalid plugin type: expected LightCulling, got {:?}", plugin_api.plugin_type));
-            }
-
-            let instance = (plugin_api.init)(device_ptr, &config as *const _ as *const c_void);
-            if instance.is_null() {
-                return Err("Light plugin init failed".into());
-            }
-
-            let light_api_ptr = (plugin_api.get_light_api)(instance);
-            if light_api_ptr.is_null() {
-                (plugin_api.shutdown)(instance);
-                return Err("Light plugin has no LightAPI".into());
-            }
-
-            let api = *(light_api_ptr as *const LightAPI);
-
-            Ok(Self { _lib: lib, api, instance: SendPtr(instance) })
-        }
-    }
-
-    pub fn cull(&mut self, camera_pos: [f32; 3], view_proj: &[f32; 16], dt: f32) {
-        (self.api.cull)(self.instance.as_ptr(), camera_pos.as_ptr(), view_proj.as_ptr(), dt);
-    }
-
-    pub fn add_light(&mut self, light: &GPULight) -> u32 {
-        (self.api.add_light)(self.instance.as_ptr(), light)
-    }
-
-    pub fn get_gpu_lights(&self) -> &[GPULight] {
-        unsafe {
-            let ptr = (self.api.get_gpu_lights)(self.instance.as_ptr());
-            let count = (self.api.get_gpu_lights_count)(self.instance.as_ptr()) as usize;
-            if count == 0 || ptr.is_null() { &[] } else { std::slice::from_raw_parts(ptr, count) }
-        }
-    }
-
-    pub fn get_stats(&self) -> LightStats {
-        (self.api.get_stats)(self.instance.as_ptr())
-    }
-}
-
-impl Drop for LightPlugin {
-    fn drop(&mut self) {
-        unsafe {
-            let get_api: Symbol<extern "C" fn() -> PluginAPI> = match self._lib.get(b"get_plugin_api") {
-                Ok(f) => f,
-                Err(_) => return,
-            };
-            let plugin_api = get_api();
-            (plugin_api.shutdown)(self.instance.as_ptr());
-        }
-    }
-}
-
-// ===================================================================
-// Plugin Manager
-// ===================================================================
-
-pub struct LoadedPlugin {
-    pub lib: Library,
-    pub api: PluginAPI,
-    pub instance: SendPtr,
-}
-
-impl Drop for LoadedPlugin {
-    fn drop(&mut self) {
-        if !self.instance.as_ptr().is_null() {
-            (self.api.shutdown)(self.instance.as_ptr());
-        }
-    }
-}
-
-pub struct PluginManager {
-    plugins: Vec<LoadedPlugin>,
-    physics_plugin_idx: Option<usize>,
-    light_plugin_idx: Option<usize>,
-}
-
-impl PluginManager {
-    pub fn new() -> Self {
+    pub fn new(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, a: f32) -> Self {
         Self {
-            plugins: Vec::new(),
-            physics_plugin_idx: None,
-            light_plugin_idx: None,
+            position: [x, y, z, 1.0],
+            color: [r, g, b, a],
         }
-    }
-
-    pub fn load_physics(&mut self, path: &str, device_ptr: *mut c_void, config: PhysicsConfig) -> Result<(), String> {
-        let idx = self.load_plugin(path, device_ptr, &config as *const _ as *const c_void)?;
-        self.physics_plugin_idx = Some(idx);
-        Ok(())
-    }
-
-    pub fn load_lights(&mut self, path: &str, device_ptr: *mut c_void, config: LightConfig) -> Result<(), String> {
-        let idx = self.load_plugin(path, device_ptr, &config as *const _ as *const c_void)?;
-        self.light_plugin_idx = Some(idx);
-        Ok(())
-    }
-
-    fn load_plugin(&mut self, path: &str, device_ptr: *mut c_void, config_ptr: *const c_void) -> Result<usize, String> {
-        unsafe {
-            let lib = Library::new(path)
-                .map_err(|e| format!("Failed to load {}: {}", path, e))?;
-
-            let get_api: Symbol<extern "C" fn() -> PluginAPI> = lib
-                .get(b"get_plugin_api")
-                .map_err(|_| "get_plugin_api not found in DLL")?;
-
-            let api = get_api();
-
-            if api.version != PLUGIN_API_VERSION {
-                return Err(format!("API version mismatch: {} != {}", api.version, PLUGIN_API_VERSION));
-            }
-
-            let instance = (api.init)(device_ptr, config_ptr);
-            if instance.is_null() {
-                return Err("Plugin init failed".into());
-            }
-
-            let plugin_type = match api.plugin_type {
-                PluginType::Physics => "Physics",
-                PluginType::LightCulling => "LightCulling",
-                _ => "Unknown",
-            };
-
-            println!("✅ Loaded {} plugin: {}", plugin_type, path);
-
-            self.plugins.push(LoadedPlugin {
-                lib,
-                api,
-                instance: SendPtr(instance),
-            });
-            Ok(self.plugins.len() - 1)
-        }
-    }
-
-    pub fn get_physics_api(&self) -> Option<PhysicsAPI> {
-        let idx = self.physics_plugin_idx?;
-        let plugin = &self.plugins[idx];
-        unsafe {
-            let ptr = (plugin.api.get_physics_api)(plugin.instance.as_ptr());
-            if ptr.is_null() { None } else { Some(*(ptr as *const PhysicsAPI)) }
-        }
-    }
-
-    pub fn get_physics_instance(&self) -> Option<SendPtr> {
-        let idx = self.physics_plugin_idx?;
-        Some(self.plugins[idx].instance)
-    }
-
-    pub fn get_light_api(&self) -> Option<LightAPI> {
-        let idx = self.light_plugin_idx?;
-        let plugin = &self.plugins[idx];
-        unsafe {
-            let ptr = (plugin.api.get_light_api)(plugin.instance.as_ptr());
-            if ptr.is_null() { None } else { Some(*(ptr as *const LightAPI)) }
-        }
-    }
-
-    pub fn get_light_instance(&self) -> Option<SendPtr> {
-        let idx = self.light_plugin_idx?;
-        Some(self.plugins[idx].instance)
-    }
-
-    pub fn unload_all(&mut self) {
-        self.plugins.clear();
-        self.physics_plugin_idx = None;
-        self.light_plugin_idx = None;
     }
 }
 
 // ===================================================================
-// Основной движок
+// Mesh - хранит геометрию
+// ===================================================================
+
+pub struct Mesh {
+    pub vertex_buffer: Buffer,
+    pub vertex_count: u32,
+    pub index_buffer: Option<Buffer>,
+    pub index_count: u32,
+}
+
+impl Mesh {
+    pub fn from_vertices(vertices: &[Vertex]) -> Result<Self> {
+        let vertex_data: Vec<u8> = vertices
+            .iter()
+            .flat_map(|v| {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(&v.position[0].to_le_bytes());
+                bytes.extend_from_slice(&v.position[1].to_le_bytes());
+                bytes.extend_from_slice(&v.position[2].to_le_bytes());
+                bytes.extend_from_slice(&v.position[3].to_le_bytes());
+                bytes.extend_from_slice(&v.color[0].to_le_bytes());
+                bytes.extend_from_slice(&v.color[1].to_le_bytes());
+                bytes.extend_from_slice(&v.color[2].to_le_bytes());
+                bytes.extend_from_slice(&v.color[3].to_le_bytes());
+                bytes
+            })
+            .collect();
+
+        let buffer = Buffer::create_vertex_buffer(&vertex_data, Vertex::STRIDE)?;
+
+        Ok(Self {
+            vertex_buffer: buffer,
+            vertex_count: vertices.len() as u32,
+            index_buffer: None,
+            index_count: 0,
+        })
+    }
+
+    pub fn from_vertices_and_indices(vertices: &[Vertex], indices: &[u32]) -> Result<Self> {
+        let mut mesh = Self::from_vertices(vertices)?;
+        mesh.index_buffer = Some(Buffer::create_index_buffer(indices)?);
+        mesh.index_count = indices.len() as u32;
+        Ok(mesh)
+    }
+
+    pub fn triangle() -> Result<Self> {
+        let vertices = [
+            Vertex::new(-0.8, -0.8, 0.5, 1.0, 0.0, 0.0, 1.0),
+            Vertex::new(0.0, 0.8, 0.5, 0.0, 1.0, 0.0, 1.0),
+            Vertex::new(0.8, -0.8, 0.5, 0.0, 0.0, 1.0, 1.0),
+        ];
+        Self::from_vertices(&vertices)
+    }
+
+    pub fn quad(x: f32, y: f32, width: f32, height: f32, color: [f32; 4]) -> Result<Self> {
+        let half_w = width / 2.0;
+        let half_h = height / 2.0;
+        let left = x - half_w;
+        let right = x + half_w;
+        let top = y + half_h;
+        let bottom = y - half_h;
+
+        let vertices = [
+            Vertex::new(left, bottom, 0.0, color[0], color[1], color[2], color[3]),
+            Vertex::new(right, bottom, 0.0, color[0], color[1], color[2], color[3]),
+            Vertex::new(left, top, 0.0, color[0], color[1], color[2], color[3]),
+            Vertex::new(right, top, 0.0, color[0], color[1], color[2], color[3]),
+        ];
+
+        let indices = [0, 1, 2, 1, 3, 2];
+        Self::from_vertices_and_indices(&vertices, &indices)
+    }
+
+    pub fn cube(size: f32) -> Result<Self> {
+        let half = size / 2.0;
+
+        let vertices = [
+            // Front face
+            Vertex::new(-half, -half, half, 1.0, 0.0, 0.0, 1.0),
+            Vertex::new( half, -half, half, 1.0, 0.0, 0.0, 1.0),
+            Vertex::new(-half,  half, half, 1.0, 0.0, 0.0, 1.0),
+            Vertex::new( half,  half, half, 1.0, 0.0, 0.0, 1.0),
+            // Back face
+            Vertex::new(-half, -half, -half, 0.0, 1.0, 0.0, 1.0),
+            Vertex::new( half, -half, -half, 0.0, 1.0, 0.0, 1.0),
+            Vertex::new(-half,  half, -half, 0.0, 1.0, 0.0, 1.0),
+            Vertex::new( half,  half, -half, 0.0, 1.0, 0.0, 1.0),
+            // Top face
+            Vertex::new(-half,  half, -half, 0.0, 0.0, 1.0, 1.0),
+            Vertex::new( half,  half, -half, 0.0, 0.0, 1.0, 1.0),
+            Vertex::new(-half,  half,  half, 0.0, 0.0, 1.0, 1.0),
+            Vertex::new( half,  half,  half, 0.0, 0.0, 1.0, 1.0),
+            // Bottom face
+            Vertex::new(-half, -half, -half, 1.0, 1.0, 0.0, 1.0),
+            Vertex::new( half, -half, -half, 1.0, 1.0, 0.0, 1.0),
+            Vertex::new(-half, -half,  half, 1.0, 1.0, 0.0, 1.0),
+            Vertex::new( half, -half,  half, 1.0, 1.0, 0.0, 1.0),
+            // Right face
+            Vertex::new( half, -half, -half, 1.0, 0.0, 1.0, 1.0),
+            Vertex::new( half,  half, -half, 1.0, 0.0, 1.0, 1.0),
+            Vertex::new( half, -half,  half, 1.0, 0.0, 1.0, 1.0),
+            Vertex::new( half,  half,  half, 1.0, 0.0, 1.0, 1.0),
+            // Left face
+            Vertex::new(-half, -half, -half, 1.0, 0.5, 0.0, 1.0),
+            Vertex::new(-half,  half, -half, 1.0, 0.5, 0.0, 1.0),
+            Vertex::new(-half, -half,  half, 1.0, 0.5, 0.0, 1.0),
+            Vertex::new(-half,  half,  half, 1.0, 0.5, 0.0, 1.0),
+        ];
+
+        let indices = [
+            0,1,2, 1,3,2,  // front
+            4,6,5, 5,6,7,  // back
+            8,10,9, 9,10,11, // top
+            12,13,14, 13,15,14, // bottom
+            16,18,17, 17,18,19, // right
+            20,21,22, 21,23,22, // left
+        ];
+
+        Self::from_vertices_and_indices(&vertices, &indices)
+    }
+}
+
+// ===================================================================
+// Main Engine
 // ===================================================================
 
 pub struct AlkashEngine {
     pub scheduler: Arc<EngineScheduler>,
-    pub plugin_manager: PluginManager,
-    pub physics: Option<PhysicsPlugin>,
-    pub lights: Option<LightPlugin>,
-    device_ptr: *mut c_void,
+    pub renderer: Option<Renderer>,
+    pub meshes: Vec<Mesh>,
+    pub root_signature: Option<ID3D12RootSignature>,
+    pub pipeline_state: Option<ID3D12PipelineState>,
+    pub vs: Option<ShaderBlob>,
+    pub ps: Option<ShaderBlob>,
+    width: u32,
+    height: u32,
+    clear_color: [f32; 4],
 }
 
 impl AlkashEngine {
-    pub fn new(device_ptr: *mut c_void) -> Self {
+    pub fn new(width: u32, height: u32) -> Self {
         Self {
             scheduler: Arc::new(EngineScheduler::new()),
-            plugin_manager: PluginManager::new(),
-            physics: None,
-            lights: None,
-            device_ptr,
+            renderer: None,
+            meshes: Vec::new(),
+            root_signature: None,
+            pipeline_state: None,
+            vs: None,
+            ps: None,
+            width,
+            height,
+            clear_color: [0.05, 0.05, 0.1, 1.0],
         }
     }
 
-    pub fn init_physics(&mut self, config: PhysicsConfig) -> Result<(), String> {
-        // Загружаем через PluginManager
-        self.plugin_manager.load_physics("plugins/inertial.dll", self.device_ptr, config)?;
+    pub fn set_clear_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
+        self.clear_color = [r, g, b, a];
+    }
 
-        // Создаём PhysicsPlugin для прямого доступа (используем копию config)
-        let plugin = PhysicsPlugin::load("plugins/inertial.dll", config)?;
-        self.physics = Some(plugin);
+    pub fn init(&mut self, hwnd: isize) -> Result<()> {
+        println!("[ENGINE] Initializing Alkash3D Engine v{}...", VERSION);
 
+        D3D12Device::create()?;
+        println!("[ENGINE] ✓ Device created");
+
+        CommandQueue::create()?;
+        println!("[ENGINE] ✓ Command queue created");
+
+        SwapChain::create(hwnd, self.width, self.height, 2)?;
+        println!("[ENGINE] ✓ Swap chain created");
+
+        CommandList::create_allocators(2)?;
+        println!("[ENGINE] ✓ Command allocators created");
+
+        let fence = create_fence()?;
+        {
+            let mut state = STATE.lock().unwrap();
+            state.fence = Some(fence);
+            state.fence_values = vec![0, 0];
+        }
+        println!("[ENGINE] ✓ Fence created");
+
+        let renderer = Renderer::new(self.width, self.height, 2)?;
+        self.renderer = Some(renderer);
+        println!("[ENGINE] ✓ Renderer created");
+
+        self.compile_default_shaders()?;
+        self.create_root_signature()?;
+        self.create_pipeline_state()?;
+
+        println!("[ENGINE] ✓ Initialization complete");
         Ok(())
     }
 
-    pub fn init_lights(&mut self, config: LightConfig) -> Result<(), String> {
-        // Загружаем через PluginManager
-        self.plugin_manager.load_lights("plugins/firstfires.dll", self.device_ptr, config)?;
+    fn compile_default_shaders(&mut self) -> Result<()> {
+        let vs_source = r#"
+        struct VS_INPUT {
+            float4 pos : POSITION;
+            float4 color : COLOR;
+        };
+        struct VS_OUTPUT {
+            float4 pos : SV_POSITION;
+            float4 color : COLOR;
+        };
+        VS_OUTPUT main(VS_INPUT input) {
+            VS_OUTPUT output;
+            output.pos = input.pos;
+            output.color = input.color;
+            return output;
+        }
+        "#;
 
-        // Создаём LightPlugin для прямого доступа (используем копию config)
-        let plugin = LightPlugin::load("plugins/firstfires.dll", self.device_ptr, config)?;
-        self.lights = Some(plugin);
+        let ps_source = r#"
+        struct PS_INPUT {
+            float4 pos : SV_POSITION;
+            float4 color : COLOR;
+        };
+        float4 main(PS_INPUT input) : SV_TARGET {
+            return input.color;
+        }
+        "#;
 
+        self.vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
+        self.ps = Some(ShaderBlob::compile(ps_source, "ps_5_0", "main")?);
+
+        println!("[ENGINE] ✓ Default shaders compiled");
         Ok(())
     }
 
-    pub fn update_physics(&self, dt: f32, gravity: f32) {
-        if let Some(physics) = &self.physics {
-            let scheduler = self.scheduler.clone();
-            let physics_ptr = physics.instance;
-            let api = physics.api;
+    fn create_root_signature(&mut self) -> Result<()> {
+        let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
+            NumParameters: 0,
+            pParameters: std::ptr::null(),
+            NumStaticSamplers: 0,
+            pStaticSamplers: std::ptr::null(),
+            Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        };
 
-            // Запускаем физику через планировщик
-            scheduler.execute(
-                Task::new(1, TaskPriority::High),
-                move || {
-                    (api.update)(physics_ptr.as_ptr(), dt, gravity);
-                }
+        let device = {
+            let state = STATE.lock().unwrap();
+            state.device.as_ref().unwrap().clone()
+        };
+
+        let mut signature_serialized = None;
+        let mut error_blob = None;
+
+        unsafe {
+            let hr = D3D12SerializeRootSignature(
+                &root_signature_desc,
+                D3D_ROOT_SIGNATURE_VERSION_1,
+                &mut signature_serialized,
+                Some(&mut error_blob),
             );
+
+            if hr.is_err() {
+                if let Some(err) = error_blob {
+                    let err_data = std::slice::from_raw_parts(
+                        err.GetBufferPointer() as *const u8,
+                        err.GetBufferSize(),
+                    );
+                    eprintln!("Root signature error: {}", String::from_utf8_lossy(err_data));
+                }
+                return Err(Error::from_hresult(HRESULT::from(hr)));
+            }
+
+            let blob = signature_serialized.unwrap();
+            let blob_data = std::slice::from_raw_parts(
+                blob.GetBufferPointer() as *const u8,
+                blob.GetBufferSize(),
+            );
+
+            let root_sig = device.CreateRootSignature(0, blob_data)?;
+            self.root_signature = Some(root_sig);
         }
+
+        println!("[ENGINE] ✓ Root signature created");
+        Ok(())
     }
 
-    pub fn update_lights(&mut self, camera_pos: [f32; 3], view_proj: &[f32; 16], dt: f32) {
-        if let Some(lights) = &mut self.lights {
-            lights.cull(camera_pos, view_proj, dt);
-        }
+    fn create_pipeline_state(&mut self) -> Result<()> {
+        let vs = self.vs.as_ref().unwrap();
+        let ps = self.ps.as_ref().unwrap();
+        let root_sig = self.root_signature.as_ref().unwrap();
+
+        let pso = PipelineState::create_graphics(
+            vs, ps, root_sig,
+            Vertex::STRIDE,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
+        )?;
+
+        self.pipeline_state = Some(pso);
+        println!("[ENGINE] ✓ Pipeline state created");
+        Ok(())
     }
 
-    pub fn add_physics_body(&mut self, body: PhysicsBody) -> i32 {
-        if let Some(physics) = &mut self.physics {
-            return physics.add_body(&body);
-        }
-        -1
+    pub fn add_mesh(&mut self, mesh: Mesh) -> usize {
+        self.meshes.push(mesh);
+        println!("[ENGINE] Mesh added, total meshes: {}", self.meshes.len());
+        self.meshes.len() - 1
     }
 
-    pub fn add_light(&mut self, light: GPULight) -> u32 {
-        if let Some(lights) = &mut self.lights {
-            return lights.add_light(&light);
-        }
-        u32::MAX
+    pub fn add_triangle(&mut self) -> usize {
+        let mesh = Mesh::triangle().unwrap();
+        self.add_mesh(mesh)
     }
 
-    pub fn get_gpu_lights(&self) -> &[GPULight] {
-        if let Some(lights) = &self.lights {
-            lights.get_gpu_lights()
-        } else {
-            &[]
-        }
+    pub fn add_quad(&mut self, x: f32, y: f32, width: f32, height: f32, color: [f32; 4]) -> usize {
+        let mesh = Mesh::quad(x, y, width, height, color).unwrap();
+        self.add_mesh(mesh)
     }
 
-    pub fn get_physics_contacts(&self) -> &[PhysicsContact] {
-        if let Some(physics) = &self.physics {
-            physics.get_contacts()
-        } else {
-            &[]
-        }
+    pub fn add_cube(&mut self, size: f32) -> usize {
+        let mesh = Mesh::cube(size).unwrap();
+        self.add_mesh(mesh)
     }
 
-    pub fn get_physics_stats(&self) -> PhysicsStats {
-        if let Some(physics) = &self.physics {
-            physics.get_stats()
-        } else {
-            PhysicsStats::default()
-        }
+    pub fn clear_meshes(&mut self) {
+        self.meshes.clear();
+        println!("[ENGINE] All meshes cleared");
     }
 
-    pub fn get_light_stats(&self) -> LightStats {
-        if let Some(lights) = &self.lights {
-            lights.get_stats()
-        } else {
-            LightStats::default()
+    pub fn render_frame(&mut self) -> Result<bool> {
+        let renderer = self.renderer.as_ref().unwrap();
+
+        let frame_index = {
+            let state = STATE.lock().unwrap();
+            state.frame_index as usize
+        };
+
+        // Получаем аллокатор для текущего кадра
+        let allocator = CommandList::get_allocator(frame_index)
+            .ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
+
+        unsafe {
+            allocator.Reset();
         }
+
+        // Создаём command list с указанием типа
+        let device = {
+            let state = STATE.lock().unwrap();
+            state.device.as_ref().unwrap().clone()
+        };
+
+        // Явно указываем тип для cmd_list
+        let cmd_list: ID3D12GraphicsCommandList = unsafe {
+            device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
+        };
+
+        // Очищаем render target
+        let rtv_handle = renderer.render_target_views[frame_index];
+        let dsv_handle = renderer.depth_stencil_view;
+
+        unsafe {
+            cmd_list.OMSetRenderTargets(1, Some(&rtv_handle), false, Some(&dsv_handle));
+            cmd_list.ClearRenderTargetView(rtv_handle, &self.clear_color, None);
+            cmd_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+
+            let viewport = D3D12_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: self.width as f32,
+                Height: self.height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            cmd_list.RSSetViewports(&[viewport]);
+
+            let scissor = RECT {
+                left: 0,
+                top: 0,
+                right: self.width as i32,
+                bottom: self.height as i32,
+            };
+            cmd_list.RSSetScissorRects(&[scissor]);
+
+            cmd_list.SetPipelineState(Some(self.pipeline_state.as_ref().unwrap()));
+            cmd_list.SetGraphicsRootSignature(Some(self.root_signature.as_ref().unwrap()));
+
+            // Рисуем все меши
+            for mesh in &self.meshes {
+                let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                    SizeInBytes: mesh.vertex_buffer.size as u32,
+                    StrideInBytes: Vertex::STRIDE,
+                };
+                cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                if let Some(index_buffer) = &mesh.index_buffer {
+                    let index_view = D3D12_INDEX_BUFFER_VIEW {
+                        BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                        SizeInBytes: index_buffer.size as u32,
+                        Format: DXGI_FORMAT_R32_UINT,
+                    };
+                    cmd_list.IASetIndexBuffer(Some(&index_view));
+                    cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+                } else {
+                    cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                }
+            }
+
+            cmd_list.Close()?;
+        }
+
+        // Выполняем command list
+        let queue = {
+            let state = STATE.lock().unwrap();
+            state.command_queue.as_ref().unwrap().clone()
+        };
+
+        let cmd_lists: &[Option<ID3D12CommandList>] = &[Some(cmd_list.into())];
+        unsafe {
+            queue.ExecuteCommandLists(cmd_lists);
+        }
+
+        // Present
+        let swap_chain = {
+            let state = STATE.lock().unwrap();
+            state.swap_chain.as_ref().unwrap().clone()
+        };
+        unsafe {
+            let _ = swap_chain.Present(1, DXGI_PRESENT(0));
+        }
+
+        // Ждём fence
+        let fence = {
+            let state = STATE.lock().unwrap();
+            state.fence.as_ref().unwrap().clone()
+        };
+
+        let fence_value = {
+            let mut state = STATE.lock().unwrap();
+            state.fence_values[frame_index] += 1;
+            state.fence_values[frame_index]
+        };
+
+        unsafe {
+            queue.Signal(&fence, fence_value)?;
+            while fence.GetCompletedValue() < fence_value {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+
+        // Обновляем frame index
+        {
+            let mut state = STATE.lock().unwrap();
+            if let Some(swap_chain) = &state.swap_chain {
+                state.frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
+            }
+        }
+
+        Ok(true)
+    }
+
+    pub fn shutdown(&mut self) {
+        println!("[ENGINE] Shutting down...");
+
+        let state = STATE.lock().unwrap();
+        if let Some(queue) = state.command_queue.as_ref() {
+            if let Some(fence) = state.fence.as_ref() {
+                unsafe {
+                    let _ = queue.Signal(fence, 100);
+                }
+            }
+        }
+        drop(state);
+
+        self.meshes.clear();
+        self.renderer = None;
+        self.pipeline_state = None;
+        self.root_signature = None;
+
+        println!("[ENGINE] Shutdown complete");
     }
 }
