@@ -2,9 +2,10 @@
 use windows::core::*;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Direct3D::D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
-use crate::{STATE, CommandList};
+use crate::{STATE};
 use crate::texture::Texture;
 
 pub struct Renderer {
@@ -16,7 +17,8 @@ pub struct Renderer {
     pub depth_stencil_view: D3D12_CPU_DESCRIPTOR_HANDLE,
     pub rtv_size: u32,
     pub dsv_size: u32,
-    pub frame_index: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Renderer {
@@ -67,7 +69,6 @@ impl Renderer {
             println!("[RENDERER] Back buffer {} resource obtained", i);
 
             let handle = crate::heap::DescriptorHeap::get_cpu_handle(&rtv_heap, i, rtv_size);
-            println!("[RENDERER] Creating RTV for back buffer {}", i);
             unsafe {
                 device.CreateRenderTargetView(&texture.resource, None, handle);
             }
@@ -95,95 +96,8 @@ impl Renderer {
             depth_stencil_view,
             rtv_size,
             dsv_size,
-            frame_index: 0,
+            width,
+            height,
         })
-    }
-
-    pub fn begin_frame(&mut self) -> Result<()> {
-        {
-            let mut state = STATE.lock().unwrap();
-            self.frame_index = state.frame_index;
-            println!("[RENDERER] Begin frame: frame_index={}", self.frame_index);
-        }
-
-        CommandList::reset_command_list()?;
-
-        let cmd_list = {
-            let state = STATE.lock().unwrap();
-            state.command_list.as_ref().unwrap().clone()
-        };
-        println!("[RENDERER] Command list obtained");
-
-        let rtv_handle = self.render_target_views[self.frame_index as usize];
-        let dsv_handle = self.depth_stencil_view;
-        println!("[RENDERER] RTV handle obtained, DSV handle obtained");
-
-        unsafe {
-            cmd_list.OMSetRenderTargets(1, Some(&rtv_handle), false, Some(&dsv_handle));
-            println!("[RENDERER] Render targets set");
-        }
-
-        let viewport = D3D12_VIEWPORT {
-            TopLeftX: 0.0,
-            TopLeftY: 0.0,
-            Width: self.back_buffers[0].width as f32,
-            Height: self.back_buffers[0].height as f32,
-            MinDepth: 0.0,
-            MaxDepth: 1.0,
-        };
-        CommandList::set_viewport(viewport);
-
-        let scissor = RECT {
-            left: 0,
-            top: 0,
-            right: self.back_buffers[0].width as i32,
-            bottom: self.back_buffers[0].height as i32,
-        };
-        CommandList::set_scissor_rect(scissor);
-
-        let clear_color = [0.1, 0.1, 0.2, 1.0];
-        println!("[RENDERER] Clearing with color: [{}, {}, {}, {}]", clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
-        unsafe {
-            cmd_list.ClearRenderTargetView(rtv_handle, &clear_color, None);
-            cmd_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
-            println!("[RENDERER] Clear commands executed");
-        }
-
-        Ok(())
-    }
-
-    pub fn end_frame(&mut self) -> Result<()> {
-        println!("[RENDERER] Ending frame...");
-        CommandList::close_command_list()?;
-
-        let cmd_list = {
-            let state = STATE.lock().unwrap();
-            state.command_list.as_ref().unwrap().clone()
-        };
-        println!("[RENDERER] Command list for execution obtained");
-
-        let queue = {
-            let state = STATE.lock().unwrap();
-            state.command_queue.as_ref().unwrap().clone()
-        };
-        println!("[RENDERER] Queue obtained");
-
-        let cmd_lists = [Some(cmd_list.into())];
-        unsafe {
-            queue.ExecuteCommandLists(&cmd_lists);
-            println!("[RENDERER] Command list executed");
-        }
-
-        let swap_chain = {
-            let state = STATE.lock().unwrap();
-            state.swap_chain.as_ref().unwrap().clone()
-        };
-        println!("[RENDERER] Presenting...");
-        unsafe {
-            let _ = swap_chain.Present(1, DXGI_PRESENT(0));
-            println!("[RENDERER] Present called");
-        }
-
-        Ok(())
     }
 }

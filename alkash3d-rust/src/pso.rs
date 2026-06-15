@@ -1,8 +1,8 @@
-// src/pso.rs - полная версия с отладкой
+// src/pso.rs
 use windows::core::*;
 use windows::Win32::Foundation::{FALSE, TRUE};
 use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 use crate::{STATE, ShaderBlob};
 
 pub struct PipelineState;
@@ -78,7 +78,7 @@ impl PipelineState {
             ForcedSampleCount: 0,
             ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
         };
-        println!("[PSO] Rasterizer: FillMode={:?}, CullMode={:?}", D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE);
+        println!("[PSO] Rasterizer: FillMode=Solid, CullMode=None");
 
         println!("[PSO] Creating blend state...");
         let blend_desc = D3D12_BLEND_DESC {
@@ -99,15 +99,28 @@ impl PipelineState {
         };
         println!("[PSO] Blend state created");
 
-        println!("[PSO] Creating depth stencil state...");
+        println!("[PSO] Creating depth stencil state (ENABLED)...");
         let depth_stencil = D3D12_DEPTH_STENCIL_DESC {
-            DepthEnable: FALSE,
-            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
-            DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            DepthEnable: TRUE,
+            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+            DepthFunc: D3D12_COMPARISON_FUNC_LESS,
             StencilEnable: FALSE,
-            ..Default::default()
+            StencilReadMask: D3D12_DEFAULT_STENCIL_READ_MASK as u8,
+            StencilWriteMask: D3D12_DEFAULT_STENCIL_WRITE_MASK as u8,
+            FrontFace: D3D12_DEPTH_STENCILOP_DESC {
+                StencilFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilPassOp: D3D12_STENCIL_OP_KEEP,
+                StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            },
+            BackFace: D3D12_DEPTH_STENCILOP_DESC {
+                StencilFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilPassOp: D3D12_STENCIL_OP_KEEP,
+                StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            },
         };
-        println!("[PSO] Depth stencil: DepthEnable=FALSE");
+        println!("[PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL");
 
         println!("[PSO] Root signature: {:p}", root_signature);
         let mut root_sig_manually_drop = std::mem::ManuallyDrop::new(Some(root_signature.clone()));
