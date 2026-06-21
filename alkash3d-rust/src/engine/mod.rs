@@ -3,13 +3,18 @@
 
 use std::sync::Arc;
 use windows::core::*;
+use windows::Win32::Foundation::*;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Direct3D::D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
+use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
+use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::*;
+use crate::plugin::{PhysicsPlugin, LightPlugin, PhysicsConfig, LightConfig, GPULight, PhysicsBody, PhysicsContact};
 
 // ===================================================================
 // Vertex definition for rendering
@@ -157,17 +162,30 @@ impl Mesh {
 }
 
 // ===================================================================
-// Main Engine
+// Main Engine - С ВСТРОЕННЫМ ОКНОМ
 // ===================================================================
 
 pub struct AlkashEngine {
-    pub scheduler: Arc<EngineScheduler>,
+    // Рендеринг
     pub renderer: Option<Renderer>,
     pub meshes: Vec<Mesh>,
     pub root_signature: Option<ID3D12RootSignature>,
     pub pipeline_state: Option<ID3D12PipelineState>,
     pub vs: Option<ShaderBlob>,
     pub ps: Option<ShaderBlob>,
+
+    // Планировщик
+    pub scheduler: Arc<EngineScheduler>,
+
+    // Плагины
+    pub physics: Option<PhysicsPlugin>,
+    pub lights: Option<LightPlugin>,
+
+    // Окно
+    hwnd: Option<HWND>,
+    running: bool,
+
+    // Настройки
     width: u32,
     height: u32,
     clear_color: [f32; 4],
@@ -183,49 +201,163 @@ impl AlkashEngine {
             pipeline_state: None,
             vs: None,
             ps: None,
+            physics: None,
+            lights: None,
+            hwnd: None,
+            running: false,
             width,
             height,
             clear_color: [0.05, 0.05, 0.1, 1.0],
         }
     }
 
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
     pub fn set_clear_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
         self.clear_color = [r, g, b, a];
     }
 
-    pub fn init(&mut self, hwnd: isize) -> Result<()> {
+    pub fn init(&mut self) -> Result<()> {
         println!("[ENGINE] Initializing Alkash3D Engine v{}...", VERSION);
 
-        D3D12Device::create()?;
-        println!("[ENGINE] ✓ Device created");
+        // 1. Создаем окно
+        self.create_window()?;
+        println!("[ENGINE] ✓ Window created");
 
-        CommandQueue::create()?;
-        println!("[ENGINE] ✓ Command queue created");
+        // 2. Инициализируем DirectX 12
+        unsafe {
+            D3D12Device::create()?;
+            println!("[ENGINE] ✓ Device created");
 
-        SwapChain::create(hwnd, self.width, self.height, 2)?;
-        println!("[ENGINE] ✓ Swap chain created");
+            CommandQueue::create()?;
+            println!("[ENGINE] ✓ Command queue created");
 
-        CommandList::create_allocators(2)?;
-        println!("[ENGINE] ✓ Command allocators created");
+            let hwnd = self.hwnd.unwrap();
+            SwapChain::create(hwnd.0 as isize, self.width, self.height, 2)?;
+            println!("[ENGINE] ✓ Swap chain created");
 
-        let fence = create_fence()?;
-        {
-            let mut state = STATE.lock().unwrap();
-            state.fence = Some(fence);
-            state.fence_values = vec![0, 0];
+            CommandList::create_allocators(2)?;
+            println!("[ENGINE] ✓ Command allocators created");
+
+            let fence = create_fence()?;
+            {
+                let mut state = STATE.lock().unwrap();
+                state.fence = Some(fence);
+                state.fence_values = vec![0, 0];
+            }
+            println!("[ENGINE] ✓ Fence created");
+
+            let renderer = Renderer::new(self.width, self.height, 2)?;
+            self.renderer = Some(renderer);
+            println!("[ENGINE] ✓ Renderer created");
         }
-        println!("[ENGINE] ✓ Fence created");
-
-        let renderer = Renderer::new(self.width, self.height, 2)?;
-        self.renderer = Some(renderer);
-        println!("[ENGINE] ✓ Renderer created");
 
         self.compile_default_shaders()?;
         self.create_root_signature()?;
         self.create_pipeline_state()?;
 
+        // Показываем окно
+        unsafe {
+            ShowWindow(self.hwnd.unwrap(), SW_SHOW);
+            UpdateWindow(self.hwnd.unwrap());
+        }
+
+        self.running = true;
         println!("[ENGINE] ✓ Initialization complete");
         Ok(())
+    }
+
+    fn create_window(&mut self) -> Result<()> {
+        unsafe {
+            let hinstance = GetModuleHandleA(None)?;
+            let window_class = "ALKASH3D_WINDOW\0".as_ptr();
+
+            let wc = WNDCLASSA {
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(Self::wndproc_static),
+                hInstance: hinstance.into(),
+                lpszClassName: PCSTR(window_class),
+                hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as isize as _),
+                hCursor: LoadCursorW(None, IDC_ARROW)?,
+                ..Default::default()
+            };
+
+            RegisterClassA(&wc);
+
+            let hwnd = CreateWindowExA(
+                WINDOW_EX_STYLE::default(),
+                PCSTR(window_class),
+                PCSTR(b"Alkash3D Engine - DirectX 12\0".as_ptr()),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                self.width as i32,
+                self.height as i32,
+                None,
+                None,
+                Some(HINSTANCE::from(hinstance)),
+                Some(self as *mut Self as _),
+            )?;
+
+            self.hwnd = Some(hwnd);
+            println!("[ENGINE] Window created: HWND=0x{:X}", hwnd.0 as usize);
+        }
+
+        Ok(())
+    }
+
+    extern "system" fn wndproc_static(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        unsafe {
+            if msg == WM_NCCREATE {
+                let cs = lparam.0 as *const CREATESTRUCTA;
+                let engine = (*cs).lpCreateParams as *mut AlkashEngine;
+                SetWindowLongPtrA(hwnd, GWLP_USERDATA, engine as isize);
+            }
+
+            let engine = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut AlkashEngine;
+            if !engine.is_null() {
+                let engine_ref = &mut *engine;
+                return engine_ref.wndproc(hwnd, msg, wparam, lparam);
+            }
+
+            DefWindowProcA(hwnd, msg, wparam, lparam)
+        }
+    }
+
+    fn wndproc(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        unsafe {
+            match msg {
+                WM_DESTROY => {
+                    self.running = false;
+                    PostQuitMessage(0);
+                    LRESULT(0)
+                }
+                WM_KEYDOWN => {
+                    if wparam.0 == 0x1B { // ESC
+                        self.running = false;
+                        PostQuitMessage(0);
+                    }
+                    LRESULT(0)
+                }
+                _ => DefWindowProcA(hwnd, msg, wparam, lparam),
+            }
+        }
+    }
+
+    pub fn process_messages(&mut self) {
+        unsafe {
+            let mut msg = MSG::default();
+            while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    self.running = false;
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+        }
     }
 
     fn compile_default_shaders(&mut self) -> Result<()> {
@@ -489,8 +621,92 @@ impl AlkashEngine {
         Ok(true)
     }
 
+    // ================================================================
+    // МЕТОДЫ ПЛАГИНОВ
+    // ================================================================
+
+    pub fn init_physics(&mut self, config: PhysicsConfig) -> Result<()> {
+        match PhysicsPlugin::load("plugins/inertial.dll", config) {
+            Ok(plugin) => {
+                self.physics = Some(plugin);
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("[ENGINE] Failed to load physics plugin: {}", e);
+                Err(Error::from_hresult(HRESULT(1)))
+            }
+        }
+    }
+
+    pub fn init_lights(&mut self, device_ptr: *mut std::ffi::c_void, config: LightConfig) -> Result<()> {
+        match LightPlugin::load("plugins/firstfires.dll", device_ptr, config) {
+            Ok(plugin) => {
+                self.lights = Some(plugin);
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("[ENGINE] Failed to load light plugin: {}", e);
+                Err(Error::from_hresult(HRESULT(1)))
+            }
+        }
+    }
+
+    pub fn add_physics_body(&mut self, body: PhysicsBody) -> Option<i32> {
+        self.physics.as_mut().map(|p| p.add_body(&body))
+    }
+
+    pub fn add_sphere_body(&mut self, x: f32, y: f32, z: f32, mass: f32) -> Option<i32> {
+        let body = PhysicsBody {
+            position: [x, y, z],
+            velocity: [0.0; 3],
+            acceleration: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            angular_acceleration: [0.0; 3],
+            mass,
+            inv_mass: if mass > 0.0 { 1.0 / mass } else { 0.0 },
+            restitution: 0.5,
+            friction: 0.5,
+            linear_damping: 0.01,
+            angular_damping: 0.01,
+            is_static: if mass <= 0.0 { 1 } else { 0 },
+            is_asleep: 0,
+        };
+        self.physics.as_mut().map(|p| p.add_body(&body))
+    }
+
+    pub fn add_street_light(&mut self, x: f32, y: f32, z: f32) -> Option<u32> {
+        let light = GPULight {
+            position: [x, y, z, 0.0],
+            color: [1.0, 0.85, 0.6, 2.5],
+            direction: [0.0, -1.0, 0.0, 25.0],
+            params: [std::f32::consts::PI, 2.0, 0.0, 0.0],
+        };
+        self.lights.as_mut().map(|l| l.add_light(&light))
+    }
+
+    pub fn get_gpu_lights(&self) -> &[GPULight] {
+        self.lights.as_ref().map(|l| l.get_gpu_lights()).unwrap_or(&[])
+    }
+
+    pub fn get_contacts(&self) -> &[PhysicsContact] {
+        self.physics.as_ref().map(|p| p.get_contacts()).unwrap_or(&[])
+    }
+
+    pub fn update(&mut self, dt: f32, gravity: f32, camera_pos: [f32; 3], view_proj: [f32; 16]) {
+        self.scheduler.reset_budget();
+
+        if let Some(physics) = &mut self.physics {
+            physics.update(dt, gravity);
+        }
+
+        if let Some(lights) = &mut self.lights {
+            lights.cull(camera_pos, &view_proj, dt);
+        }
+    }
+
     pub fn shutdown(&mut self) {
         println!("[ENGINE] Shutting down...");
+        self.running = false;
 
         let state = STATE.lock().unwrap();
         if let Some(queue) = state.command_queue.as_ref() {
@@ -506,6 +722,12 @@ impl AlkashEngine {
         self.renderer = None;
         self.pipeline_state = None;
         self.root_signature = None;
+
+        unsafe {
+            if let Some(hwnd) = self.hwnd {
+                DestroyWindow(hwnd);
+            }
+        }
 
         println!("[ENGINE] Shutdown complete");
     }
