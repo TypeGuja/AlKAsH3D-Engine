@@ -45,6 +45,7 @@ pub struct PhysicsContact {
 
 /// API физического плагина
 #[repr(C)]
+#[derive(Clone, Copy)]  // <-- Добавлено
 pub struct PhysicsAPI {
     // Управление телами
     pub add_body: extern "C" fn(instance: *mut c_void, body: *const PhysicsBody) -> i32,
