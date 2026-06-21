@@ -96,6 +96,13 @@ impl PluginManager {
         }
     }
 
+    /// Получить instance физики
+    pub fn get_physics_instance(&self) -> Option<*mut c_void> {
+        let plugin_name = self.physics_plugin.as_ref()?;
+        let plugin = self.plugins.get(plugin_name)?;
+        Some(plugin.instance)
+    }
+
     /// Получить API света
     pub fn get_light_api(&self) -> Option<&LightAPI> {
         let plugin_name = self.light_plugin.as_ref()?;
@@ -108,6 +115,13 @@ impl PluginManager {
                 Some(&*(api_ptr as *const LightAPI))
             }
         }
+    }
+
+    /// Получить instance света
+    pub fn get_light_instance(&self) -> Option<*mut c_void> {
+        let plugin_name = self.light_plugin.as_ref()?;
+        let plugin = self.plugins.get(plugin_name)?;
+        Some(plugin.instance)
     }
 
     /// Выгрузить все плагины

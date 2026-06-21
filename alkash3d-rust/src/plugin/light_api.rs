@@ -43,6 +43,7 @@ pub struct LightGridEntry {
 
 /// API плагина Light Culling
 #[repr(C)]
+#[derive(Clone, Copy)]  // <-- Добавлено
 pub struct LightAPI {
     // Управление источниками
     pub add_light: extern "C" fn(instance: *mut c_void, light: *const GPULight) -> u32,
