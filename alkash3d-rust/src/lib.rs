@@ -1,4 +1,4 @@
-// src/lib.rs - добавьте в начало файла
+// src/lib.rs
 #![allow(unused)]
 #![allow(non_snake_case)]
 
@@ -23,9 +23,13 @@ mod alps_format;
 mod alsnd_format;
 mod alscript_format;
 mod aluv_format;
-mod scheduler;
-pub mod engine;
 
+// Модули (независимые)
+mod plugin;
+mod scheduler;
+pub mod engine;  // engine зависит от plugin и scheduler
+
+// Экспорты
 pub use device::*;
 pub use queue::*;
 pub use swap_chain::*;
@@ -37,6 +41,8 @@ pub use pso::*;
 pub use command::*;
 pub use render::*;
 pub use utils::*;
+pub use plugin::*;
+pub use scheduler::*;
 pub use altex_format::*;
 pub use alfar_format::*;
 pub use alcar_format::*;
@@ -47,7 +53,6 @@ pub use alps_format::*;
 pub use alsnd_format::*;
 pub use alscript_format::*;
 pub use aluv_format::*;
-pub use scheduler::*;
 
 use std::sync::Mutex;
 use windows::Win32::Graphics::Direct3D12::*;
