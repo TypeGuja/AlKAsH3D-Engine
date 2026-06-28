@@ -7,25 +7,14 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "triangle_demo"
+name = "tests"
 path = "src/bin/main.rs"
 path2 = "src/bin/main1.rs"
+path3 = "src/bin/main2.rs"
 
 
 [dependencies]
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_System_LibraryLoader",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_Controls",
-    "Win32_Graphics_Direct3D12",
-    "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Direct3D_Fxc",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Gdi",
-    "Win32_System_Threading",
-    "Win32_Graphics_Dxgi_Common"
-] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Graphics_Dxgi_Common", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse"] }
 widestring = "1.0"
 windows-core = "0.62.2"
 winit = "0.31.0-beta.2"
