@@ -2,21 +2,13 @@
 //! 3D версия с камерой и трансформациями
 
 use alkash3d_rs::engine::{AlkashEngine, MeshInstance};
-use std::time::Instant;
-use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
 const WINDOW_WIDTH: u32 = 1280;
 const WINDOW_HEIGHT: u32 = 720;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==========================================");
     println!("Alkash3D Engine v{} - 3D Mode", alkash3d_rs::VERSION);
-    println!("==========================================");
-    println!();
-    println!("🎮 УПРАВЛЕНИЕ:");
-    println!("  WASD - движение камеры");
-    println!("  Q/E - подняться/опуститься");
-    println!("  Стрелки или мышь - поворот камеры");
-    println!("  ESC - выход");
     println!("==========================================");
 
     let mut engine = AlkashEngine::new(WINDOW_WIDTH, WINDOW_HEIGHT);
@@ -92,91 +84,34 @@ fn setup_3d_scene(engine: &mut AlkashEngine) {
 
 fn run_3d_loop(engine: &mut AlkashEngine) {
     println!("\n=== 3D RENDER LOOP STARTING ===\n");
+    use std::time::Instant;
 
     let mut frame_count = 0u32;
     let mut time = 0.0f32;
     let start = Instant::now();
 
-    // Начальная позиция камеры
-    engine.camera.position = [0.0, 3.0, 10.0];
+    // ===== КАМЕРА СНАРУЖИ =====
+    // Ставим камеру ДАЛЕКО, чтобы видеть всю сцену
+    engine.camera.position = [0.0, 0.0, 15.0];  // Дальше и выше
     engine.camera.target = [0.0, 0.0, 0.0];
-
-    // Переменные для управления камерой
-    let mut move_speed = 5.0;
-    let mut rot_speed = 2.0;
-
-    // Флаги для клавиш
-    let mut keys_pressed = [false; 256]; // Простой массив для WASD
 
     while engine.is_running() {
         engine.process_messages();
 
-        // Проверяем состояние клавиш через Windows API
-        unsafe {
-            // WASD - движение
-            let w = (GetAsyncKeyState(0x57) as i16) < 0; // W
-            let s = (GetAsyncKeyState(0x53) as i16) < 0; // S
-            let a = (GetAsyncKeyState(0x41) as i16) < 0; // A
-            let d = (GetAsyncKeyState(0x44) as i16) < 0; // D
-            let q = (GetAsyncKeyState(0x51) as i16) < 0; // Q - вверх
-            let e = (GetAsyncKeyState(0x45) as i16) < 0; // E - вниз
+        let dt = start.elapsed().as_secs_f32() - time;
+        time = start.elapsed().as_secs_f32();
 
-            // Стрелки для поворота
-            let up = (GetAsyncKeyState(0x26) as i16) < 0;
-            let down = (GetAsyncKeyState(0x28) as i16) < 0;
-            let left = (GetAsyncKeyState(0x25) as i16) < 0;
-            let right = (GetAsyncKeyState(0x27) as i16) < 0;
+        // ===== КАМЕРА ВРАЩАЕТСЯ ВОКРУГ СЦЕНЫ =====
+        let radius = -1.0;
+        let angle = time * 0.15;
+        let height = 0.0 + (time * 0.2).sin() * 1.0;
 
-            // Shift для ускорения
-            let shift = (GetAsyncKeyState(0x10) as i16) < 0;
-            if shift {
-                move_speed = 10.0;
-            } else {
-                move_speed = 5.0;
-            }
-
-            let dt = start.elapsed().as_secs_f32() - time;
-            time = start.elapsed().as_secs_f32();
-            let dt = dt.min(0.05); // Ограничиваем dt для стабильности
-
-            // Вращение камеры (стрелки)
-            let rot_amount = rot_speed * dt;
-            if left {
-                engine.camera.rotate_yaw(rot_amount);
-            }
-            if right {
-                engine.camera.rotate_yaw(-rot_amount);
-            }
-            if up {
-                engine.camera.rotate_pitch(-rot_amount);
-            }
-            if down {
-                engine.camera.rotate_pitch(rot_amount);
-            }
-
-            // Движение камеры
-            let move_amount = move_speed * dt;
-            if w {
-                engine.camera.move_forward(move_amount);
-            }
-            if s {
-                engine.camera.move_forward(-move_amount);
-            }
-            if a {
-                engine.camera.move_right(-move_amount);
-            }
-            if d {
-                engine.camera.move_right(move_amount);
-            }
-            if q {
-                engine.camera.position[1] += move_amount;
-                engine.camera.target[1] += move_amount;
-            }
-            if e {
-                engine.camera.position[1] -= move_amount;
-                engine.camera.target[1] -= move_amount;
-            }
-        }
+        engine.camera.position = [
+            radius * angle.sin(),
+            height,
+            radius * angle.cos(),
+        ];
+        engine.camera.target = [0.0, 0.0, 0.0];
 
         // === АНИМАЦИЯ ОБЪЕКТОВ ===
         // Главный куб - вращается
