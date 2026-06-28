@@ -7,12 +7,11 @@ mod queue;
 mod swap_chain;
 mod heap;
 mod buffer;
-mod texture;
-mod shader;
-mod pso;
 mod command;
 mod render;
 mod utils;
+mod shader;
+mod pso;
 mod altex_format;
 mod alfar_format;
 mod alcar_format;
@@ -29,19 +28,23 @@ mod plugin;
 mod scheduler;
 pub mod engine;  // engine зависит от plugin и scheduler
 
+// НОВЫЕ МОДУЛИ ДЛЯ 3D
+mod math;
+mod camera;
+mod constant_buffer;
+
 // Экспорты
 pub use device::*;
 pub use queue::*;
 pub use swap_chain::*;
 pub use heap::*;
 pub use buffer::*;
-pub use texture::Texture;
-pub use shader::*;
-pub use pso::*;
 pub use command::*;
 pub use render::*;
 pub use utils::*;
 pub use plugin::*;
+pub use shader::*;
+pub use pso::*;
 pub use scheduler::*;
 pub use altex_format::*;
 pub use alfar_format::*;
@@ -53,6 +56,11 @@ pub use alps_format::*;
 pub use alsnd_format::*;
 pub use alscript_format::*;
 pub use aluv_format::*;
+
+// НОВЫЕ ЭКСПОРТЫ
+pub use math::*;
+pub use camera::*;
+pub use constant_buffer::*;
 
 use std::sync::Mutex;
 use windows::Win32::Graphics::Direct3D12::*;

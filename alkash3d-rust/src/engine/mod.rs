@@ -8,13 +8,18 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Direct3D::D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_UNKNOWN};
 use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::*;
 use crate::plugin::{PhysicsPlugin, LightPlugin, PhysicsConfig, LightConfig, GPULight, PhysicsBody, PhysicsContact};
+use crate::math::Mat4;
+use crate::camera::Camera;
+use crate::constant_buffer::TransformConstants;
+use crate::shader::ShaderBlob;
+use crate::pso::PipelineState;
 
 // ===================================================================
 // Vertex definition for rendering
@@ -162,6 +167,53 @@ impl Mesh {
 }
 
 // ===================================================================
+// MeshInstance - экземпляр меша с трансформацией
+// ===================================================================
+
+#[derive(Debug, Clone)]
+pub struct MeshInstance {
+    pub mesh_index: usize,
+    pub position: [f32; 3],
+    pub rotation: [f32; 3],
+    pub scale: [f32; 3],
+}
+
+impl MeshInstance {
+    pub fn new(mesh_index: usize) -> Self {
+        Self {
+            mesh_index,
+            position: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+
+    pub fn at(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.position = [x, y, z];
+        self
+    }
+
+    pub fn rotated(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.rotation = [x, y, z];
+        self
+    }
+
+    pub fn scaled(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.scale = [x, y, z];
+        self
+    }
+
+    pub fn transform_matrix(&self) -> Mat4 {
+        let translation = Mat4::translation(self.position[0], self.position[1], self.position[2]);
+        let rot_x = Mat4::rotation_x(self.rotation[0]);
+        let rot_y = Mat4::rotation_y(self.rotation[1]);
+        let rot_z = Mat4::rotation_z(self.rotation[2]);
+        let scale = Mat4::scaling(self.scale[0], self.scale[1], self.scale[2]);
+        translation.multiply(&rot_z).multiply(&rot_y).multiply(&rot_x).multiply(&scale)
+    }
+}
+
+// ===================================================================
 // Main Engine - С ВСТРОЕННЫМ ОКНОМ
 // ===================================================================
 
@@ -169,10 +221,16 @@ pub struct AlkashEngine {
     // Рендеринг
     pub renderer: Option<Renderer>,
     pub meshes: Vec<Mesh>,
+    pub mesh_instances: Vec<MeshInstance>,
     pub root_signature: Option<ID3D12RootSignature>,
     pub pipeline_state: Option<ID3D12PipelineState>,
     pub vs: Option<ShaderBlob>,
     pub ps: Option<ShaderBlob>,
+
+    // 3D рендеринг
+    pub camera: Camera,
+    pub constant_buffer: Option<Buffer>,
+    pub transform_constants: TransformConstants,
 
     // Планировщик
     pub scheduler: Arc<EngineScheduler>,
@@ -197,10 +255,14 @@ impl AlkashEngine {
             scheduler: Arc::new(EngineScheduler::new()),
             renderer: None,
             meshes: Vec::new(),
+            mesh_instances: Vec::new(),
             root_signature: None,
             pipeline_state: None,
             vs: None,
             ps: None,
+            camera: Camera::new(width, height),
+            constant_buffer: None,
+            transform_constants: TransformConstants::new(),
             physics: None,
             lights: None,
             hwnd: None,
@@ -254,9 +316,18 @@ impl AlkashEngine {
             println!("[ENGINE] ✓ Renderer created");
         }
 
+        // 3. Компилируем шейдеры
         self.compile_default_shaders()?;
+
+        // 4. Создаём корневую сигнатуру (с константным буфером)
         self.create_root_signature()?;
+
+        // 5. Создаём PSO
         self.create_pipeline_state()?;
+
+        // 6. Создаём константный буфер
+        self.constant_buffer = Some(TransformConstants::create_buffer()?);
+        println!("[ENGINE] ✓ Constant buffer created");
 
         // Показываем окно
         unsafe {
@@ -339,6 +410,33 @@ impl AlkashEngine {
                         self.running = false;
                         PostQuitMessage(0);
                     }
+                    // WASD управление камерой
+                    if wparam.0 == 0x57 { // W
+                        self.camera.move_forward(0.1);
+                    }
+                    if wparam.0 == 0x53 { // S
+                        self.camera.move_forward(-0.1);
+                    }
+                    if wparam.0 == 0x41 { // A
+                        self.camera.move_right(-0.1);
+                    }
+                    if wparam.0 == 0x44 { // D
+                        self.camera.move_right(0.1);
+                    }
+                    LRESULT(0)
+                }
+                WM_SIZE => {
+                    let width = (lparam.0 & 0xFFFF) as u32;
+                    let height = ((lparam.0 >> 16) & 0xFFFF) as u32;
+                    if width > 0 && height > 0 {
+                        self.width = width;
+                        self.height = height;
+                        self.camera.set_aspect(width, height);
+                        let state = STATE.lock().unwrap();
+                        if let Some(swap_chain) = &state.swap_chain {
+                            let _ = unsafe { swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0)) };
+                        }
+                    }
                     LRESULT(0)
                 }
                 _ => DefWindowProcA(hwnd, msg, wparam, lparam),
@@ -362,6 +460,17 @@ impl AlkashEngine {
 
     fn compile_default_shaders(&mut self) -> Result<()> {
         let vs_source = r#"
+        cbuffer TransformConstants : register(b0) {
+            float4x4 modelViewProj;
+            float4x4 model;
+            float4x4 view;
+            float4x4 proj;
+            float4 cameraPos;
+            float4 lightDir;
+            float4 lightColor;
+            float4 ambientColor;
+        };
+
         struct VS_INPUT {
             float4 pos : POSITION;
             float4 color : COLOR;
@@ -369,11 +478,15 @@ impl AlkashEngine {
         struct VS_OUTPUT {
             float4 pos : SV_POSITION;
             float4 color : COLOR;
+            float3 worldPos : TEXCOORD0;
+            float3 normal : TEXCOORD1;
         };
         VS_OUTPUT main(VS_INPUT input) {
             VS_OUTPUT output;
-            output.pos = input.pos;
+            output.pos = mul(modelViewProj, input.pos);
             output.color = input.color;
+            output.worldPos = mul(model, input.pos).xyz;
+            output.normal = float3(0.0, 0.0, 1.0);
             return output;
         }
         "#;
@@ -382,9 +495,16 @@ impl AlkashEngine {
         struct PS_INPUT {
             float4 pos : SV_POSITION;
             float4 color : COLOR;
+            float3 worldPos : TEXCOORD0;
+            float3 normal : TEXCOORD1;
         };
         float4 main(PS_INPUT input) : SV_TARGET {
-            return input.color;
+            float3 lightDir = normalize(float3(0.0, -1.0, 0.0));
+            float3 normal = normalize(input.normal);
+            float diff = max(dot(normal, -lightDir), 0.0);
+            float ambient = 0.2;
+            float brightness = ambient + diff * 0.8;
+            return float4(input.color.rgb * brightness, input.color.a);
         }
         "#;
 
@@ -396,9 +516,24 @@ impl AlkashEngine {
     }
 
     fn create_root_signature(&mut self) -> Result<()> {
+        use windows::Win32::Graphics::Direct3D12::*;
+
+        let root_params = [
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR {
+                        ShaderRegister: 0,
+                        RegisterSpace: 0,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            },
+        ];
+
         let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
-            NumParameters: 0,
-            pParameters: std::ptr::null(),
+            NumParameters: root_params.len() as u32,
+            pParameters: root_params.as_ptr(),
             NumStaticSamplers: 0,
             pStaticSamplers: std::ptr::null(),
             Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
@@ -441,7 +576,7 @@ impl AlkashEngine {
             self.root_signature = Some(root_sig);
         }
 
-        println!("[ENGINE] ✓ Root signature created");
+        println!("[ENGINE] ✓ Root signature created (with CBV)");
         Ok(())
     }
 
@@ -485,7 +620,8 @@ impl AlkashEngine {
 
     pub fn clear_meshes(&mut self) {
         self.meshes.clear();
-        println!("[ENGINE] All meshes cleared");
+        self.mesh_instances.clear();
+        println!("[ENGINE] All meshes and instances cleared");
     }
 
     pub fn render_frame(&mut self) -> Result<bool> {
@@ -496,7 +632,6 @@ impl AlkashEngine {
             state.frame_index as usize
         };
 
-        // Получаем аллокатор для текущего кадра
         let allocator = CommandList::get_allocator(frame_index)
             .ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
 
@@ -504,18 +639,15 @@ impl AlkashEngine {
             allocator.Reset();
         }
 
-        // Создаём command list с указанием типа
         let device = {
             let state = STATE.lock().unwrap();
             state.device.as_ref().unwrap().clone()
         };
 
-        // Явно указываем тип для cmd_list
         let cmd_list: ID3D12GraphicsCommandList = unsafe {
             device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
         };
 
-        // Очищаем render target
         let rtv_handle = renderer.render_target_views[frame_index];
         let dsv_handle = renderer.depth_stencil_view;
 
@@ -545,33 +677,96 @@ impl AlkashEngine {
             cmd_list.SetPipelineState(Some(self.pipeline_state.as_ref().unwrap()));
             cmd_list.SetGraphicsRootSignature(Some(self.root_signature.as_ref().unwrap()));
 
-            // Рисуем все меши
-            for mesh in &self.meshes {
-                let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
-                    BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
-                    SizeInBytes: mesh.vertex_buffer.size as u32,
-                    StrideInBytes: Vertex::STRIDE,
-                };
-                cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
-                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            if let Some(cb) = &self.constant_buffer {
+                let gpu_handle = cb.resource.GetGPUVirtualAddress();
+                cmd_list.SetGraphicsRootConstantBufferView(0, gpu_handle);
+            }
 
-                if let Some(index_buffer) = &mesh.index_buffer {
-                    let index_view = D3D12_INDEX_BUFFER_VIEW {
-                        BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
-                        SizeInBytes: index_buffer.size as u32,
-                        Format: DXGI_FORMAT_R32_UINT,
+            // Рисуем с трансформациями если есть экземпляры
+            if !self.mesh_instances.is_empty() {
+                let view = self.camera.view_matrix();
+                let proj = self.camera.projection_matrix();
+
+                for instance in &self.mesh_instances {
+                    if instance.mesh_index >= self.meshes.len() {
+                        continue;
+                    }
+
+                    let mesh = &self.meshes[instance.mesh_index];
+                    let model = instance.transform_matrix();
+                    let model_view_proj = model.multiply(&view).multiply(&proj);
+
+                    self.transform_constants.model_view_proj = model_view_proj.to_array();
+                    self.transform_constants.model = model.to_array();
+                    self.transform_constants.view = view.to_array();
+                    self.transform_constants.proj = proj.to_array();
+                    self.transform_constants.camera_pos = [self.camera.position[0], self.camera.position[1], self.camera.position[2], 1.0];
+
+                    if let Some(cb) = &self.constant_buffer {
+                        let _ = self.transform_constants.update(cb);
+                    }
+
+                    let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                        BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                        SizeInBytes: mesh.vertex_buffer.size as u32,
+                        StrideInBytes: Vertex::STRIDE,
                     };
-                    cmd_list.IASetIndexBuffer(Some(&index_view));
-                    cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
-                } else {
-                    cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                    cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+                    cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                    if let Some(index_buffer) = &mesh.index_buffer {
+                        let index_view = D3D12_INDEX_BUFFER_VIEW {
+                            BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                            SizeInBytes: index_buffer.size as u32,
+                            Format: DXGI_FORMAT_R32_UINT,
+                        };
+                        cmd_list.IASetIndexBuffer(Some(&index_view));
+                        cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+                    } else {
+                        cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                    }
+                }
+            } else {
+                // 2D режим - без трансформаций
+                let identity = Mat4::identity();
+                let view = Mat4::identity();
+                let proj = Mat4::identity();
+
+                for mesh in &self.meshes {
+                    self.transform_constants.model_view_proj = identity.to_array();
+                    self.transform_constants.model = identity.to_array();
+                    self.transform_constants.view = view.to_array();
+                    self.transform_constants.proj = proj.to_array();
+
+                    if let Some(cb) = &self.constant_buffer {
+                        let _ = self.transform_constants.update(cb);
+                    }
+
+                    let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                        BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                        SizeInBytes: mesh.vertex_buffer.size as u32,
+                        StrideInBytes: Vertex::STRIDE,
+                    };
+                    cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+                    cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                    if let Some(index_buffer) = &mesh.index_buffer {
+                        let index_view = D3D12_INDEX_BUFFER_VIEW {
+                            BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                            SizeInBytes: index_buffer.size as u32,
+                            Format: DXGI_FORMAT_R32_UINT,
+                        };
+                        cmd_list.IASetIndexBuffer(Some(&index_view));
+                        cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+                    } else {
+                        cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                    }
                 }
             }
 
             cmd_list.Close()?;
         }
 
-        // Выполняем command list
         let queue = {
             let state = STATE.lock().unwrap();
             state.command_queue.as_ref().unwrap().clone()
@@ -582,7 +777,6 @@ impl AlkashEngine {
             queue.ExecuteCommandLists(cmd_lists);
         }
 
-        // Present
         let swap_chain = {
             let state = STATE.lock().unwrap();
             state.swap_chain.as_ref().unwrap().clone()
@@ -591,7 +785,6 @@ impl AlkashEngine {
             let _ = swap_chain.Present(1, DXGI_PRESENT(0));
         }
 
-        // Ждём fence
         let fence = {
             let state = STATE.lock().unwrap();
             state.fence.as_ref().unwrap().clone()
@@ -610,7 +803,6 @@ impl AlkashEngine {
             }
         }
 
-        // Обновляем frame index
         {
             let mut state = STATE.lock().unwrap();
             if let Some(swap_chain) = &state.swap_chain {
@@ -708,24 +900,49 @@ impl AlkashEngine {
         println!("[ENGINE] Shutting down...");
         self.running = false;
 
-        let state = STATE.lock().unwrap();
-        if let Some(queue) = state.command_queue.as_ref() {
-            if let Some(fence) = state.fence.as_ref() {
+        // 1. Ждем завершения всех GPU операций
+        {
+            let state = STATE.lock().unwrap();
+            if let (Some(queue), Some(fence)) = (&state.command_queue, &state.fence) {
+                let fence_value = 100;
                 unsafe {
-                    let _ = queue.Signal(fence, 100);
+                    let _ = queue.Signal(fence, fence_value);
+                    println!("[ENGINE] Waiting for GPU...");
+                    while fence.GetCompletedValue() < fence_value {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    println!("[ENGINE] GPU idle");
                 }
             }
         }
-        drop(state);
 
+        // 2. Очищаем ресурсы в правильном порядке
         self.meshes.clear();
+        self.mesh_instances.clear();
+
+        // 3. Явно сбрасываем COM-объекты
         self.renderer = None;
         self.pipeline_state = None;
         self.root_signature = None;
+        self.constant_buffer = None;
+        self.vs = None;
+        self.ps = None;
 
+        // 4. Сбрасываем глобальное состояние
+        {
+            let mut state = STATE.lock().unwrap();
+            state.device = None;
+            state.command_queue = None;
+            state.swap_chain = None;
+            state.command_allocators.clear();
+            state.fence = None;
+        }
+
+        // 5. Уничтожаем окно
         unsafe {
             if let Some(hwnd) = self.hwnd {
                 DestroyWindow(hwnd);
+                self.hwnd = None;
             }
         }
 
