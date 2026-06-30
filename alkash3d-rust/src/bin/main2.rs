@@ -102,6 +102,7 @@ fn run_3d_loop(engine: &mut AlkashEngine) {
         time = start.elapsed().as_secs_f32();
 
         // ===== КАМЕРА ВРАЩАЕТСЯ ВОКРУГ СЦЕНЫ =====
+        /// Возможная проблема Pos точки камеры
         let radius = -1.0;
         let angle = time * 0.15;
         let height = 0.0 + (time * 0.2).sin() * 1.0;
