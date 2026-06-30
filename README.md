@@ -1,114 +1,76 @@
-# Alkash3D Engine
+# 🚀 Alkash3D Engine
 
-## Where Python meets Rust, and 3D becomes reality
+**Alkash3D** is a high-performance 3D engine written in Rust with DirectX 12 support, physics integration, dynamic plugin loading, and a multithreaded task scheduler.
 
----
-
-### About The Project
-
-**Alkash3D** is a cross-paradigm 3D engine that started its journey in Python and is now embracing the power of Rust. This repository contains the Rust-based OBJ viewer and execution environment for the Alkash3D engine.
-
-### The Story
-
-Once upon a time, there was a Python 3D engine. It was beautiful, it was dynamic, but it was... slow. Then came Rust - the system programming language with a borrow checker that judges your life choices. This project is the bridge between two worlds: the rapid prototyping of Python and the raw performance of Rust.
-
-Python -> "It works on my machine!"
-Rust -> "It works on EVERY machine (after fixing 47 compilation errors)"
-
-### Current Features
-
-**Implemented:**
-- Windows GUI Window - Native Win32 window creation
-- DirectX 12 Backend - Hardware-accelerated rendering via DLL
-- Swap Chain & Presentation - Double-buffered rendering
-- Render Target Views - Proper DX12 RTV management
-- Command Queue & Lists - GPU command submission
-- Clean Shutdown - Proper resource cleanup
-
-**Work in Progress:**
-- OBJ mesh loading and parsing
-- 3D camera system (view/projection matrices)
-- Shader pipeline (vertex/pixel shaders)
-- Texture loading and sampling
-- Input handling (keyboard/mouse)
-
-**Planned:**
-- Full OBJ file format support (vertices, normals, UVs, faces)
-- Free-fly camera with WASD + mouse
-- Multiple material support (MTL files)
-- Lighting system (directional, point, spot)
-- Model transformation (translation, rotation, scale)
+[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
+[![DirectX](https://img.shields.io/badge/DirectX-12-blue.svg)](https://www.microsoft.com/en-us/download/details.aspx?id=104904)
+[![Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](https://www.microsoft.com/windows)
 
 ---
 
-### Technical Stack
+## ✨ Features
 
-- Language: Rust 2021 Edition
-- Rendering: DirectX 12 (via external DLL)
-- Windowing: WinAPI (raw Windows API)
-- Dynamic Loading: libloading
-- Build System: Cargo
+### 🎮 Rendering
+- ✅ **DirectX 12** — maximum performance
+- ✅ **3D Camera** — free movement (WASD + mouse)
+- ✅ **Transformations** — position, rotation, scaling
+- ✅ **Instancing** — multiple mesh instances
+- ✅ **Z-buffer** — proper depth testing
+- ✅ **Basic Lighting** — ambient + diffuse
+
+### ⚙️ Performance
+- ✅ **Multithreaded Scheduler** — task distribution across CPU cores
+- ✅ **Thread Pool** — heavy and light task separation
+- ✅ **SIMD Optimizations** — via `glam` library
+- ✅ **Adaptive Thresholds** — automatic parallelization tuning
+- ✅ **CPU Budget** — dynamic resource management
+
+### 🔌 Plugins
+- ✅ **Dynamic Loading** — load DLL plugins at runtime
+- ✅ **Physics** — physics engine integration (`inertial.dll`)
+- ✅ **Light Culling** — lighting optimization (`firstfires.dll`)
+- ✅ **ABI Stability** — unified API for all plugins
+
+### 🗃️ Data Formats
+- `.altex` — 3D scenes and geometry
+- `.alfar` — lighting configuration
+- `.alcar` — vehicle archives
+- `.alroute` — routes and paths
+- `.alworld` — open worlds and streaming
+- `.almat` — materials and shaders
+- `.alps` — programmable shaders
+- `.alsnd` — sound systems
+- `.alscript` — scripts (Python + Native)
+- `.aluv` — cinematic sequences
 
 ---
 
-### Building & Running
+## 📸 Screenshots
 
-**Prerequisites:**
-1. Rust toolchain (2021 edition or later)
-2. Windows 10/11 with DirectX 12 support
-3. alkash3d_rs.dll in project root
+> *Screenshots coming soon*
 
-**Build Instructions:**
+---
+
+## 📦 Requirements
+
+### For Development
+- **Rust** 1.70 or newer
+- **Windows 10/11** (build 19042+)
+- **DirectX 12** (built into Windows)
+- **Visual Studio 2022** (with C++ components for plugin building)
+- **RustRover** 2025.3.1+
+
+### For Runtime
+- **Windows 10/11**
+- **DirectX 12 compatible GPU**
+- **Plugins** (optional): `inertial.dll`, `firstfires.dll`
+
+---
+
+## 🛠️ Installation
+
+### 1. Clone the Repository
+
 ```bash
-cargo build --release
-copy alkash3d_rs.dll target\release\
-cd target\release
-.\alkash3d_viewer.exe
-Expected Output:
-
-text
-=== Alkash3D OBJ Viewer ===
-Window created successfully
-Initializing renderer...
-✓ Device created
-✓ Command queue created
-✓ Swap chain created
-✓ RTV heap created
-✓ Created 2 RTVs
-✓ Command allocators created
-✓ Fence created
-Renderer initialized successfully!
-Starting render loop...
-What You'll See
-Console window with initialization logs
-
-1280x720 window titled "Alkash3D OBJ Viewer"
-
-Dark blue screen (first rendered frame)
-
-Current Status
-The program successfully:
-
-Creates a Windows window
-
-Loads the DLL dynamically
-
-Initializes DirectX 12 device and swap chain
-
-Runs the render loop at 60 FPS
-
-Displays a cleared screen (dark blue)
-
-Next step: Actually rendering 3D models!
-
-Known Issues
-No actual 3D rendering yet (just clear screen)
-
-ESC key doesn't close window (use X button)
-
-Camera struct exists but does nothing
-
-OBJ loader only handles cubes
-
-License
-Work in progress - details coming soon
+git clone https://github.com/yourusername/AlKAsH3D-Engine.git
+cd AlKAsH3D-Engine/alkash3d-rust
