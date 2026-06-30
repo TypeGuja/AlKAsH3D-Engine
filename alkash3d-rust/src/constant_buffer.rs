@@ -3,7 +3,6 @@
 
 use windows::core::*;
 use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use crate::{Buffer, STATE};
 
 #[repr(C)]
