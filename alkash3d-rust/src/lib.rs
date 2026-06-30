@@ -23,17 +23,16 @@ mod alsnd_format;
 mod alscript_format;
 mod aluv_format;
 
-// Модули (независимые)
 mod plugin;
 mod scheduler;
-pub mod engine;  // engine зависит от plugin и scheduler
+pub mod engine;  // engine зависит от Plugin и Sheduler
 
-// НОВЫЕ МОДУЛИ ДЛЯ 3D
-mod math;
-mod camera;
+/// 3D Modules
+pub mod math;
+pub mod camera;
 mod constant_buffer;
 
-// Экспорты
+///  in pub
 pub use device::*;
 pub use queue::*;
 pub use swap_chain::*;

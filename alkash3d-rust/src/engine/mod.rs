@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::*;
 use crate::plugin::{PhysicsPlugin, LightPlugin, PhysicsConfig, LightConfig, GPULight, PhysicsBody, PhysicsContact};
-use crate::math::Mat4;
+use crate::math::{Mat4, Vec3, identity, translation, rotation_x, rotation_y, rotation_z, scaling};
 use crate::camera::Camera;
 use crate::constant_buffer::TransformConstants;
 use crate::shader::ShaderBlob;
@@ -204,12 +204,25 @@ impl MeshInstance {
     }
 
     pub fn transform_matrix(&self) -> Mat4 {
-        let translation = Mat4::translation(self.position[0], self.position[1], self.position[2]);
-        let rot_x = Mat4::rotation_x(self.rotation[0]);
-        let rot_y = Mat4::rotation_y(self.rotation[1]);
-        let rot_z = Mat4::rotation_z(self.rotation[2]);
-        let scale = Mat4::scaling(self.scale[0], self.scale[1], self.scale[2]);
-        translation.multiply(&rot_z).multiply(&rot_y).multiply(&rot_x).multiply(&scale)
+        let translation = Mat4::from_translation(Vec3::new(
+            self.position[0],
+            self.position[1],
+            self.position[2],
+        ));
+
+        // Поворот в порядке ZYX (как в старом коде)
+        let rot_z = Mat4::from_rotation_z(self.rotation[2]);
+        let rot_y = Mat4::from_rotation_y(self.rotation[1]);
+        let rot_x = Mat4::from_rotation_x(self.rotation[0]);
+        let rotation = rot_z * rot_y * rot_x;
+
+        let scale = Mat4::from_scale(Vec3::new(
+            self.scale[0],
+            self.scale[1],
+            self.scale[2],
+        ));
+
+        translation * rotation * scale
     }
 }
 
@@ -411,17 +424,18 @@ impl AlkashEngine {
                         PostQuitMessage(0);
                     }
                     // WASD управление камерой
+                    let speed = 0.1;
                     if wparam.0 == 0x57 { // W
-                        self.camera.move_forward(0.1);
+                        self.camera.move_forward(speed);
                     }
                     if wparam.0 == 0x53 { // S
-                        self.camera.move_forward(-0.1);
+                        self.camera.move_forward(-speed);
                     }
                     if wparam.0 == 0x41 { // A
-                        self.camera.move_right(-0.1);
+                        self.camera.move_right(-speed);
                     }
                     if wparam.0 == 0x44 { // D
-                        self.camera.move_right(0.1);
+                        self.camera.move_right(speed);
                     }
                     LRESULT(0)
                 }
@@ -682,7 +696,7 @@ impl AlkashEngine {
                 cmd_list.SetGraphicsRootConstantBufferView(0, gpu_handle);
             }
 
-            // Рисуем с трансформациями если есть экземпляры
+            // ========== 3D РЕНДЕР С ТРАНСФОРМАЦИЯМИ ==========
             if !self.mesh_instances.is_empty() {
                 let view = self.camera.view_matrix();
                 let proj = self.camera.projection_matrix();
@@ -694,13 +708,21 @@ impl AlkashEngine {
 
                     let mesh = &self.meshes[instance.mesh_index];
                     let model = instance.transform_matrix();
-                    let model_view_proj = model.multiply(&view).multiply(&proj);
 
-                    self.transform_constants.model_view_proj = model_view_proj.to_array();
-                    self.transform_constants.model = model.to_array();
-                    self.transform_constants.view = view.to_array();
-                    self.transform_constants.proj = proj.to_array();
-                    self.transform_constants.camera_pos = [self.camera.position[0], self.camera.position[1], self.camera.position[2], 1.0];
+                    // Правильный порядок для DirectX: proj * view * model
+                    let model_view_proj = proj * view * model;
+
+                    // Преобразуем матрицы в массивы для константного буфера
+                    self.transform_constants.model_view_proj = model_view_proj.to_cols_array_2d();
+                    self.transform_constants.model = model.to_cols_array_2d();
+                    self.transform_constants.view = view.to_cols_array_2d();
+                    self.transform_constants.proj = proj.to_cols_array_2d();
+                    self.transform_constants.camera_pos = [
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z,
+                        1.0,
+                    ];
 
                     if let Some(cb) = &self.constant_buffer {
                         let _ = self.transform_constants.update(cb);
@@ -728,15 +750,13 @@ impl AlkashEngine {
                 }
             } else {
                 // 2D режим - без трансформаций
-                let identity = Mat4::identity();
-                let view = Mat4::identity();
-                let proj = Mat4::identity();
+                let identity = identity();
 
                 for mesh in &self.meshes {
-                    self.transform_constants.model_view_proj = identity.to_array();
-                    self.transform_constants.model = identity.to_array();
-                    self.transform_constants.view = view.to_array();
-                    self.transform_constants.proj = proj.to_array();
+                    self.transform_constants.model_view_proj = identity.to_cols_array_2d();
+                    self.transform_constants.model = identity.to_cols_array_2d();
+                    self.transform_constants.view = identity.to_cols_array_2d();
+                    self.transform_constants.proj = identity.to_cols_array_2d();
 
                     if let Some(cb) = &self.constant_buffer {
                         let _ = self.transform_constants.update(cb);
