@@ -23,13 +23,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==========================================");
 
     let mut engine = AlkashEngine::new(WINDOW_WIDTH, WINDOW_HEIGHT);
-    engine.init()?;
+
+    // Используем блок для обработки ошибок
+    if let Err(e) = engine.init() {
+        eprintln!("[MAIN] Failed to initialize engine: {:?}", e);
+        return Err(e.into());
+    }
 
     setup_scene(&mut engine);
     run_loop(&mut engine);
-    engine.shutdown();
-    println!("[MAIN] Goodbye!");
 
+    // shutdown вызывается автоматически при выходе из run_loop
+    // или через Drop
+
+    println!("[MAIN] Goodbye!");
     Ok(())
 }
 
