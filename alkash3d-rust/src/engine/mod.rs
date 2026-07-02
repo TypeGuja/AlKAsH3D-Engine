@@ -260,6 +260,8 @@ pub struct AlkashEngine {
     width: u32,
     height: u32,
     clear_color: [f32; 4],
+
+    shutdown_in_progress: bool,
 }
 
 impl AlkashEngine {
@@ -283,6 +285,7 @@ impl AlkashEngine {
             width,
             height,
             clear_color: [0.05, 0.05, 0.1, 1.0],
+            shutdown_in_progress: false,
         }
     }
 
@@ -413,15 +416,27 @@ impl AlkashEngine {
     fn wndproc(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe {
             match msg {
+                WM_CLOSE => {
+                    println!("[ENGINE] WM_CLOSE received - window close button clicked");
+                    self.running = false;
+                    // Уничтожаем окно
+                    DestroyWindow(hwnd);
+                    // Отправляем WM_QUIT для выхода из цикла сообщений
+                    PostQuitMessage(0);
+                    LRESULT(0)
+                }
                 WM_DESTROY => {
+                    println!("[ENGINE] WM_DESTROY received - window being destroyed");
                     self.running = false;
                     PostQuitMessage(0);
                     LRESULT(0)
                 }
                 WM_KEYDOWN => {
                     if wparam.0 == 0x1B { // ESC
+                        println!("[ENGINE] ESC pressed - closing window");
                         self.running = false;
-                        PostQuitMessage(0);
+                        // Отправляем WM_CLOSE для корректного закрытия
+                        PostMessageA(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                     }
                     // WASD управление камерой
                     let speed = 0.1;
@@ -463,8 +478,17 @@ impl AlkashEngine {
             let mut msg = MSG::default();
             while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
+                    println!("[ENGINE] WM_QUIT received - exiting message loop");
                     self.running = false;
                     break;
+                }
+                // Обработка сообщения WM_DESTROY через окно
+                if msg.message == WM_DESTROY {
+                    println!("[ENGINE] WM_DESTROY received in message loop");
+                    self.running = false;
+                    // Позволяем DefWindowProc обработать сообщение
+                    let _ = DefWindowProcA(msg.hwnd, msg.message, msg.wParam, msg.lParam);
+                    continue;
                 }
                 TranslateMessage(&msg);
                 DispatchMessageA(&msg);
@@ -917,55 +941,102 @@ impl AlkashEngine {
     }
 
     pub fn shutdown(&mut self) {
+        // Защита от двойного вызова
+        if self.shutdown_in_progress {
+            println!("[ENGINE] Shutdown already in progress");
+            return;
+        }
+        self.shutdown_in_progress = true;
+
         println!("[ENGINE] Shutting down...");
         self.running = false;
 
-        // 1. Ждем завершения всех GPU операций
+        // ===== 1. Ждем завершения всех GPU операций =====
         {
             let state = STATE.lock().unwrap();
             if let (Some(queue), Some(fence)) = (&state.command_queue, &state.fence) {
                 let fence_value = 100;
                 unsafe {
+                    println!("[ENGINE] Signaling fence...");
                     let _ = queue.Signal(fence, fence_value);
-                    println!("[ENGINE] Waiting for GPU...");
+                    println!("[ENGINE] Waiting for GPU to finish...");
+
+                    let start = std::time::Instant::now();
                     while fence.GetCompletedValue() < fence_value {
                         std::thread::sleep(std::time::Duration::from_millis(1));
+                        if start.elapsed() > std::time::Duration::from_secs(5) {
+                            println!("[ENGINE] WARNING: GPU timeout, forcing shutdown");
+                            break;
+                        }
                     }
                     println!("[ENGINE] GPU idle");
                 }
             }
         }
 
-        // 2. Очищаем ресурсы в правильном порядке
+        // ===== 2. Очищаем меши и экземпляры =====
+        println!("[ENGINE] Clearing meshes...");
         self.meshes.clear();
         self.mesh_instances.clear();
 
-        // 3. Явно сбрасываем COM-объекты
-        self.renderer = None;
-        self.pipeline_state = None;
-        self.root_signature = None;
+        // ===== 3. Явно сбрасываем ресурсы в правильном порядке =====
+        println!("[ENGINE] Releasing resources...");
+
         self.constant_buffer = None;
         self.vs = None;
         self.ps = None;
+        self.pipeline_state = None;
+        self.root_signature = None;
+        self.renderer = None;
 
-        // 4. Сбрасываем глобальное состояние
+        // ===== 4. Сбрасываем глобальное состояние =====
+        println!("[ENGINE] Resetting global state...");
         {
             let mut state = STATE.lock().unwrap();
-            state.device = None;
-            state.command_queue = None;
-            state.swap_chain = None;
-            state.command_allocators.clear();
+
             state.fence = None;
+            state.fence_values.clear();
+            state.command_allocators.clear();
+            state.command_list = None;
+
+            if let Some(swap_chain) = &state.swap_chain {
+                unsafe {
+                    let _ = swap_chain.SetFullscreenState(false, None);
+                }
+            }
+            state.swap_chain = None;
+            state.command_queue = None;
+            state.device = None;
+            state.descriptor_heaps.clear();
+            state.root_signature = None;
+            state.current_pso = None;
+            state.bound_vertex_buffers.clear();
+            state.bound_index_buffer = None;
+            state.scheduler = None;
         }
 
-        // 5. Уничтожаем окно
+        // ===== 5. Уничтожаем окно (если еще не уничтожено) =====
         unsafe {
             if let Some(hwnd) = self.hwnd {
-                DestroyWindow(hwnd);
+                println!("[ENGINE] Destroying window...");
+                // Проверяем, существует ли еще окно
+                if IsWindow(Some(hwnd)).as_bool() {
+                    DestroyWindow(hwnd);
+                }
                 self.hwnd = None;
             }
         }
 
+        self.shutdown_in_progress = false;
         println!("[ENGINE] Shutdown complete");
+    }
+}
+
+impl Drop for AlkashEngine {
+    fn drop(&mut self) {
+        // Если движок еще не был завершен, завершаем его
+        if self.running {
+            self.shutdown();
+        }
     }
 }
