@@ -92,27 +92,12 @@ fn run_3d_loop(engine: &mut AlkashEngine) {
 
     // ===== КАМЕРА СНАРУЖИ =====
     // Ставим камеру ДАЛЕКО, чтобы видеть всю сцену
-    engine.camera.position = [0.0, 0.0, 15.0];  // Дальше и выше
-    engine.camera.target = [0.0, 0.0, 0.0];
 
     while engine.is_running() {
         engine.process_messages();
 
         let dt = start.elapsed().as_secs_f32() - time;
         time = start.elapsed().as_secs_f32();
-
-        // ===== КАМЕРА ВРАЩАЕТСЯ ВОКРУГ СЦЕНЫ =====
-        /// Возможная проблема Pos точки камеры
-        let radius = -1.0;
-        let angle = time * 0.15;
-        let height = 0.0 + (time * 0.2).sin() * 1.0;
-
-        engine.camera.position = [
-            radius * angle.sin(),
-            height,
-            radius * angle.cos(),
-        ];
-        engine.camera.target = [0.0, 0.0, 0.0];
 
         // === АНИМАЦИЯ ОБЪЕКТОВ ===
         // Главный куб - вращается
