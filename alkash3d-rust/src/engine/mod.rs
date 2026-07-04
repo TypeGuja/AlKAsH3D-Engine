@@ -2,12 +2,13 @@
 //! Основной движок Alkash3D
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Direct3D::D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
+use windows::Win32::Graphics::Dxgi::{DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_UNKNOWN};
 use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
@@ -20,6 +21,18 @@ use crate::camera::Camera;
 use crate::constant_buffer::TransformConstants;
 use crate::shader::ShaderBlob;
 use crate::pso::PipelineState;
+
+// ===================================================================
+// Общий монотонно возрастающий счётчик значений fence для всего движка.
+//
+// ИСПРАВЛЕНО: раньше в `shutdown()` использовалось захардкоженное число
+// `100` в качестве fence-значения для финальной синхронизации с GPU —
+// ничем не гарантировано, что оно больше всех значений, уже отправленных
+// в очередь к этому моменту. Теперь и `render_frame`, и `handle_resize`,
+// и `shutdown` берут значения из одного общего счётчика, поэтому каждое
+// следующее Signal() гарантированно больше предыдущих.
+// ===================================================================
+static NEXT_FENCE_VALUE: AtomicU64 = AtomicU64::new(1);
 
 // ===================================================================
 // Vertex definition for rendering
@@ -262,6 +275,13 @@ pub struct AlkashEngine {
     clear_color: [f32; 4],
 
     shutdown_in_progress: bool,
+
+    // ИСПРАВЛЕНО: значение fence, при достижении которого GPU закончил
+    // последнее использование ресурсов, привязанных к данному back
+    // buffer'у (индекс = индекс back buffer'а). 0 означает "ещё не
+    // использовался". Используется, чтобы не блокировать CPU сразу после
+    // каждого Present (см. комментарий в render_frame).
+    frame_fence_values: Vec<u64>,
 }
 
 impl AlkashEngine {
@@ -286,6 +306,7 @@ impl AlkashEngine {
             height,
             clear_color: [0.05, 0.05, 0.1, 1.0],
             shutdown_in_progress: false,
+            frame_fence_values: vec![0, 0],
         }
     }
 
@@ -417,12 +438,24 @@ impl AlkashEngine {
         unsafe {
             match msg {
                 WM_CLOSE => {
-                    println!("[ENGINE] WM_CLOSE received - window close button clicked");
+                    println!("[ENGINE] WM_CLOSE received - stopping engine loop");
+                    // ИСПРАВЛЕНО: раньше здесь сразу и синхронно вызывался
+                    // DestroyWindow(hwnd). Если после этого главный цикл
+                    // движка успевал вызвать ещё хотя бы один render_frame()
+                    // до проверки is_running() — Present() уходил в свап-чейн,
+                    // привязанный к уже уничтоженному HWND. Для
+                    // DXGI_SWAP_EFFECT_FLIP_DISCARD это может спровоцировать
+                    // реальный hang GPU / TDR (сброс видеодрайвера,
+                    // подвисание изображения на всех мониторах, кратковременное
+                    // пропадание звука — драйверный стек перезапускается целиком).
+                    //
+                    // Теперь мы только останавливаем цикл движка (running = false)
+                    // и скрываем окно, ничего не разрушая физически. Реальный
+                    // DestroyWindow происходит в конце shutdown() — уже ПОСЛЕ
+                    // того как swap chain / device / fence корректно
+                    // освобождены, а не до этого.
                     self.running = false;
-                    // Уничтожаем окно
-                    DestroyWindow(hwnd);
-                    // Отправляем WM_QUIT для выхода из цикла сообщений
-                    PostQuitMessage(0);
+                    ShowWindow(hwnd, SW_HIDE);
                     LRESULT(0)
                 }
                 WM_DESTROY => {
@@ -457,19 +490,107 @@ impl AlkashEngine {
                 WM_SIZE => {
                     let width = (lparam.0 & 0xFFFF) as u32;
                     let height = ((lparam.0 >> 16) & 0xFFFF) as u32;
-                    if width > 0 && height > 0 {
+                    // ИСПРАВЛЕНО: раньше здесь напрямую вызывался
+                    // swap_chain.ResizeBuffers(...) с игнорированием ошибки
+                    // (`let _ = ...`). ResizeBuffers требует, чтобы ВСЕ
+                    // внешние ссылки на back buffer'ы swap chain'а были
+                    // освобождены до вызова — а `Renderer` держит их в
+                    // `back_buffers`/RTV heap, которые никогда не
+                    // трогались. Поэтому ResizeBuffers гарантированно
+                    // проваливался с DXGI_ERROR_INVALID_CALL, ошибка
+                    // молча проглатывалась, а окно продолжало рендериться
+                    // в старом разрешении. Теперь используется
+                    // handle_resize(), который сначала ждёт GPU idle,
+                    // отпускает Renderer, ресайзит буферы и пересоздаёт
+                    // Renderer под новый размер.
+                    if width > 0 && height > 0 && (width != self.width || height != self.height) {
                         self.width = width;
                         self.height = height;
                         self.camera.set_aspect(width, height);
-                        let state = STATE.lock().unwrap();
-                        if let Some(swap_chain) = &state.swap_chain {
-                            let _ = unsafe { swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0)) };
-                        }
+                        self.handle_resize(width, height);
                     }
                     LRESULT(0)
                 }
                 _ => DefWindowProcA(hwnd, msg, wparam, lparam),
             }
+        }
+    }
+
+    /// Корректная обработка ресайза окна: дожидается GPU idle, освобождает
+    /// Renderer (владеющий back buffer'ами/RTV/DSV), ресайзит swap chain и
+    /// пересоздаёт Renderer под новый размер.
+    fn handle_resize(&mut self, width: u32, height: u32) {
+        println!("[ENGINE] Handling resize: {}x{}", width, height);
+
+        // 1. Дожидаемся, что GPU закончил использовать текущие back
+        //    buffer'ы — иначе ResizeBuffers ниже гарантированно провалится.
+        let (queue_opt, fence_opt) = {
+            let state = STATE.lock().unwrap();
+            (state.command_queue.clone(), state.fence.clone())
+        };
+        if let (Some(queue), Some(fence)) = (queue_opt, fence_opt) {
+            let value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
+            unsafe {
+                if queue.Signal(&fence, value).is_ok() {
+                    while fence.GetCompletedValue() < value {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+            }
+        } else {
+            // Устройство ещё не инициализировано (ресайз до init()) —
+            // делать нечего.
+            return;
+        }
+
+        // 2. Освобождаем renderer: он держит back buffers/RTV/DSV. Без
+        //    этого ResizeBuffers ниже вернёт DXGI_ERROR_INVALID_CALL.
+        self.renderer = None;
+
+        // 3. Ресайзим сами буферы swap chain.
+        let resize_ok = {
+            let state = STATE.lock().unwrap();
+            if let Some(swap_chain) = &state.swap_chain {
+                let hr = unsafe {
+                    swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
+                };
+                match hr {
+                    Ok(()) => true,
+                    Err(e) => {
+                        eprintln!("[ENGINE] ResizeBuffers failed: {:?}", e);
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        };
+
+        if !resize_ok {
+            return;
+        }
+
+        // 4. Пересоздаём renderer (RTV/DSV/back buffers) под новый размер.
+        match Renderer::new(width, height, 2) {
+            Ok(renderer) => {
+                self.renderer = Some(renderer);
+                println!("[ENGINE] ✓ Renderer recreated after resize: {}x{}", width, height);
+            }
+            Err(e) => {
+                eprintln!("[ENGINE] Failed to recreate renderer after resize: {:?}", e);
+            }
+        }
+
+        // 5. Сбрасываем накопленные fence-значения по индексам back
+        //    buffer'ов — старые ссылались на уже не существующие ресурсы.
+        for v in &mut self.frame_fence_values {
+            *v = 0;
+        }
+
+        // 6. Синхронизируем текущий индекс back buffer'а.
+        let mut state = STATE.lock().unwrap();
+        if let Some(swap_chain) = &state.swap_chain {
+            state.frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
         }
     }
 
@@ -670,6 +791,27 @@ impl AlkashEngine {
             state.frame_index as usize
         };
 
+        // ИСПРАВЛЕНО: раньше здесь не ждали ничего перед Reset() аллокатора,
+        // а полная синхронизация происходила уже ПОСЛЕ Present каждого
+        // кадра (см. ниже) — это сводило на нет весь смысл двойной
+        // буферизации, так как CPU и GPU работали строго последовательно.
+        // Теперь мы ждём (если нужно) именно перед повторным использованием
+        // ресурсов данного frame_index — то есть перед тем, как их
+        // действительно нужно тронуть, а не сразу после отправки в очередь.
+        if let Some(&target) = self.frame_fence_values.get(frame_index) {
+            if target > 0 {
+                let fence = {
+                    let state = STATE.lock().unwrap();
+                    state.fence.as_ref().unwrap().clone()
+                };
+                unsafe {
+                    while fence.GetCompletedValue() < target {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+            }
+        }
+
         let allocator = CommandList::get_allocator(frame_index)
             .ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
 
@@ -829,22 +971,24 @@ impl AlkashEngine {
             let _ = swap_chain.Present(1, DXGI_PRESENT(0));
         }
 
+        // ИСПРАВЛЕНО: раньше сразу здесь стоял busy-wait на fence.GetCompletedValue(),
+        // блокирующий CPU до полного завершения GPU-работы этого кадра —
+        // то есть render_frame() не возвращал управление, пока GPU
+        // реально не дорисует кадр. Теперь мы просто сигналим новое
+        // значение и ЗАПОМИНАЕМ его для этого frame_index — реальное
+        // ожидание произойдёт только тогда, когда этот же frame_index
+        // понадобится снова (см. начало функции). Это позволяет CPU и
+        // GPU работать конвейерно, как и предполагает двойная буферизация.
         let fence = {
             let state = STATE.lock().unwrap();
             state.fence.as_ref().unwrap().clone()
         };
-
-        let fence_value = {
-            let mut state = STATE.lock().unwrap();
-            state.fence_values[frame_index] += 1;
-            state.fence_values[frame_index]
-        };
-
+        let fence_value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
         unsafe {
             queue.Signal(&fence, fence_value)?;
-            while fence.GetCompletedValue() < fence_value {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+        }
+        if frame_index < self.frame_fence_values.len() {
+            self.frame_fence_values[frame_index] = fence_value;
         }
 
         {
@@ -955,9 +1099,13 @@ impl AlkashEngine {
         {
             let state = STATE.lock().unwrap();
             if let (Some(queue), Some(fence)) = (&state.command_queue, &state.fence) {
-                let fence_value = 100;
+                // ИСПРАВЛЕНО: было захардкожено `let fence_value = 100;` —
+                // ничем не гарантировано, что это значение больше всех
+                // уже отправленных в очередь Signal(). Теперь берём
+                // значение из общего монотонного счётчика движка.
+                let fence_value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
                 unsafe {
-                    println!("[ENGINE] Signaling fence...");
+                    println!("[ENGINE] Signaling fence (value={})...", fence_value);
                     let _ = queue.Signal(fence, fence_value);
                     println!("[ENGINE] Waiting for GPU to finish...");
 
@@ -1034,9 +1182,6 @@ impl AlkashEngine {
 
 impl Drop for AlkashEngine {
     fn drop(&mut self) {
-        // Если движок еще не был завершен, завершаем его
-        if self.running {
-            self.shutdown();
-        }
+        self.shutdown();
     }
 }

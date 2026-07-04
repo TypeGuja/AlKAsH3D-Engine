@@ -5,6 +5,13 @@ use windows::core::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use crate::{Buffer, STATE};
 
+/// ИСПРАВЛЕНО: добавлен `#[repr(C)]`. Эта структура копируется побайтово
+/// в GPU constant buffer, а шейдер (`cbuffer TransformConstants : register(b0)`)
+/// ожидает конкретный, стабильный порядок полей в памяти. Без `#[repr(C)]`
+/// компилятор формально не обязан сохранять порядок полей структуры — на
+/// практике для "плоских" POD-структур это обычно совпадает, но полагаться
+/// на совпадение по умолчанию для чего-то, что мапится на GPU layout,
+/// нельзя.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TransformConstants {
