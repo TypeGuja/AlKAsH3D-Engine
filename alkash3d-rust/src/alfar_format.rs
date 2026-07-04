@@ -88,6 +88,10 @@ pub struct IndividualLight {
 pub struct LightGroup {
     pub group_id: u32,
     pub name_id: u32,
+    /// СЫРОЙ указатель для совместимости с C ABI. Сам он НЕ владеет данными —
+    /// фактический буфер должен жить где-то ещё как минимум столько же,
+    /// сколько живёт этот LightGroup. См. `AlfarFile::group_light_ids`
+    /// и комментарий в `add_light_group`.
     pub light_ids: *mut u32,
     pub light_count: u32,
     pub master_intensity: f32,
@@ -124,6 +128,22 @@ pub struct AlfarFile {
     pub animations: Vec<LightAnimation>,
     pub keyframes: Vec<Keyframe>,
     pub custom_data: Vec<u8>,
+    /// ИСПРАВЛЕНО (было use-after-free): раньше `light_ids` в `LightGroup`
+    /// указывал на буфер `Vec<u32>`, который создавался локально внутри
+    /// `add_light_group` и уничтожался в конце той же функции (через
+    /// `for id in ids { ... }`, потребляющий `ids` по значению). Указатель
+    /// в `LightGroup` мгновенно становился висячим сразу после возврата из
+    /// функции. Теперь каждый буфер id-шников реально хранится здесь, в
+    /// `AlfarFile`, и живёт как минимум столько же, сколько сам файл.
+    ///
+    /// Важно: перемещение `AlfarFile` (например, возврат по значению) не
+    /// инвалидирует эти указатели — двигается только внешний `Vec<Vec<u32>>`
+    /// (его собственные стек-поля: указатель/длина/capacity), а сами
+    /// внутренние буферы `Vec<u32>` живут в куче по стабильным адресам.
+    /// НЕ удаляй и не изменяй элементы `group_light_ids` после того, как на
+    /// них уже завели `LightGroup` — это единственный инвариант, который
+    /// нужно соблюдать вручную.
+    group_light_ids: Vec<Vec<u32>>,
 }
 
 impl AlfarFile {
@@ -167,6 +187,7 @@ impl AlfarFile {
             animations: Vec::new(),
             keyframes: Vec::new(),
             custom_data: Vec::new(),
+            group_light_ids: Vec::new(),
         }
     }
 
@@ -189,12 +210,22 @@ impl AlfarFile {
     pub fn add_light_group(&mut self, name: &str, light_ids: &[u32]) -> u32 {
         let group_id = self.light_groups.len() as u32;
         let name_id = self.add_string(name);
+
+        // ИСПРАВЛЕНО: владеющая копия id-шников теперь хранится в
+        // `self.group_light_ids`, а не только локально в этой функции —
+        // поэтому указатель `light_ids` в LightGroup остаётся валидным
+        // всё время жизни AlfarFile (подробности см. в комментарии у поля
+        // `group_light_ids`).
         let mut ids = Vec::from(light_ids);
+        let ptr = ids.as_mut_ptr();
+        let count = ids.len() as u32;
+        self.group_light_ids.push(ids);
+
         self.light_groups.push(LightGroup {
             group_id,
             name_id,
-            light_ids: ids.as_mut_ptr(),
-            light_count: ids.len() as u32,
+            light_ids: ptr,
+            light_count: count,
             master_intensity: 1.0,
             color_tint: [1.0, 1.0, 1.0],
             sync_flicker: 0,
@@ -202,9 +233,14 @@ impl AlfarFile {
             active_from: 0.0,
             active_to: 24.0,
         });
-        for id in ids {
+
+        // Дублируем id-шники в custom_data (для будущей сериализации групп;
+        // на сегодня save() групп ещё не пишет, см. groups_data ниже).
+        // Итерируемся по ссылке на владеющую копию, а не потребляем её.
+        for id in self.group_light_ids.last().unwrap() {
             self.custom_data.extend_from_slice(&id.to_le_bytes());
         }
+
         self.header.light_groups_count += 1;
         group_id
     }
