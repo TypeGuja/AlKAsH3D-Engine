@@ -113,17 +113,31 @@ impl WorkerPool {
 
 impl Drop for WorkerPool {
     fn drop(&mut self) {
-        for worker in &self.heavy_workers {
-            let _ = &worker.sender;
-        }
-        for worker in &self.light_workers {
-            let _ = &worker.sender;
-        }
+        // ВАЖНО (было исправлено): нужно сначала уничтожить (drop) ВСЕ
+        // Sender'ы у всех воркеров, и только потом join() их потоки.
+        // Каждый рабочий поток крутится в цикле `for f in rx { f() }`,
+        // который завершается лишь тогда, когда закрыты ВСЕ отправители
+        // соответствующего канала. Раньше join() вызывался раньше, чем
+        // sender реально дропался (sender жил внутри того же `Worker`,
+        // который ещё не был уничтожен на момент join) — поток никогда
+        // не видел закрытие канала, и join() ждал вечно. Это был
+        // гарантированный deadlock при остановке движка.
+        let mut handles: Vec<JoinHandle<()>> =
+            Vec::with_capacity(self.heavy_workers.len() + self.light_workers.len());
+
         for worker in self.heavy_workers.drain(..) {
-            let _ = worker.handle.join();
+            let Worker { handle, sender } = worker;
+            drop(sender); // закрываем канал ДО join
+            handles.push(handle);
         }
         for worker in self.light_workers.drain(..) {
-            let _ = worker.handle.join();
+            let Worker { handle, sender } = worker;
+            drop(sender);
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let _ = handle.join();
         }
     }
 }

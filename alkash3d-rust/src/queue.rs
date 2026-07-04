@@ -53,16 +53,33 @@ impl CommandQueue {
         Ok(())
     }
 
+    /// Блокирующе дожидается завершения всех команд, отправленных в очередь
+    /// до этого момента.
+    ///
+    /// ИСПРАВЛЕНО: раньше эта функция брала `STATE.lock()` и держала его,
+    /// одновременно вызывая `self.signal_fence(...)`, которая пытается
+    /// взять тот же `Mutex` повторно. `std::sync::Mutex` не реентерабельный,
+    /// поэтому это гарантированно вешало поток при первом же вызове
+    /// `flush()`. Теперь лок берётся отдельными короткими секциями и
+    /// не удерживается поперёк вызова `signal_fence`.
     pub fn flush(&self) -> Result<(), windows::core::Error> {
         println!("[QUEUE] Flushing command queue...");
-        let mut state = STATE.lock().unwrap();
-        state.fence_values[0] += 1;
-        let fence_value = state.fence_values[0];
+
+        let fence_value = {
+            let mut state = STATE.lock().unwrap();
+            state.fence_values[0] += 1;
+            state.fence_values[0]
+        };
         println!("[QUEUE] New fence value: {}", fence_value);
 
         self.signal_fence(fence_value)?;
 
-        if let Some(fence) = &state.fence {
+        let fence = {
+            let state = STATE.lock().unwrap();
+            state.fence.clone()
+        };
+
+        if let Some(fence) = fence {
             unsafe {
                 let completed = fence.GetCompletedValue();
                 if completed < fence_value {
