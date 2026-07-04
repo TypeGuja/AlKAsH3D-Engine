@@ -123,10 +123,16 @@ impl PipelineState {
         println!("[PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL");
 
         println!("[PSO] Root signature: {:p}", root_signature);
-        let mut root_sig_manually_drop = std::mem::ManuallyDrop::new(Some(root_signature.clone()));
 
-        let pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-            pRootSignature: root_sig_manually_drop,
+        // ИСПРАВЛЕНО: pRootSignature в D3D12_GRAPHICS_PIPELINE_STATE_DESC
+        // имеет тип ManuallyDrop<Option<ID3D12RootSignature>>. Строкой ниже
+        // мы клонируем root_signature (это увеличивает COM refcount на 1),
+        // поэтому обязаны сами явно уменьшить его обратно после того, как
+        // pso_desc отработал — раньше этого не делалось, и на каждый вызов
+        // create_graphics() (например, при hot-reload шейдеров) утекала
+        // одна лишняя ссылка на root signature.
+        let mut pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.clone())),
             VS: D3D12_SHADER_BYTECODE {
                 pShaderBytecode: vs.as_ptr(),
                 BytecodeLength: vs.size(),
@@ -158,17 +164,22 @@ impl PipelineState {
         println!("[PSO] Pipeline state descriptor created");
 
         println!("[PSO] Calling CreateGraphicsPipelineState...");
+        let result = unsafe { device.CreateGraphicsPipelineState(&pso_desc) };
+
+        // Освобождаем нашу дополнительную ссылку на root signature — она
+        // была нужна только на время жизни pso_desc выше.
         unsafe {
-            let result = device.CreateGraphicsPipelineState(&pso_desc);
-            match &result {
-                Ok(pso) => {
-                    println!("[PSO] ✓ PSO created successfully! PSO: {:p}", pso);
-                },
-                Err(e) => {
-                    eprintln!("[PSO] ✗ Failed to create PSO: {:?}", e);
-                }
-            }
-            result
+            std::mem::ManuallyDrop::drop(&mut pso_desc.pRootSignature);
         }
+
+        match &result {
+            Ok(pso) => {
+                println!("[PSO] ✓ PSO created successfully! PSO: {:p}", pso);
+            },
+            Err(e) => {
+                eprintln!("[PSO] ✗ Failed to create PSO: {:?}", e);
+            }
+        }
+        result
     }
 }

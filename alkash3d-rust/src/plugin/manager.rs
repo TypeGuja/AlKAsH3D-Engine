@@ -129,5 +129,22 @@ impl PluginManager {
         for (_, plugin) in self.plugins.drain() {
             (plugin.api.shutdown)(plugin.instance);
         }
+        self.physics_plugin = None;
+        self.light_plugin = None;
+    }
+}
+
+impl Drop for PluginManager {
+    fn drop(&mut self) {
+        // ИСПРАВЛЕНО: `unload_all()` существовал и раньше, но никогда не
+        // вызывался автоматически. При дропе `PluginManager` (например,
+        // вместе с `PhysicsPlugin`/`LightPlugin` в plugin/mod.rs) `HashMap`
+        // с плагинами просто освобождал `Library`, выгружая DLL из памяти,
+        // а `(api.shutdown)(instance)` внутри неё так никогда и не
+        // вызывался — плагин не успевал корректно освободить свои
+        // внутренние ресурсы. Теперь это происходит гарантированно, и в
+        // правильном порядке: сначала shutdown у плагина, потом (в конце
+        // итерации цикла в unload_all) выгрузка самой Library.
+        self.unload_all();
     }
 }
