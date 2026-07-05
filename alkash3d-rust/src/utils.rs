@@ -5,8 +5,8 @@ use crate::STATE;
 
 pub fn create_fence() -> Result<ID3D12Fence> {
     println!("[UTILS] Creating fence...");
-    let state = STATE.lock().unwrap();
-    let device = state.device.as_ref().unwrap();
+    // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap()`.
+    let device = crate::get_device()?;
     unsafe {
         let fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
         println!("[UTILS] ✓ Fence created");
