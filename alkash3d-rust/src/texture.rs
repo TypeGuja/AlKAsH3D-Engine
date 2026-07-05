@@ -16,10 +16,8 @@ impl Texture {
     pub fn create_texture2d(width: u32, height: u32, format: DXGI_FORMAT, data: Option<&[u8]>) -> Result<Self> {
         println!("[TEXTURE] Creating 2D texture: {}x{}, format={:?}, data={}", width, height, format, data.is_some());
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
 
         let heap_properties = if data.is_some() {
             D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_UPLOAD, ..Default::default() }
@@ -66,15 +64,30 @@ impl Texture {
             println!("[TEXTURE] ✓ Resource created");
 
             if let Some(bytes) = data {
+                // ИСПРАВЛЕНО (защита от паники): раньше здесь было
+                // `bytes[(y * row_pitch)..]` без проверки, что во входных
+                // данных реально хватает байт на все строки — при
+                // несоответствии размера это была паника на срезе.
+                // Теперь размер проверяется заранее и функция возвращает
+                // явную ошибку.
+                let row_pitch = (width * 4) as usize;
+                let required_len = row_pitch * height as usize;
+                if bytes.len() < required_len {
+                    eprintln!(
+                        "[TEXTURE] ERROR: input data too small: got {} bytes, need at least {} ({}x{}x4)",
+                        bytes.len(), required_len, width, height
+                    );
+                    return Err(Error::from_hresult(HRESULT(1)));
+                }
+
                 println!("[TEXTURE] Uploading texture data...");
                 let mut mapped = std::ptr::null_mut();
-                let _ = resource.Map(0, None, Some(&mut mapped));
+                resource.Map(0, None, Some(&mut mapped))?;
                 if !mapped.is_null() {
-                    let row_pitch = width * 4;
                     for y in 0..height {
-                        let src = &bytes[(y * row_pitch) as usize..];
-                        let dst = (mapped as *mut u8).add((y * row_pitch) as usize);
-                        std::ptr::copy_nonoverlapping(src.as_ptr(), dst, row_pitch as usize);
+                        let src = &bytes[(y as usize * row_pitch)..];
+                        let dst = (mapped as *mut u8).add(y as usize * row_pitch);
+                        std::ptr::copy_nonoverlapping(src.as_ptr(), dst, row_pitch);
                     }
                     println!("[TEXTURE] Data uploaded");
                 } else {
@@ -96,10 +109,8 @@ impl Texture {
     pub fn create_render_target(width: u32, height: u32, format: DXGI_FORMAT) -> Result<Self> {
         println!("[TEXTURE] Creating render target: {}x{}, format={:?}", width, height, format);
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
 
         let heap_properties = D3D12_HEAP_PROPERTIES {
             Type: D3D12_HEAP_TYPE_DEFAULT,
@@ -155,10 +166,8 @@ impl Texture {
     pub fn create_depth_stencil(width: u32, height: u32) -> Result<Self> {
         println!("[TEXTURE] Creating depth stencil: {}x{}", width, height);
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
 
         let heap_properties = D3D12_HEAP_PROPERTIES {
             Type: D3D12_HEAP_TYPE_DEFAULT,
