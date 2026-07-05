@@ -21,10 +21,8 @@ impl RenderTexture {
     pub fn create_depth_stencil(width: u32, height: u32) -> Result<Self> {
         println!("[RENDERER] Creating depth stencil: {}x{}", width, height);
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
 
         let heap_properties = D3D12_HEAP_PROPERTIES {
             Type: D3D12_HEAP_TYPE_DEFAULT,
@@ -98,25 +96,17 @@ impl Renderer {
         println!("[RENDERER] ========== CREATING RENDERER ==========");
         println!("[RENDERER] Width: {}, Height: {}, Buffer count: {}", width, height, buffer_count);
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()` и
+        // `state.swap_chain.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
         println!("[RENDERER] Device obtained");
 
-        let swap_chain = {
-            let state = STATE.lock().unwrap();
-            state.swap_chain.as_ref().unwrap().clone()
-        };
+        let swap_chain = crate::get_swap_chain()?;
         println!("[RENDERER] Swap chain obtained");
 
-        let rtv_size = {
+        let (rtv_size, dsv_size) = {
             let state = STATE.lock().unwrap();
-            state.rtv_descriptor_size
-        };
-        let dsv_size = {
-            let state = STATE.lock().unwrap();
-            state.dsv_descriptor_size
+            (state.rtv_descriptor_size, state.dsv_descriptor_size)
         };
         println!("[RENDERER] RTV size: {}, DSV size: {}", rtv_size, dsv_size);
 

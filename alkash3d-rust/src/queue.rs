@@ -9,8 +9,9 @@ pub struct CommandQueue;
 impl CommandQueue {
     pub fn create() -> Result<(), windows::core::Error> {
         println!("[QUEUE] Creating command queue...");
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap()`.
+        let device = crate::get_device()?;
         let mut state = STATE.lock().unwrap();
-        let device = state.device.as_ref().unwrap();
 
         let desc = D3D12_COMMAND_QUEUE_DESC {
             Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
