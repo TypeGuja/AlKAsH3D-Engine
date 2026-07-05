@@ -7,8 +7,8 @@ pub struct DescriptorHeap;
 impl DescriptorHeap {
     pub fn create_rtv_heap(count: u32) -> Result<ID3D12DescriptorHeap, windows::core::Error> {
         println!("[HEAP] Creating RTV heap with {} descriptors", count);
-        let state = STATE.lock().unwrap();
-        let device = state.device.as_ref().unwrap();
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap()`.
+        let device = crate::get_device()?;
 
         let desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
@@ -26,8 +26,8 @@ impl DescriptorHeap {
 
     pub fn create_dsv_heap(count: u32) -> Result<ID3D12DescriptorHeap, windows::core::Error> {
         println!("[HEAP] Creating DSV heap with {} descriptors", count);
-        let state = STATE.lock().unwrap();
-        let device = state.device.as_ref().unwrap();
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap()`.
+        let device = crate::get_device()?;
 
         let desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
@@ -45,8 +45,8 @@ impl DescriptorHeap {
 
     pub fn create_cbv_srv_uav_heap(count: u32) -> Result<ID3D12DescriptorHeap, windows::core::Error> {
         println!("[HEAP] Creating CBV/SRV/UAV heap with {} descriptors", count);
-        let state = STATE.lock().unwrap();
-        let device = state.device.as_ref().unwrap();
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap()`.
+        let device = crate::get_device()?;
 
         let desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,

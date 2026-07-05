@@ -12,6 +12,7 @@ mod render;
 mod utils;
 mod shader;
 mod pso;
+mod texture;
 mod altex_format;
 mod alfar_format;
 mod alcar_format;
@@ -32,6 +33,11 @@ pub mod math;
 pub mod camera;
 mod constant_buffer;
 
+/// ECS / сцена — см. подробное описание в scene.rs. Объявлен как
+/// `pub mod`, чтобы можно было писать как `alkash3d_rs::scene::EntityId`
+/// (явно), так и использовать реэкспорт `alkash3d_rs::EntityId` ниже.
+pub mod scene;
+
 ///  in pub
 pub use device::*;
 pub use queue::*;
@@ -44,6 +50,7 @@ pub use utils::*;
 pub use plugin::*;
 pub use shader::*;
 pub use pso::*;
+pub use texture::*;
 pub use scheduler::*;
 pub use altex_format::*;
 pub use alfar_format::*;
@@ -60,6 +67,7 @@ pub use aluv_format::*;
 pub use math::*;
 pub use camera::*;
 pub use constant_buffer::*;
+pub use scene::*;
 
 use std::sync::Mutex;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -116,3 +124,84 @@ impl GlobalState {
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// =====================================================================
+// ПАНИКО-БЕЗОПАСНЫЕ ХЕЛПЕРЫ ДОСТУПА К GLOBALSTATE
+//
+// ИСПРАВЛЕНО (производственная надёжность): раньше по всему движку было
+// разбросано `state.device.as_ref().unwrap()` / `.unwrap().clone()` —
+// если функция вызывалась до инициализации устройства (или после его
+// потери, например TDR/DXGI_ERROR_DEVICE_REMOVED), это была МГНОВЕННАЯ
+// паника и падение всего процесса, без единого шанса на graceful
+// восстановление. Теперь такие обращения возвращают обычный
+// `windows::core::Result<T>` — вызывающий код (который и так почти везде
+// уже возвращает `Result` и распространяет ошибку через `?`) просто
+// получает явную ошибку вместо паники. Сигнатуры функций-потребителей не
+// меняются (они и раньше возвращали Result), так что это чисто аддитивное
+// исправление, ничего не ломающее.
+// =====================================================================
+
+/// Текущий D3D12 device, либо явная ошибка вместо паники, если устройство
+/// ещё не создано (или уже сброшено).
+pub fn get_device() -> windows::core::Result<ID3D12Device> {
+    let state = STATE.lock().unwrap();
+    match &state.device {
+        Some(d) => Ok(d.clone()),
+        None => {
+            eprintln!("[STATE] ERROR: get_device() called before device was initialized (or after it was released)");
+            Err(Error::from_hresult(HRESULT(1)))
+        }
+    }
+}
+
+/// Текущая command queue, либо явная ошибка вместо паники.
+pub fn get_command_queue() -> windows::core::Result<ID3D12CommandQueue> {
+    let state = STATE.lock().unwrap();
+    match &state.command_queue {
+        Some(q) => Ok(q.clone()),
+        None => {
+            eprintln!("[STATE] ERROR: get_command_queue() called before command queue was initialized");
+            Err(Error::from_hresult(HRESULT(1)))
+        }
+    }
+}
+
+/// Текущий swap chain, либо явная ошибка вместо паники.
+pub fn get_swap_chain() -> windows::core::Result<IDXGISwapChain3> {
+    let state = STATE.lock().unwrap();
+    match &state.swap_chain {
+        Some(s) => Ok(s.clone()),
+        None => {
+            eprintln!("[STATE] ERROR: get_swap_chain() called before swap chain was initialized");
+            Err(Error::from_hresult(HRESULT(1)))
+        }
+    }
+}
+
+/// Текущий fence, либо явная ошибка вместо паники.
+pub fn get_fence() -> windows::core::Result<ID3D12Fence> {
+    let state = STATE.lock().unwrap();
+    match &state.fence {
+        Some(f) => Ok(f.clone()),
+        None => {
+            eprintln!("[STATE] ERROR: get_fence() called before fence was created");
+            Err(Error::from_hresult(HRESULT(1)))
+        }
+    }
+}
+
+/// Проверяет, не потеряно ли устройство (TDR, обновление драйвера, GPU
+/// hang и т.п.), и если да — возвращает человекочитаемую причину.
+/// Полезно вызывать сразу после неудачного `Present()`/
+/// `ExecuteCommandLists()`, чтобы не просто молча всё сломать, а понимать,
+/// что именно произошло, вместо тихого `let _ = ...`, которое раньше было
+/// в `render_frame()`.
+pub fn device_removed_reason() -> Option<String> {
+    let state = STATE.lock().unwrap();
+    let device = state.device.as_ref()?;
+    let reason = unsafe { device.GetDeviceRemovedReason() };
+    match reason {
+        Ok(()) => None, // устройство в порядке
+        Err(e) => Some(format!("{:?}", e)),
+    }
+}
