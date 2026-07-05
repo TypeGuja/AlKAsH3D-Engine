@@ -282,6 +282,14 @@ pub struct AlkashEngine {
     // использовался". Используется, чтобы не блокировать CPU сразу после
     // каждого Present (см. комментарий в render_frame).
     frame_fence_values: Vec<u64>,
+
+    /// ДОБАВЛЕНО: ECS-ядро сцены (см. scene.rs). Работает ПАРАЛЛЕЛЬНО со
+    /// старым `mesh_instances` — ничего не меняет в поведении существующих
+    /// main.rs/main1.rs/main2.rs, которые продолжают использовать
+    /// `mesh_instances` напрямую. `render_frame()` рендерит содержимое
+    /// `scene` ДОПОЛНИТЕЛЬНО к `mesh_instances`, если в сцене есть живые
+    /// сущности.
+    pub scene: crate::scene::Scene,
 }
 
 impl AlkashEngine {
@@ -307,7 +315,18 @@ impl AlkashEngine {
             clear_color: [0.05, 0.05, 0.1, 1.0],
             shutdown_in_progress: false,
             frame_fence_values: vec![0, 0],
+            scene: crate::scene::Scene::new(),
         }
+    }
+
+    /// Удобный конструктор: создаёт сущность в ECS-сцене и сразу вешает на
+    /// неё `MeshRenderer`, ссылающийся на уже загруженный меш (индекс из
+    /// `add_cube`/`add_quad`/`add_mesh`/... — то же самое хранилище, что
+    /// используется старым `MeshInstance`-путём).
+    pub fn spawn_mesh_entity(&mut self, mesh_index: usize) -> crate::scene::EntityId {
+        let id = self.scene.spawn();
+        self.scene.add_mesh_renderer(id, mesh_index);
+        id
     }
 
     pub fn is_running(&self) -> bool {
@@ -698,10 +717,8 @@ impl AlkashEngine {
             Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
         };
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
 
         let mut signature_serialized = None;
         let mut error_blob = None;
@@ -784,7 +801,13 @@ impl AlkashEngine {
     }
 
     pub fn render_frame(&mut self) -> Result<bool> {
-        let renderer = self.renderer.as_ref().unwrap();
+        // ИСПРАВЛЕНО: было `self.renderer.as_ref().unwrap()` — паниковало,
+        // если render_frame() вызван до init() либо после потери
+        // устройства (renderer сброшен в None). Теперь явная ошибка.
+        let renderer = self.renderer.as_ref().ok_or_else(|| {
+            eprintln!("[ENGINE] ERROR: render_frame() called but renderer is not initialized");
+            Error::from_hresult(HRESULT(1))
+        })?;
 
         let frame_index = {
             let state = STATE.lock().unwrap();
@@ -800,10 +823,7 @@ impl AlkashEngine {
         // действительно нужно тронуть, а не сразу после отправки в очередь.
         if let Some(&target) = self.frame_fence_values.get(frame_index) {
             if target > 0 {
-                let fence = {
-                    let state = STATE.lock().unwrap();
-                    state.fence.as_ref().unwrap().clone()
-                };
+                let fence = crate::get_fence()?;
                 unsafe {
                     while fence.GetCompletedValue() < target {
                         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -816,13 +836,16 @@ impl AlkashEngine {
             .ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
 
         unsafe {
-            allocator.Reset();
+            // ИСПРАВЛЕНО: раньше результат Reset() отбрасывался
+            // (`allocator.Reset();` без `?`) — если аллокатор был всё ещё
+            // "в полёте" на GPU (ошибка где-то в логике синхронизации),
+            // Reset() тихо проваливался и рендер продолжал бы работать в
+            // испорченном состоянии. Теперь ошибка сразу распространяется.
+            allocator.Reset()?;
         }
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
 
         let cmd_list: ID3D12GraphicsCommandList = unsafe {
             device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
@@ -891,7 +914,14 @@ impl AlkashEngine {
                     ];
 
                     if let Some(cb) = &self.constant_buffer {
-                        let _ = self.transform_constants.update(cb);
+                        // ИСПРАВЛЕНО: раньше ошибка обновления константного
+                        // буфера тихо проглатывалась (`let _ = ...`). Сама
+                        // отрисовка кадра из-за одной неудачной отрисовки
+                        // объекта останавливаться не должна, но мы хотя бы
+                        // логируем проблему, а не теряем её молча.
+                        if let Err(e) = self.transform_constants.update(cb) {
+                            eprintln!("[ENGINE] WARNING: failed to update constant buffer: {:?}", e);
+                        }
                     }
 
                     let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
@@ -925,7 +955,67 @@ impl AlkashEngine {
                     self.transform_constants.proj = identity.to_cols_array_2d();
 
                     if let Some(cb) = &self.constant_buffer {
-                        let _ = self.transform_constants.update(cb);
+                        if let Err(e) = self.transform_constants.update(cb) {
+                            eprintln!("[ENGINE] WARNING: failed to update constant buffer: {:?}", e);
+                        }
+                    }
+
+                    let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                        BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                        SizeInBytes: mesh.vertex_buffer.size as u32,
+                        StrideInBytes: Vertex::STRIDE,
+                    };
+                    cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+                    cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                    if let Some(index_buffer) = &mesh.index_buffer {
+                        let index_view = D3D12_INDEX_BUFFER_VIEW {
+                            BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                            SizeInBytes: index_buffer.size as u32,
+                            Format: DXGI_FORMAT_R32_UINT,
+                        };
+                        cmd_list.IASetIndexBuffer(Some(&index_view));
+                        cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+                    } else {
+                        cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                    }
+                }
+            }
+
+            // ДОБАВЛЕНО: рендер сущностей из ECS-сцены (scene.rs).
+            // Это ДОПОЛНЯЕТ, а не заменяет два блока выше — старые
+            // main.rs/main1.rs/main2.rs, которые используют только
+            // `mesh_instances`, продолжают работать без единого изменения
+            // в поведении. Если `self.scene` пуста (никто не вызывал
+            // `spawn_mesh_entity`/`scene.spawn()`), этот блок — просто
+            // no-op.
+            if !self.scene.is_empty() {
+                let view = self.camera.view_matrix();
+                let proj = self.camera.projection_matrix();
+
+                for (mesh_index, world) in self.scene.collect_renderables() {
+                    if mesh_index >= self.meshes.len() {
+                        continue;
+                    }
+
+                    let mesh = &self.meshes[mesh_index];
+                    let model_view_proj = proj * view * world;
+
+                    self.transform_constants.model_view_proj = model_view_proj.to_cols_array_2d();
+                    self.transform_constants.model = world.to_cols_array_2d();
+                    self.transform_constants.view = view.to_cols_array_2d();
+                    self.transform_constants.proj = proj.to_cols_array_2d();
+                    self.transform_constants.camera_pos = [
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z,
+                        1.0,
+                    ];
+
+                    if let Some(cb) = &self.constant_buffer {
+                        if let Err(e) = self.transform_constants.update(cb) {
+                            eprintln!("[ENGINE] WARNING: failed to update constant buffer (scene entity): {:?}", e);
+                        }
                     }
 
                     let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
@@ -953,22 +1043,35 @@ impl AlkashEngine {
             cmd_list.Close()?;
         }
 
-        let queue = {
-            let state = STATE.lock().unwrap();
-            state.command_queue.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.command_queue.as_ref().unwrap().clone()`.
+        let queue = crate::get_command_queue()?;
 
         let cmd_lists: &[Option<ID3D12CommandList>] = &[Some(cmd_list.into())];
         unsafe {
             queue.ExecuteCommandLists(cmd_lists);
         }
 
-        let swap_chain = {
-            let state = STATE.lock().unwrap();
-            state.swap_chain.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.swap_chain.as_ref().unwrap().clone()`.
+        let swap_chain = crate::get_swap_chain()?;
+
+        // ИСПРАВЛЕНО (главная правка для продакшн-надёжности): раньше
+        // ошибка Present() тихо проглатывалась (`let _ = swap_chain.Present(...)`),
+        // из-за чего движок мог продолжать рендерить кадр за кадром в уже
+        // потерянное устройство (TDR, DXGI_ERROR_DEVICE_REMOVED и т.п.),
+        // ничего об этом не зная. Теперь ошибка проверяется явно: если
+        // устройство реально потеряно, мы это логируем с точной причиной
+        // через `device_removed_reason()` и возвращаем Err — вызывающий
+        // код (main.rs) уже и так корректно останавливает цикл при Err из
+        // render_frame().
         unsafe {
-            let _ = swap_chain.Present(1, DXGI_PRESENT(0));
+            let hr = swap_chain.Present(1, DXGI_PRESENT(0));
+            if hr.is_err() {
+                eprintln!("[ENGINE] Present failed: {:?}", hr);
+                if let Some(reason) = crate::device_removed_reason() {
+                    eprintln!("[ENGINE] Device removed, reason: {}", reason);
+                }
+                return Err(Error::from_hresult(hr));
+            }
         }
 
         // ИСПРАВЛЕНО: раньше сразу здесь стоял busy-wait на fence.GetCompletedValue(),
@@ -979,10 +1082,7 @@ impl AlkashEngine {
         // ожидание произойдёт только тогда, когда этот же frame_index
         // понадобится снова (см. начало функции). Это позволяет CPU и
         // GPU работать конвейерно, как и предполагает двойная буферизация.
-        let fence = {
-            let state = STATE.lock().unwrap();
-            state.fence.as_ref().unwrap().clone()
-        };
+        let fence = crate::get_fence()?;
         let fence_value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
         unsafe {
             queue.Signal(&fence, fence_value)?;
@@ -1182,6 +1282,25 @@ impl AlkashEngine {
 
 impl Drop for AlkashEngine {
     fn drop(&mut self) {
+        // ИСПРАВЛЕНО (главная причина падения драйвера при закрытии):
+        // раньше здесь стояла проверка `if self.running`. Но `self.running`
+        // выставляется в `false` уже в обработчике WM_CLOSE/WM_DESTROY
+        // (см. wndproc) — то есть ЕЩЁ ДО того, как AlkashEngine реально
+        // выходит из scope и срабатывает Drop. Из-за этого при закрытии
+        // окна крестиком (main.rs, где shutdown() не вызывается явно, а
+        // расчёт идёт именно на этот Drop) shutdown() НИКОГДА не
+        // вызывался: Rust просто дропал все поля AlkashEngine в порядке
+        // объявления (renderer → meshes → root_signature → ...) без
+        // единого ожидания GPU. Если GPU в этот момент ещё не закончил
+        // читать/писать в какой-то из этих ресурсов — это гарантированный
+        // "ресурс уничтожен, пока GPU его использует", что и приводит к
+        // зависанию GPU / TDR (сброс видеодрайвера, лаги на всех
+        // мониторах, кратковременное пропадание звука).
+        //
+        // shutdown() безопасно вызывать повторно (каждый шаг там защищён
+        // через `if let Some(...)` / `.clear()`), поэтому теперь Drop
+        // всегда вызывает shutdown() — если он уже был вызван явно
+        // (как в main1.rs/main2.rs), повторный вызов будет просто no-op.
         self.shutdown();
     }
 }

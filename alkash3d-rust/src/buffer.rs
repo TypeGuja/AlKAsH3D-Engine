@@ -15,10 +15,10 @@ impl Buffer {
     pub fn create_vertex_buffer(data: &[u8], stride: u32) -> Result<Self> {
         println!("[BUFFER] Creating vertex buffer, size: {} bytes, stride: {}", data.len(), stride);
 
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()` —
+        // паниковало, если вызвано до инициализации устройства. Теперь
+        // явная ошибка через `?`.
+        let device = crate::get_device()?;
 
         let size = data.len() as u64;
 
@@ -95,10 +95,9 @@ impl Buffer {
 
     pub fn create_constant_buffer(size: u64) -> Result<Self> {
         println!("[BUFFER] Creating constant buffer, size: {} bytes", size);
-        let device = {
-            let state = STATE.lock().unwrap();
-            state.device.as_ref().unwrap().clone()
-        };
+
+        // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
+        let device = crate::get_device()?;
 
         let aligned_size = (size + 255) & !255;
 
@@ -152,9 +151,15 @@ impl Buffer {
     pub fn update_constant_buffer(&self, data: &[u8]) -> Result<()> {
         unsafe {
             let mut mapped = std::ptr::null_mut();
-            let _ = self.resource.Map(0, None, Some(&mut mapped));
+            // ИСПРАВЛЕНО: раньше ошибка Map() тут молча проглатывалась
+            // (`let _ = self.resource.Map(...)`) — если маппинг не удался,
+            // мы бы просто ничего не скопировали и не узнали об этом.
+            // Теперь ошибка распространяется наружу через `?`.
+            self.resource.Map(0, None, Some(&mut mapped))?;
             if !mapped.is_null() {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len().min(self.size as usize));
+            } else {
+                eprintln!("[BUFFER] WARNING: update_constant_buffer: mapped pointer is null, data NOT copied");
             }
             self.resource.Unmap(0, None);
         }
