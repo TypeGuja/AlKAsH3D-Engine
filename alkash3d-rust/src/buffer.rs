@@ -148,6 +148,18 @@ impl Buffer {
         }
     }
 
+    /// Создаёт константный буфер, вмещающий несколько независимых "слотов"
+    /// одинакового размера — по одному слоту на каждый объект, который
+    /// нужно отрисовать в кадре со своей собственной трансформацией. См.
+    /// подробное объяснение, зачем это нужно, в `TransformConstants::write_at`.
+    pub fn create_constant_buffer_array(slot_aligned_size: u64, slot_count: usize) -> Result<Self> {
+        println!(
+            "[BUFFER] Creating constant buffer ARRAY: {} slots x {} bytes = {} bytes total",
+            slot_count, slot_aligned_size, slot_aligned_size * slot_count as u64
+        );
+        Self::create_constant_buffer(slot_aligned_size * slot_count as u64)
+    }
+
     pub fn update_constant_buffer(&self, data: &[u8]) -> Result<()> {
         unsafe {
             let mut mapped = std::ptr::null_mut();
@@ -160,6 +172,32 @@ impl Buffer {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len().min(self.size as usize));
             } else {
                 eprintln!("[BUFFER] WARNING: update_constant_buffer: mapped pointer is null, data NOT copied");
+            }
+            self.resource.Unmap(0, None);
+        }
+        Ok(())
+    }
+
+    /// То же самое, что `update_constant_buffer`, но пишет данные по
+    /// смещению `offset` внутри буфера, а не в его начало — нужно для
+    /// работы со "слотовым" буфером из `create_constant_buffer_array`.
+    pub fn update_constant_buffer_at(&self, offset: u64, data: &[u8]) -> Result<()> {
+        unsafe {
+            let mut mapped = std::ptr::null_mut();
+            self.resource.Map(0, None, Some(&mut mapped))?;
+            if !mapped.is_null() {
+                let max_len = self.size.saturating_sub(offset) as usize;
+                let len = data.len().min(max_len);
+                if len < data.len() {
+                    eprintln!(
+                        "[BUFFER] WARNING: update_constant_buffer_at: offset {} + data {} bytes overflows buffer of size {}, truncating",
+                        offset, data.len(), self.size
+                    );
+                }
+                let dst = (mapped as *mut u8).add(offset as usize);
+                std::ptr::copy_nonoverlapping(data.as_ptr(), dst, len);
+            } else {
+                eprintln!("[BUFFER] WARNING: update_constant_buffer_at: mapped pointer is null, data NOT copied");
             }
             self.resource.Unmap(0, None);
         }
