@@ -12,7 +12,6 @@ mod render;
 mod utils;
 mod shader;
 mod pso;
-mod texture;
 mod altex_format;
 mod alfar_format;
 mod alcar_format;
@@ -38,6 +37,9 @@ mod constant_buffer;
 /// (явно), так и использовать реэкспорт `alkash3d_rs::EntityId` ниже.
 pub mod scene;
 
+/// Система ввода — см. input.rs.
+pub mod input;
+
 ///  in pub
 pub use device::*;
 pub use queue::*;
@@ -50,7 +52,6 @@ pub use utils::*;
 pub use plugin::*;
 pub use shader::*;
 pub use pso::*;
-pub use texture::*;
 pub use scheduler::*;
 pub use altex_format::*;
 pub use alfar_format::*;
@@ -68,6 +69,7 @@ pub use math::*;
 pub use camera::*;
 pub use constant_buffer::*;
 pub use scene::*;
+pub use input::*;
 
 use std::sync::Mutex;
 use windows::Win32::Graphics::Direct3D12::*;
