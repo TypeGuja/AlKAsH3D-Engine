@@ -44,6 +44,50 @@ impl TransformConstants {
         Buffer::create_constant_buffer(size)
     }
 
+    /// Размер ОДНОГО слота в "массиве" константного буфера, выровненный
+    /// на 256 байт — таково требование D3D12 к CBV (`D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT`).
+    pub fn aligned_size() -> u64 {
+        let raw = std::mem::size_of::<Self>() as u64;
+        (raw + 255) & !255
+    }
+
+    /// Записывает данные ИМЕННО в слот `slot` внутри буфера, который
+    /// должен вмещать как минимум `(slot + 1) * aligned_size()` байт (см.
+    /// `Buffer::create_constant_buffer_array` и
+    /// `AlkashEngine::ensure_constant_buffer_capacity`).
+    ///
+    /// ВАЖНО, почему это вообще нужно (а не просто писать в один и тот же
+    /// адрес перед каждым Draw, как было раньше): GPU видит содержимое
+    /// константного буфера НА МОМЕНТ, КОГДА РЕАЛЬНО ВЫПОЛНЯЕТ Draw — а не
+    /// на момент, когда CPU туда что-то записал во время построения
+    /// command list'а. CPU успевает выполнить ВСЕ свои записи (Map/Unmap)
+    /// для целого кадра ещё ДО того, как ExecuteCommandLists вообще
+    /// отправляет что-либо на GPU. Значит, если каждый объект кадра пишет
+    /// свою трансформацию в ОДИН и тот же адрес, к моменту, когда GPU
+    /// реально начнёт выполнять command list, в буфере будут лежать
+    /// данные только ПОСЛЕДНЕГО записанного объекта — и КАЖДЫЙ Draw в
+    /// кадре отрисуется с одной и той же (последней) трансформацией. Со
+    /// стороны это выглядит так, будто все объекты "слиплись" в один и
+    /// двигаются/вращаются синхронно — именно это и происходило с полом и
+    /// кубом. Раздельные слоты решают проблему: у каждого Draw — свой
+    /// адрес константного буфера с ЕГО собственными данными.
+    pub fn write_at(&self, buffer: &Buffer, slot: usize) -> Result<()> {
+        let offset = slot as u64 * Self::aligned_size();
+        let data = unsafe {
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
+            )
+        };
+        buffer.update_constant_buffer_at(offset, data)
+    }
+
+    /// GPU-адрес для чтения слота `slot` — передаётся напрямую в
+    /// `SetGraphicsRootConstantBufferView`.
+    pub fn gpu_address_for_slot(buffer: &Buffer, slot: usize) -> u64 {
+        unsafe { buffer.resource.GetGPUVirtualAddress() + slot as u64 * Self::aligned_size() }
+    }
+
     pub fn update(&self, buffer: &Buffer) -> Result<()> {
         let data = unsafe {
             std::slice::from_raw_parts(
