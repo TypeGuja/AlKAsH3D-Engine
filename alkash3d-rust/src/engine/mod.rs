@@ -21,6 +21,7 @@ use crate::camera::Camera;
 use crate::constant_buffer::TransformConstants;
 use crate::shader::ShaderBlob;
 use crate::pso::PipelineState;
+use crate::input::InputState;
 
 // ===================================================================
 // Общий монотонно возрастающий счётчик значений fence для всего движка.
@@ -257,6 +258,11 @@ pub struct AlkashEngine {
     pub camera: Camera,
     pub constant_buffer: Option<Buffer>,
     pub transform_constants: TransformConstants,
+    /// ДОБАВЛЕНО: сколько СЛОТОВ трансформаций (на один back buffer)
+    /// вмещает текущий `constant_buffer`. Буфер реально в 2 раза больше
+    /// (по одному набору слотов на каждый из двух back buffer'ов) — см.
+    /// `ensure_constant_buffer_capacity`.
+    constant_buffer_capacity: usize,
 
     // Планировщик
     pub scheduler: Arc<EngineScheduler>,
@@ -283,6 +289,12 @@ pub struct AlkashEngine {
     // каждого Present (см. комментарий в render_frame).
     frame_fence_values: Vec<u64>,
 
+    /// ДОБАВЛЕНО: см. input.rs. Заполняется движком из оконных сообщений
+    /// (wndproc), читается игровым кодом. Движок сам решений о том, что
+    /// делать с вводом (двигать камеру, закрывать окно и т.п.), НЕ
+    /// принимает — это отдано на откуп приложению (main.rs).
+    pub input: InputState,
+
     /// ДОБАВЛЕНО: ECS-ядро сцены (см. scene.rs). Работает ПАРАЛЛЕЛЬНО со
     /// старым `mesh_instances` — ничего не меняет в поведении существующих
     /// main.rs/main1.rs/main2.rs, которые продолжают использовать
@@ -306,6 +318,7 @@ impl AlkashEngine {
             camera: Camera::new(width, height),
             constant_buffer: None,
             transform_constants: TransformConstants::new(),
+            constant_buffer_capacity: 0,
             physics: None,
             lights: None,
             hwnd: None,
@@ -316,7 +329,17 @@ impl AlkashEngine {
             shutdown_in_progress: false,
             frame_fence_values: vec![0, 0],
             scene: crate::scene::Scene::new(),
+            input: InputState::new(),
         }
+    }
+
+    /// Останавливает игровой цикл (эквивалент нажатия ESC/закрытия окна),
+    /// но БЕЗ закрытия окна напрямую — реальное освобождение ресурсов и
+    /// закрытие окна происходит в `shutdown()`, как и при обычном
+    /// закрытии через крестик. Используй это вместо того, чтобы решать
+    /// "когда выходить" внутри самого движка — это дело приложения.
+    pub fn request_exit(&mut self) {
+        self.running = false;
     }
 
     /// Удобный конструктор: создаёт сущность в ECS-сцене и сразу вешает на
@@ -382,7 +405,13 @@ impl AlkashEngine {
         self.create_pipeline_state()?;
 
         // 6. Создаём константный буфер
-        self.constant_buffer = Some(TransformConstants::create_buffer()?);
+        // ИСПРАВЛЕНО: раньше создавался ОДИН слот на весь константный
+        // буфер, используемый для ВСЕХ объектов кадра подряд — из-за чего
+        // все объекты в итоге отрисовывались с трансформацией последнего
+        // записанного (см. подробности в TransformConstants::write_at и
+        // ensure_constant_buffer_capacity). Теперь буфер заранее вмещает
+        // много слотов и растёт по мере необходимости.
+        self.ensure_constant_buffer_capacity(128)?;
         println!("[ENGINE] ✓ Constant buffer created");
 
         // Показываем окно
@@ -484,26 +513,22 @@ impl AlkashEngine {
                     LRESULT(0)
                 }
                 WM_KEYDOWN => {
-                    if wparam.0 == 0x1B { // ESC
-                        println!("[ENGINE] ESC pressed - closing window");
-                        self.running = false;
-                        // Отправляем WM_CLOSE для корректного закрытия
-                        PostMessageA(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                    }
-                    // WASD управление камерой
-                    let speed = 0.1;
-                    if wparam.0 == 0x57 { // W
-                        self.camera.move_forward(speed);
-                    }
-                    if wparam.0 == 0x53 { // S
-                        self.camera.move_forward(-speed);
-                    }
-                    if wparam.0 == 0x41 { // A
-                        self.camera.move_right(-speed);
-                    }
-                    if wparam.0 == 0x44 { // D
-                        self.camera.move_right(speed);
-                    }
+                    // ИСПРАВЛЕНО: раньше здесь были зашиты и закрытие по
+                    // ESC, и WASD-движение камеры — НАПРЯМУЮ внутри
+                    // движка, независимо от того, что `main.rs` делал со
+                    // своим собственным опросом `GetAsyncKeyState`. Из-за
+                    // этого при удержании клавиши камера двигалась
+                    // ДВАЖДЫ за кадр (один раз тут на каждый WM_KEYDOWN,
+                    // включая Windows-овский auto-repeat, и ещё раз в
+                    // игровом цикле main.rs). Теперь движок только
+                    // записывает состояние клавиши в `InputState` — что́ с
+                    // этим делать (двигать камеру, закрывать окно и т.п.)
+                    // решает уже приложение через `engine.input`.
+                    self.input.on_key_down(wparam.0 as u32);
+                    LRESULT(0)
+                }
+                WM_KEYUP => {
+                    self.input.on_key_up(wparam.0 as u32);
                     LRESULT(0)
                 }
                 WM_SIZE => {
@@ -614,6 +639,12 @@ impl AlkashEngine {
     }
 
     pub fn process_messages(&mut self) {
+        // ДОБАВЛЕНО: очищаем "мгновенные" флаги ввода (just_pressed/
+        // just_released) с ПРЕДЫДУЩЕГО кадра перед тем, как разбирать
+        // новые оконные сообщения этого кадра. `is_down` не трогается —
+        // только разовые флаги.
+        self.input.end_frame();
+
         unsafe {
             let mut msg = MSG::default();
             while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -773,6 +804,37 @@ impl AlkashEngine {
         Ok(())
     }
 
+    /// Гарантирует, что константный буфер вмещает как минимум
+    /// `needed_per_frame` слотов трансформаций НА КАЖДЫЙ из двух back
+    /// buffer'ов (итого выделяется `needed_per_frame * 2` слотов).
+    /// Пересоздаёт буфер, если текущей ёмкости не хватает (например,
+    /// сцена выросла — добавили ещё кубов в сетку пола).
+    ///
+    /// Буфер удваивается на оба back buffer'а по той же причине, по
+    /// которой у нас уже два `command allocator`'а: пока GPU дорисовывает
+    /// кадр N (frame_index k), CPU уже готовит кадр N+1 (frame_index
+    /// 1-k). Если бы оба кадра писали в одни и те же слоты одного и того
+    /// же буфера — это была бы гонка данных между CPU, пишущим новый
+    /// кадр, и GPU, всё ещё читающим предыдущий. Слот для конкретного
+    /// кадра выбирается как `frame_index * capacity + i` — см.
+    /// `render_frame`.
+    fn ensure_constant_buffer_capacity(&mut self, needed_per_frame: usize) -> Result<()> {
+        if self.constant_buffer.is_some() && needed_per_frame <= self.constant_buffer_capacity {
+            return Ok(());
+        }
+
+        let new_capacity = needed_per_frame.max(64).next_power_of_two();
+        let total_slots = new_capacity * 2; // x2 — по набору слотов на каждый back buffer
+        let buffer = Buffer::create_constant_buffer_array(TransformConstants::aligned_size(), total_slots)?;
+        println!(
+            "[ENGINE] Constant buffer (re)allocated: {} slots/кадр x2 = {} слотов",
+            new_capacity, total_slots
+        );
+        self.constant_buffer = Some(buffer);
+        self.constant_buffer_capacity = new_capacity;
+        Ok(())
+    }
+
     pub fn add_mesh(&mut self, mesh: Mesh) -> usize {
         self.meshes.push(mesh);
         println!("[ENGINE] Mesh added, total meshes: {}", self.meshes.len());
@@ -880,163 +942,140 @@ impl AlkashEngine {
             cmd_list.SetPipelineState(Some(self.pipeline_state.as_ref().unwrap()));
             cmd_list.SetGraphicsRootSignature(Some(self.root_signature.as_ref().unwrap()));
 
-            if let Some(cb) = &self.constant_buffer {
-                let gpu_handle = cb.resource.GetGPUVirtualAddress();
-                cmd_list.SetGraphicsRootConstantBufferView(0, gpu_handle);
+            // ИСПРАВЛЕНО (главная причина "платформа вращается вместе с
+            // кубом"): раньше константный буфер был ОДИН на весь кадр, и
+            // ROOT CBV указывал на один и тот же адрес для ВСЕХ объектов —
+            // пол, солнце, планету, луну. GPU видит содержимое буфера НА
+            // МОМЕНТ РЕАЛЬНОГО ВЫПОЛНЕНИЯ Draw, а не на момент записи с
+            // CPU. Поскольку CPU успевает записать данные ВСЕХ объектов
+            // кадра ещё до ExecuteCommandLists, к моменту, когда GPU
+            // реально начинал выполнять command list, в буфере уже лежали
+            // данные ТОЛЬКО последнего записанного объекта — и КАЖДЫЙ Draw
+            // рисовался с этой же (последней) трансформацией. Отсюда и
+            // эффект "всё вращается вместе, как один объект".
+            //
+            // Теперь: сначала собираем ВСЕ объекты кадра (старый
+            // mesh_instances/2D-путь + ECS-сцена) в единый список задач,
+            // выделяем под них достаточно слотов константного буфера, и
+            // КАЖДЫЙ Draw получает СВОЙ собственный адрес (см.
+            // TransformConstants::write_at).
+            enum DrawTransform {
+                /// Обычный 3D-объект: своя model-матрица, view/proj берутся
+                /// из камеры один раз на весь кадр.
+                Camera(Mat4),
+                /// Старый 2D-режим (mesh_instances пуст) — все 4 матрицы
+                /// константного буфера были identity, без камеры. Сохраняем
+                /// это поведение один в один, чтобы не сломать main1.rs.
+                RawIdentity,
+            }
+            struct DrawJob {
+                mesh_index: usize,
+                transform: DrawTransform,
             }
 
-            // ========== 3D РЕНДЕР С ТРАНСФОРМАЦИЯМИ ==========
+            let mut jobs: Vec<DrawJob> = Vec::new();
+
             if !self.mesh_instances.is_empty() {
-                let view = self.camera.view_matrix();
-                let proj = self.camera.projection_matrix();
-
                 for instance in &self.mesh_instances {
-                    if instance.mesh_index >= self.meshes.len() {
-                        continue;
-                    }
-
-                    let mesh = &self.meshes[instance.mesh_index];
-                    let model = instance.transform_matrix();
-
-                    // Правильный порядок для DirectX: proj * view * model
-                    let model_view_proj = proj * view * model;
-
-                    // Преобразуем матрицы в массивы для константного буфера
-                    self.transform_constants.model_view_proj = model_view_proj.to_cols_array_2d();
-                    self.transform_constants.model = model.to_cols_array_2d();
-                    self.transform_constants.view = view.to_cols_array_2d();
-                    self.transform_constants.proj = proj.to_cols_array_2d();
-                    self.transform_constants.camera_pos = [
-                        self.camera.position.x,
-                        self.camera.position.y,
-                        self.camera.position.z,
-                        1.0,
-                    ];
-
-                    if let Some(cb) = &self.constant_buffer {
-                        // ИСПРАВЛЕНО: раньше ошибка обновления константного
-                        // буфера тихо проглатывалась (`let _ = ...`). Сама
-                        // отрисовка кадра из-за одной неудачной отрисовки
-                        // объекта останавливаться не должна, но мы хотя бы
-                        // логируем проблему, а не теряем её молча.
-                        if let Err(e) = self.transform_constants.update(cb) {
-                            eprintln!("[ENGINE] WARNING: failed to update constant buffer: {:?}", e);
-                        }
-                    }
-
-                    let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
-                        BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
-                        SizeInBytes: mesh.vertex_buffer.size as u32,
-                        StrideInBytes: Vertex::STRIDE,
-                    };
-                    cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
-                    cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-                    if let Some(index_buffer) = &mesh.index_buffer {
-                        let index_view = D3D12_INDEX_BUFFER_VIEW {
-                            BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
-                            SizeInBytes: index_buffer.size as u32,
-                            Format: DXGI_FORMAT_R32_UINT,
-                        };
-                        cmd_list.IASetIndexBuffer(Some(&index_view));
-                        cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
-                    } else {
-                        cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                    if instance.mesh_index < self.meshes.len() {
+                        jobs.push(DrawJob {
+                            mesh_index: instance.mesh_index,
+                            transform: DrawTransform::Camera(instance.transform_matrix()),
+                        });
                     }
                 }
-            } else {
-                // 2D режим - без трансформаций
-                let identity = identity();
-
-                for mesh in &self.meshes {
-                    self.transform_constants.model_view_proj = identity.to_cols_array_2d();
-                    self.transform_constants.model = identity.to_cols_array_2d();
-                    self.transform_constants.view = identity.to_cols_array_2d();
-                    self.transform_constants.proj = identity.to_cols_array_2d();
-
-                    if let Some(cb) = &self.constant_buffer {
-                        if let Err(e) = self.transform_constants.update(cb) {
-                            eprintln!("[ENGINE] WARNING: failed to update constant buffer: {:?}", e);
-                        }
-                    }
-
-                    let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
-                        BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
-                        SizeInBytes: mesh.vertex_buffer.size as u32,
-                        StrideInBytes: Vertex::STRIDE,
-                    };
-                    cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
-                    cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-                    if let Some(index_buffer) = &mesh.index_buffer {
-                        let index_view = D3D12_INDEX_BUFFER_VIEW {
-                            BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
-                            SizeInBytes: index_buffer.size as u32,
-                            Format: DXGI_FORMAT_R32_UINT,
-                        };
-                        cmd_list.IASetIndexBuffer(Some(&index_view));
-                        cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
-                    } else {
-                        cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
-                    }
+            } else if self.scene.is_empty() {
+                // ИСПРАВЛЕНО (баг "куб посередине экрана"): раньше это
+                // условие было просто `else` — то есть срабатывало ВСЕГДА,
+                // когда mesh_instances пуст, даже если объекты размещены
+                // через ECS-сцену (scene.rs). В результате КАЖДЫЙ
+                // добавленный меш (включая тайлы пола и столбы) рисовался
+                // ЕЩЁ РАЗ отдельно, с model=view=proj=identity — то есть
+                // его вершины интерпретировались напрямую как clip-space
+                // координаты, без всякой проекции камеры. Именно это и
+                // выглядело как "куб посередине экрана". Теперь этот
+                // истинный 2D-fallback (совместимость с main1.rs, где
+                // меши не размещены НИКАК — ни через mesh_instances, ни
+                // через scene) срабатывает, только если сцена тоже пуста.
+                for i in 0..self.meshes.len() {
+                    jobs.push(DrawJob { mesh_index: i, transform: DrawTransform::RawIdentity });
                 }
             }
 
-            // ДОБАВЛЕНО: рендер сущностей из ECS-сцены (scene.rs).
-            // Это ДОПОЛНЯЕТ, а не заменяет два блока выше — старые
-            // main.rs/main1.rs/main2.rs, которые используют только
-            // `mesh_instances`, продолжают работать без единого изменения
-            // в поведении. Если `self.scene` пуста (никто не вызывал
-            // `spawn_mesh_entity`/`scene.spawn()`), этот блок — просто
-            // no-op.
-            if !self.scene.is_empty() {
-                let view = self.camera.view_matrix();
-                let proj = self.camera.projection_matrix();
+            for (mesh_index, world) in self.scene.collect_renderables() {
+                if mesh_index < self.meshes.len() {
+                    jobs.push(DrawJob { mesh_index, transform: DrawTransform::Camera(world) });
+                }
+            }
 
-                for (mesh_index, world) in self.scene.collect_renderables() {
-                    if mesh_index >= self.meshes.len() {
-                        continue;
+            self.ensure_constant_buffer_capacity(jobs.len())?;
+
+            let view = self.camera.view_matrix();
+            let proj = self.camera.projection_matrix();
+            let id_matrix = identity();
+
+            for (i, job) in jobs.iter().enumerate() {
+                let mesh = &self.meshes[job.mesh_index];
+
+                match &job.transform {
+                    DrawTransform::Camera(model) => {
+                        let model = *model;
+                        let model_view_proj = proj * view * model;
+                        self.transform_constants.model_view_proj = model_view_proj.to_cols_array_2d();
+                        self.transform_constants.model = model.to_cols_array_2d();
+                        self.transform_constants.view = view.to_cols_array_2d();
+                        self.transform_constants.proj = proj.to_cols_array_2d();
+                        self.transform_constants.camera_pos = [
+                            self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z,
+                            1.0,
+                        ];
                     }
-
-                    let mesh = &self.meshes[mesh_index];
-                    let model_view_proj = proj * view * world;
-
-                    self.transform_constants.model_view_proj = model_view_proj.to_cols_array_2d();
-                    self.transform_constants.model = world.to_cols_array_2d();
-                    self.transform_constants.view = view.to_cols_array_2d();
-                    self.transform_constants.proj = proj.to_cols_array_2d();
-                    self.transform_constants.camera_pos = [
-                        self.camera.position.x,
-                        self.camera.position.y,
-                        self.camera.position.z,
-                        1.0,
-                    ];
-
-                    if let Some(cb) = &self.constant_buffer {
-                        if let Err(e) = self.transform_constants.update(cb) {
-                            eprintln!("[ENGINE] WARNING: failed to update constant buffer (scene entity): {:?}", e);
-                        }
+                    DrawTransform::RawIdentity => {
+                        self.transform_constants.model_view_proj = id_matrix.to_cols_array_2d();
+                        self.transform_constants.model = id_matrix.to_cols_array_2d();
+                        self.transform_constants.view = id_matrix.to_cols_array_2d();
+                        self.transform_constants.proj = id_matrix.to_cols_array_2d();
                     }
+                }
 
-                    let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
-                        BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
-                        SizeInBytes: mesh.vertex_buffer.size as u32,
-                        StrideInBytes: Vertex::STRIDE,
+                // Свой слот константного буфера на КАЖДЫЙ Draw — вот что
+                // на самом деле чинит баг. Плюс сдвиг на
+                // `frame_index * capacity`, чтобы не было гонки между CPU,
+                // готовящим кадр N+1, и GPU, ещё дорисовывающим кадр N (по
+                // той же причине, по которой у нас уже два command
+                // allocator'а — см. ensure_constant_buffer_capacity).
+                let slot = frame_index * self.constant_buffer_capacity + i;
+                let Some(cb) = self.constant_buffer.as_ref() else {
+                    eprintln!("[ENGINE] WARNING: no constant buffer available, skipping draw");
+                    continue;
+                };
+                if let Err(e) = self.transform_constants.write_at(cb, slot) {
+                    eprintln!("[ENGINE] WARNING: failed to write constant buffer slot {}: {:?}", slot, e);
+                    continue;
+                }
+                let gpu_addr = TransformConstants::gpu_address_for_slot(cb, slot);
+                cmd_list.SetGraphicsRootConstantBufferView(0, gpu_addr);
+
+                let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                    SizeInBytes: mesh.vertex_buffer.size as u32,
+                    StrideInBytes: Vertex::STRIDE,
+                };
+                cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                if let Some(index_buffer) = &mesh.index_buffer {
+                    let index_view = D3D12_INDEX_BUFFER_VIEW {
+                        BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                        SizeInBytes: index_buffer.size as u32,
+                        Format: DXGI_FORMAT_R32_UINT,
                     };
-                    cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
-                    cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-                    if let Some(index_buffer) = &mesh.index_buffer {
-                        let index_view = D3D12_INDEX_BUFFER_VIEW {
-                            BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
-                            SizeInBytes: index_buffer.size as u32,
-                            Format: DXGI_FORMAT_R32_UINT,
-                        };
-                        cmd_list.IASetIndexBuffer(Some(&index_view));
-                        cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
-                    } else {
-                        cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
-                    }
+                    cmd_list.IASetIndexBuffer(Some(&index_view));
+                    cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+                } else {
+                    cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
                 }
             }
 
@@ -1231,6 +1270,7 @@ impl AlkashEngine {
         println!("[ENGINE] Releasing resources...");
 
         self.constant_buffer = None;
+        self.constant_buffer_capacity = 0;
         self.vs = None;
         self.ps = None;
         self.pipeline_state = None;
