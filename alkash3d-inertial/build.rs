@@ -1,85 +1,121 @@
 // inertial/build.rs
+//! Собирает Fortran-ядра (.f90) через gfortran и линкует их в inertial.dll.
+//!
+//! ТРЕБОВАНИЯ ДЛЯ СБОРКИ:
+//!  - Установленный gfortran (GCC Fortran) в PATH.
+//!  - На Windows: НУЖЕН MinGW-w64 тулчейн (например, через MSYS2 —
+//!    `pacman -S mingw-w64-x86_64-gcc-fortran`). Стандартный MSVC-тулчейн
+//!    Fortran не собирает — gfortran тянет свои libgcc/libgfortran/libgomp
+//!    рантаймы, которые понимает только связка GNU-компилятор + GNU-линкер.
+//!    Поэтому сам Rust-крейт "inertial" тоже нужно собирать под GNU-таргет:
+//!        rustup target add x86_64-pc-windows-gnu
+//!        cargo build --release --target x86_64-pc-windows-gnu
+//!    Основной движок (.exe на MSVC/windows-rs) при этом трогать не нужно —
+//!    plugin.dll грузится в рантайме через LoadLibrary/GetProcAddress
+//!    (см. PluginManager в движке), а не линкуется статически, так что
+//!    GNU-собранная DLL и MSVC-собранный .exe прекрасно взаимодействуют
+//!    через extern "C" (стандартный Win32 ABI одинаков для обоих
+//!    тулчейнов на уровне экспортируемых C-функций).
+//!  - На Linux/macOS gfortran из системного пакетного менеджера подходит
+//!    без всяких оговорок (apt install gfortran / brew install gcc).
+//!
+//! ЧТО ДЕЛАЕТ:
+//!  1. Компилирует каждый .f90 в .o с флагами -O3 -fopenmp -fPIC.
+//!     ПОРЯДОК ВАЖЕН: rigid_body.f90 объявляет модуль (rigid_body_mod),
+//!     который импортируют все остальные файлы (`use rigid_body_mod,
+//!     only: ...`) — он должен быть скомпилирован ПЕРВЫМ, иначе gfortran
+//!     не найдёт файл интерфейса модуля (.mod).
+//!  2. Собирает все .o в статическую библиотеку libinertial_kernels.a
+//!     через `ar`.
+//!  3. Говорит cargo слинковать эту библиотеку + рантаймы libgfortran/
+//!     libgomp (без них компоновщик не найдёт символы вроде
+//!     _gfortran_* / GOMP_*, которые генерирует gfortran для операций
+//!     ввода-вывода, интринсиков и параллельных циклов OpenMP).
+
+use std::env;
+use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/kernels/");
-    println!("cargo:rerun-if-changed=src/fortran/");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR не задан cargo'м"));
+    let kernels_dir = PathBuf::from("src/kernels");
 
-    // Проверяем наличие Fortran файлов
-    if !std::path::Path::new("src/kernels/rigid_body.f90").exists() {
-        println!("cargo:warning=⚠️ Fortran kernels not found, using pure Rust physics");
-        return;
-    }
-
-    // Ищем gfortran
-    let gfortran = match which::which("gfortran") {
-        Ok(path) => {
-            println!("cargo:warning=✅ Found gfortran at: {}", path.display());
-            path
-        }
-        Err(_) => {
-            println!("cargo:warning=⚠️ gfortran not found - building pure Rust physics");
-            return;
-        }
-    };
-
-    // Список Fortran файлов
-    let fortran_files = [
-        "src/kernels/rigid_body.f90",
-        "src/kernels/broad_phase.f90",
-        "src/kernels/narrow_phase.f90",
-        "src/kernels/solver.f90",
-        "src/kernels/kernels_optimized.f90",
+    // Порядок важен для модульных зависимостей Fortran — см. комментарий выше.
+    let sources = [
+        "rigid_body.f90",
+        "broad_phase.f90",
+        "narrow_phase.f90",
+        "solver.f90",
+        "kernels_optimized.f90",
+        "reference.f90",
     ];
 
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    let out_path = std::path::PathBuf::from(&out_dir);
-    let dll_path = out_path.join("inertial.dll");
+    let mut object_files = Vec::new();
 
-    // Собираем только существующие файлы
-    let mut existing_files = Vec::new();
-    for file in &fortran_files {
-        if std::path::Path::new(file).exists() {
-            existing_files.push(*file);
-        } else {
-            println!("cargo:warning=⚠️ Missing: {}", file);
+    for src in sources {
+        let src_path = kernels_dir.join(src);
+        println!("cargo:rerun-if-changed={}", src_path.display());
+
+        if !src_path.exists() {
+            panic!(
+                "Не найден исходник Fortran: {}. Ожидается, что все .f90 \
+                 лежат в {}/",
+                src_path.display(),
+                kernels_dir.display()
+            );
         }
+
+        let obj_path = out_dir.join(format!("{}.o", src.trim_end_matches(".f90")));
+
+        let status = Command::new("gfortran")
+            .arg("-c")
+            .arg("-O3")
+            .arg("-fopenmp")
+            .arg("-fPIC")
+            .arg("-J").arg(&out_dir) // куда класть сгенерированные .mod
+            .arg("-I").arg(&out_dir) // откуда читать .mod предыдущих файлов
+            .arg(&src_path)
+            .arg("-o").arg(&obj_path)
+            .status()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Не удалось запустить gfortran для {}: {}.\n\
+                     Убедитесь, что gfortran установлен и есть в PATH \
+                     (Linux/macOS: apt/brew install gfortran; \
+                     Windows: MSYS2 mingw-w64-x86_64-gcc-fortran).",
+                    src, e
+                )
+            });
+
+        if !status.success() {
+            panic!("gfortran не смог скомпилировать {} (см. вывод выше)", src);
+        }
+
+        object_files.push(obj_path);
     }
 
-    if existing_files.is_empty() {
-        println!("cargo:warning=⚠️ No Fortran files found");
-        return;
+    // Собираем все .o в одну статическую библиотеку.
+    let lib_path = out_dir.join("libinertial_kernels.a");
+    let mut ar_cmd = Command::new("ar");
+    ar_cmd.arg("crs").arg(&lib_path);
+    for obj in &object_files {
+        ar_cmd.arg(obj);
+    }
+    let status = ar_cmd.status().unwrap_or_else(|e| {
+        panic!(
+            "Не удалось запустить ar: {}. Убедитесь, что binutils установлены \
+             (обычно ставятся вместе с gcc/gfortran).",
+            e
+        )
+    });
+    if !status.success() {
+        panic!("ar не смог собрать libinertial_kernels.a из объектных файлов");
     }
 
-    // Компилируем в DLL
-    let status = std::process::Command::new(&gfortran)
-        .arg("-shared")
-        .arg("-o")
-        .arg(&dll_path)
-        .args(&existing_files)
-        .arg("-fopenmp")
-        .arg("-O3")
-        .arg("-march=native")
-        .arg("-ffast-math")
-        .arg("-static-libgcc")
-        .arg("-static-libgfortran")
-        .status();
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=inertial_kernels");
 
-    match status {
-        Ok(s) if s.success() => {
-            println!("cargo:warning=✅ Inertial DLL created at: {}", dll_path.display());
-
-            // Копируем в target/release
-            let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-            let target_dir = manifest_dir.join("target").join(std::env::var("PROFILE").unwrap());
-            let target_dll = target_dir.join("inertial.dll");
-            let _ = std::fs::copy(&dll_path, &target_dll);
-            println!("cargo:warning=✅ DLL copied to: {}", target_dll.display());
-        }
-        Ok(s) => {
-            println!("cargo:warning=❌ Failed to create DLL: exit code {}", s);
-        }
-        Err(e) => {
-            println!("cargo:warning=❌ Failed to create DLL: {}", e);
-        }
-    }
+    // Fortran-рантайм и OpenMP.
+    println!("cargo:rustc-link-lib=dylib=gfortran");
+    println!("cargo:rustc-link-lib=dylib=gomp");
 }
