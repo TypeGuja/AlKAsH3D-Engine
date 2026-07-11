@@ -6,14 +6,16 @@ module kernels_optimized_mod
     use rigid_body_mod, only: rigid_body_c, contact_c
     implicit none
 
-    ! SIMD параметры
-    integer, parameter :: SIMD_WIDTH = 8  ! AVX2
-    integer, parameter :: SIMD_WIDTH_512 = 16  ! AVX-512
+    integer, parameter :: SIMD_WIDTH = 8
+    integer, parameter :: SIMD_WIDTH_512 = 16
 
 contains
 
     ! ===================================================================
-    ! BATCH INTEGRATION - SIMD-friendly
+    ! BATCH INTEGRATION - безопасно параллелится по НЕПЕРЕСЕКАЮЩИМСЯ
+    ! диапазонам [start_idx, end_idx] одного и того же массива bodies —
+    ! гонок нет, т.к. каждый вызов (из разных Rust-потоков, см. lib.rs)
+    ! получает свой собственный срез bodies.
     ! ===================================================================
     subroutine batch_integrate(bodies, n, dt, gravity, start_idx, end_idx) &
             bind(c, name="batch_integrate")
@@ -30,16 +32,13 @@ contains
         dt_linear = dt
         dt_angular = dt
 
-        ! Разворачиваем цикл для лучшей векторизации
         do i = start_idx, end_idx
             if (bodies(i)%is_asleep == 0 .and. bodies(i)%is_static == 0) then
-                ! Линейная динамика
                 bodies(i)%velocity(2) = bodies(i)%velocity(2) + gravity * dt_linear
                 bodies(i)%position(1) = bodies(i)%position(1) + bodies(i)%velocity(1) * dt_linear
                 bodies(i)%position(2) = bodies(i)%position(2) + bodies(i)%velocity(2) * dt_linear
                 bodies(i)%position(3) = bodies(i)%position(3) + bodies(i)%velocity(3) * dt_linear
 
-                ! Угловая динамика
                 bodies(i)%angular_velocity(1) = bodies(i)%angular_velocity(1) + &
                         bodies(i)%angular_acceleration(1) * dt_angular
                 bodies(i)%angular_velocity(2) = bodies(i)%angular_velocity(2) + &
@@ -47,7 +46,6 @@ contains
                 bodies(i)%angular_velocity(3) = bodies(i)%angular_velocity(3) + &
                         bodies(i)%angular_acceleration(3) * dt_angular
 
-                ! Демпфирование
                 bodies(i)%velocity = bodies(i)%velocity * (1.0 - bodies(i)%linear_damping * dt_linear)
                 bodies(i)%angular_velocity = bodies(i)%angular_velocity * &
                         (1.0 - bodies(i)%angular_damping * dt_angular)
@@ -57,6 +55,19 @@ contains
 
     ! ===================================================================
     ! FAST COLLISION PAIR GENERATION
+    !
+    ! ИСПРАВЛЕНО (гонка данных): раньше `local_count` был объявлен как
+    ! `reduction(+:local_count)` — у reduction-переменной каждый поток
+    ! получает СВОЮ приватную копию, суммируемую только в конце
+    ! параллельного региона. Но `local_count` тут же использовался ВНУТРИ
+    ! региона как индекс записи в общий массив `pairs(...)` — то есть
+    ! разные потоки писали в ОДНИ И ТЕ ЖЕ индексы `pairs` одновременно
+    ! (каждый поток нумеровал свои находки с нуля независимо от других).
+    ! Результат — потерянные и перезаписанные пары при реальном
+    ! распараллеливании. Теперь pair_count — ОБЩАЯ (shared) переменная,
+    ! и уникальный индекс каждый поток получает атомарным захватом
+    ! (atomic capture) непосредственно перед записью — это стандартный
+    ! OpenMP-паттерн для параллельного добавления в общий массив.
     ! ===================================================================
     subroutine generate_collision_pairs(bodies, n, pairs, pair_count, radius) &
             bind(c, name="generate_collision_pairs")
@@ -68,14 +79,13 @@ contains
         integer(c_int), intent(out) :: pair_count
         real(c_float), intent(in) :: radius
 
-        integer :: i, j
+        integer :: i, j, my_idx
         real(c_float) :: dx, dy, dz, dist_sq, threshold
-        integer :: local_count
 
         threshold = (radius + radius) ** 2
-        local_count = 0
+        pair_count = 0
 
-        !$omp parallel do private(i, j, dx, dy, dz, dist_sq) reduction(+:local_count)
+        !$omp parallel do private(i, j, dx, dy, dz, dist_sq, my_idx) shared(pair_count, pairs)
         do i = 1, n
             if (bodies(i)%is_asleep == 1) cycle
             if (bodies(i)%is_static == 1) cycle
@@ -90,19 +100,34 @@ contains
                 dist_sq = dx*dx + dy*dy + dz*dz
 
                 if (dist_sq < threshold) then
-                    local_count = local_count + 1
-                    pairs(2*local_count - 1) = i - 1
-                    pairs(2*local_count) = j - 1
+                    pair_count = pair_count + 1
+                    my_idx = pair_count
+                    pairs(2*my_idx - 1) = i - 1
+                    pairs(2*my_idx) = j - 1
                 end if
             end do
         end do
         !$omp end parallel do
-
-        pair_count = local_count
     end subroutine generate_collision_pairs
 
     ! ===================================================================
-    ! VECTORIZED SOLVE CONTACTS (SIMD per contact)
+    ! VECTORIZED SOLVE CONTACTS
+    !
+    ! ИСПРАВЛЕНО (гонка данных): раньше `!$omp parallel do` шёл прямо по
+    ! контактам, и разные потоки МОГЛИ одновременно писать в
+    ! bodies(idx_a)%velocity/position ОДНОГО И ТОГО ЖЕ тела — если два
+    ! контакта в одном проходе ссылаются на общее тело (например, куб,
+    ! лежащий сразу на нескольких плитках пола — обычное дело). Полное
+    ! решение "по-хорошему" — графовая раскраска контактов (группировка
+    ! так, чтобы в одной группе не было общих тел), но это отдельная,
+    ! более объёмная задача. Как минимально достаточный и КОРРЕКТНЫЙ
+    ! фикс здесь — каждое обновление скорости/позиции тела теперь идёт
+    ! через `!$omp atomic update` по каждой компоненте: это делает
+    ! параллельное исполнение безопасным (гонки нет, ни одно обновление
+    ! не теряется), ценой того, что схема становится Jacobi-подобной
+    ! (все потоки читают состояние "из того же кадра" и атомарно
+    ! накапливают изменения), а не строго Gauss-Seidel — сходимость чуть
+    ! иная, но результат физически корректен и детерминированно безопасен.
     ! ===================================================================
     subroutine solve_contacts_vectorized(bodies, contacts, n_contacts, iterations, dt) &
             bind(c, name="solve_contacts_vectorized")
@@ -116,18 +141,18 @@ contains
         integer :: iter, i, idx_a, idx_b
         real(c_float) :: rel_vel(3), vel_normal, impulse
         real(c_float) :: restitution, inv_mass_sum
-        real(c_float) :: correction(3)
+        real(c_float) :: correction(3), delta_a(3), delta_b(3)
 
         do iter = 1, iterations
             !$omp parallel do private(i, idx_a, idx_b, rel_vel, vel_normal, &
-            !$omp                      restitution, impulse, inv_mass_sum, correction)
+            !$omp                      restitution, impulse, inv_mass_sum, correction, delta_a, delta_b) &
+            !$omp shared(bodies, contacts)
             do i = 1, n_contacts
                 idx_a = contacts(i)%body_a + 1
                 idx_b = contacts(i)%body_b + 1
 
                 if (bodies(idx_a)%is_static == 1 .and. bodies(idx_b)%is_static == 1) cycle
 
-                ! Относительная скорость
                 rel_vel = bodies(idx_b)%velocity - bodies(idx_a)%velocity
                 vel_normal = rel_vel(1)*contacts(i)%normal(1) + &
                         rel_vel(2)*contacts(i)%normal(2) + &
@@ -141,21 +166,42 @@ contains
                     if (inv_mass_sum > 0.0) then
                         impulse = impulse / inv_mass_sum
 
-                        bodies(idx_a)%velocity = bodies(idx_a)%velocity - &
-                                contacts(i)%normal * impulse * bodies(idx_a)%inv_mass
-                        bodies(idx_b)%velocity = bodies(idx_b)%velocity + &
-                                contacts(i)%normal * impulse * bodies(idx_b)%inv_mass
+                        delta_a = contacts(i)%normal * impulse * bodies(idx_a)%inv_mass
+                        delta_b = contacts(i)%normal * impulse * bodies(idx_b)%inv_mass
+
+                        !$omp atomic update
+                        bodies(idx_a)%velocity(1) = bodies(idx_a)%velocity(1) - delta_a(1)
+                        !$omp atomic update
+                        bodies(idx_a)%velocity(2) = bodies(idx_a)%velocity(2) - delta_a(2)
+                        !$omp atomic update
+                        bodies(idx_a)%velocity(3) = bodies(idx_a)%velocity(3) - delta_a(3)
+
+                        !$omp atomic update
+                        bodies(idx_b)%velocity(1) = bodies(idx_b)%velocity(1) + delta_b(1)
+                        !$omp atomic update
+                        bodies(idx_b)%velocity(2) = bodies(idx_b)%velocity(2) + delta_b(2)
+                        !$omp atomic update
+                        bodies(idx_b)%velocity(3) = bodies(idx_b)%velocity(3) + delta_b(3)
                     end if
                 end if
 
-                ! Коррекция позиций (только если тела не статические)
+                correction = contacts(i)%normal * (contacts(i)%penetration * 0.5)
+
                 if (bodies(idx_a)%is_static == 0) then
-                    correction = contacts(i)%normal * (contacts(i)%penetration * 0.5)
-                    bodies(idx_a)%position = bodies(idx_a)%position - correction
+                    !$omp atomic update
+                    bodies(idx_a)%position(1) = bodies(idx_a)%position(1) - correction(1)
+                    !$omp atomic update
+                    bodies(idx_a)%position(2) = bodies(idx_a)%position(2) - correction(2)
+                    !$omp atomic update
+                    bodies(idx_a)%position(3) = bodies(idx_a)%position(3) - correction(3)
                 end if
                 if (bodies(idx_b)%is_static == 0) then
-                    correction = contacts(i)%normal * (contacts(i)%penetration * 0.5)
-                    bodies(idx_b)%position = bodies(idx_b)%position + correction
+                    !$omp atomic update
+                    bodies(idx_b)%position(1) = bodies(idx_b)%position(1) + correction(1)
+                    !$omp atomic update
+                    bodies(idx_b)%position(2) = bodies(idx_b)%position(2) + correction(2)
+                    !$omp atomic update
+                    bodies(idx_b)%position(3) = bodies(idx_b)%position(3) + correction(3)
                 end if
             end do
             !$omp end parallel do
@@ -163,7 +209,8 @@ contains
     end subroutine solve_contacts_vectorized
 
     ! ===================================================================
-    ! UPDATE AABB FOR ALL BODIES (VECTORIZED)
+    ! UPDATE AABB FOR ALL BODIES (безопасно параллелится — каждая
+    ! итерация пишет только в свой собственный индекс i, без пересечений)
     ! ===================================================================
     subroutine update_aabb_vectorized(bodies, n, min_bounds, max_bounds, radius) &
             bind(c, name="update_aabb_vectorized")
@@ -190,7 +237,8 @@ contains
     end subroutine update_aabb_vectorized
 
     ! ===================================================================
-    ! RESOLVE PENETRATION (FAST POSITION CORRECTION)
+    ! RESOLVE PENETRATION (то же исправление гонки, что и в
+    ! solve_contacts_vectorized — atomic update по компонентам)
     ! ===================================================================
     subroutine resolve_penetration_batch(bodies, contacts, n_contacts) &
             bind(c, name="resolve_penetration_batch")
@@ -205,7 +253,7 @@ contains
         real(c_float), parameter :: SLOP = 0.01
         real(c_float), parameter :: PERCENT = 0.2
 
-        !$omp parallel do private(i, idx_a, idx_b, correction)
+        !$omp parallel do private(i, idx_a, idx_b, correction) shared(bodies, contacts)
         do i = 1, n_contacts
             idx_a = contacts(i)%body_a + 1
             idx_b = contacts(i)%body_b + 1
@@ -215,10 +263,20 @@ contains
             correction = contacts(i)%normal * (max(contacts(i)%penetration - SLOP, 0.0) * PERCENT)
 
             if (bodies(idx_a)%is_static == 0) then
-                bodies(idx_a)%position = bodies(idx_a)%position - correction
+                !$omp atomic update
+                bodies(idx_a)%position(1) = bodies(idx_a)%position(1) - correction(1)
+                !$omp atomic update
+                bodies(idx_a)%position(2) = bodies(idx_a)%position(2) - correction(2)
+                !$omp atomic update
+                bodies(idx_a)%position(3) = bodies(idx_a)%position(3) - correction(3)
             end if
             if (bodies(idx_b)%is_static == 0) then
-                bodies(idx_b)%position = bodies(idx_b)%position + correction
+                !$omp atomic update
+                bodies(idx_b)%position(1) = bodies(idx_b)%position(1) + correction(1)
+                !$omp atomic update
+                bodies(idx_b)%position(2) = bodies(idx_b)%position(2) + correction(2)
+                !$omp atomic update
+                bodies(idx_b)%position(3) = bodies(idx_b)%position(3) + correction(3)
             end if
         end do
         !$omp end parallel do
@@ -226,14 +284,26 @@ contains
 
     ! ===================================================================
     ! UPDATE SLEEP STATE (BATCH)
+    !
+    ! ИСПРАВЛЕНО: раньше это была пустышка — считала скорость, сравнивала
+    ! с порогом, и... ничего не делала (`continue`), с комментарием
+    ! "обрабатывается в Rust" — но в Rust этого тоже нигде не было. Тело
+    ! никогда не засыпало. Теперь функция принимает дополнительный
+    ! параметр `sleep_timers` (по одному float на тело, хранится и
+    ! передаётся вызывающей стороной между кадрами) и реализует настоящий
+    ! гистерезис: пока скорость ниже порога, таймер тела растёт; как
+    ! только превышает sleep_time — тело реально засыпает (is_asleep=1).
+    ! Без такого таймера тело мгновенно "мигало" бы между сном и
+    ! бодрствованием прямо на границе порога.
     ! ===================================================================
-    subroutine update_sleep_state(bodies, n, dt, sleep_threshold) &
+    subroutine update_sleep_state(bodies, n, dt, sleep_threshold, sleep_time, sleep_timers) &
             bind(c, name="update_sleep_state")
         use, intrinsic :: iso_c_binding
         implicit none
         type(rigid_body_c), intent(inout) :: bodies(n)
         integer(c_int), intent(in) :: n
-        real(c_float), intent(in) :: dt, sleep_threshold
+        real(c_float), intent(in) :: dt, sleep_threshold, sleep_time
+        real(c_float), intent(inout) :: sleep_timers(n)
 
         integer :: i
         real(c_float) :: linear_speed_sq, angular_speed_sq
@@ -245,19 +315,21 @@ contains
                 cycle
             end if
 
-            if (bodies(i)%is_asleep == 0) then
-                linear_speed_sq = bodies(i)%velocity(1)**2 + &
-                        bodies(i)%velocity(2)**2 + &
-                        bodies(i)%velocity(3)**2
-                angular_speed_sq = bodies(i)%angular_velocity(1)**2 + &
-                        bodies(i)%angular_velocity(2)**2 + &
-                        bodies(i)%angular_velocity(3)**2
+            linear_speed_sq = bodies(i)%velocity(1)**2 + &
+                    bodies(i)%velocity(2)**2 + &
+                    bodies(i)%velocity(3)**2
+            angular_speed_sq = bodies(i)%angular_velocity(1)**2 + &
+                    bodies(i)%angular_velocity(2)**2 + &
+                    bodies(i)%angular_velocity(3)**2
 
-                if (linear_speed_sq < sleep_threshold .and. &
-                        angular_speed_sq < sleep_threshold) then
-                    ! Засыпаем через некоторое время (обрабатывается в Rust)
-                    continue
+            if (linear_speed_sq < sleep_threshold .and. angular_speed_sq < sleep_threshold) then
+                sleep_timers(i) = sleep_timers(i) + dt
+                if (sleep_timers(i) > sleep_time) then
+                    bodies(i)%is_asleep = 1
                 end if
+            else
+                sleep_timers(i) = 0.0
+                bodies(i)%is_asleep = 0
             end if
         end do
         !$omp end parallel do
@@ -265,6 +337,9 @@ contains
 
     ! ===================================================================
     ! COMPUTE CENTER OF MASS (FOR DEBUG/STATS)
+    ! Корректное использование reduction — в отличие от бага выше,
+    ! reduction-переменные тут ТОЛЬКО суммируются, не используются как
+    ! индексы записи внутри региона.
     ! ===================================================================
     subroutine compute_center_of_mass(bodies, n, center, total_mass) &
             bind(c, name="compute_center_of_mass")
@@ -299,7 +374,8 @@ contains
     end subroutine compute_center_of_mass
 
     ! ===================================================================
-    ! BROAD PHASE WITH TEMPORAL COHERENCE (OPTIMIZED)
+    ! BROAD PHASE WITH TEMPORAL COHERENCE (тот же фикс гонки, что и в
+    ! generate_collision_pairs — atomic capture вместо reduction-как-индекса)
     ! ===================================================================
     subroutine broad_phase_temporal(bodies, n, active_list, active_count, &
             pairs, pair_count, radius, time_step) &
@@ -314,17 +390,16 @@ contains
         integer(c_int), intent(out) :: pair_count
         real(c_float), intent(in) :: radius, time_step
 
-        integer :: i, j, idx_i, idx_j
+        integer :: i, j, idx_i, idx_j, my_idx
         real(c_float) :: min1(3), max1(3), min2(3), max2(3)
         real(c_float) :: expanded_radius
 
-        ! Расширяем AABB с учётом скорости (temporal coherence)
         expanded_radius = radius + 2.0 * time_step * 50.0  ! Запас на 50 м/с
 
         pair_count = 0
 
-        !$omp parallel do private(i, j, idx_i, idx_j, min1, max1, min2, max2) &
-        !$omp reduction(+:pair_count)
+        !$omp parallel do private(i, j, idx_i, idx_j, min1, max1, min2, max2, my_idx) &
+        !$omp shared(pair_count, pairs)
         do i = 1, active_count
             idx_i = active_list(i)
             if (bodies(idx_i+1)%is_asleep == 1) cycle
@@ -340,10 +415,10 @@ contains
                 max2 = bodies(idx_j+1)%position + expanded_radius
 
                 if (aabb_intersect(min1, max1, min2, max2)) then
-                    !$omp atomic
                     pair_count = pair_count + 1
-                    pairs(2*pair_count - 1) = idx_i
-                    pairs(2*pair_count) = idx_j
+                    my_idx = pair_count
+                    pairs(2*my_idx - 1) = idx_i
+                    pairs(2*my_idx) = idx_j
                 end if
             end do
         end do

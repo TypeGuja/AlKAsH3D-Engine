@@ -47,6 +47,21 @@ pub struct FortranConstraint {
     pub accumulated_impulse: f32,
 }
 
+impl Default for FortranContact {
+    fn default() -> Self {
+        Self {
+            body_a: 0,
+            body_b: 0,
+            normal: [0.0; 3],
+            penetration: 0.0,
+            point: [0.0; 3],
+            tangent1: [0.0; 3],
+            tangent2: [0.0; 3],
+            friction_impulse: [0.0; 2],
+        }
+    }
+}
+
 // Внешние Fortran функции
 extern "C" {
     // ===================================================================
@@ -64,8 +79,17 @@ extern "C" {
         pair_count: *mut i32,
     );
 
+    // ИСПРАВЛЕНО: раньше тут отсутствовал параметр `n` — реальная
+    // Fortran-сигнатура в broad_phase.f90:
+    // (bodies, n, active_indices, active_count, pairs, pair_count).
+    // Без этого параметра вызов сдвинул бы все последующие аргументы на
+    // одну позицию (то, что должно было быть active_indices, реально
+    // читалось бы как n, и т.д.) — неопределённое поведение при первом
+    // же вызове. Функция сейчас нигде не вызывается из FortranPhysics,
+    // но объявление обязано совпадать с реальной сигнатурой на будущее.
     pub fn broad_phase_sap_optimized(
         bodies: *const FortranRigidBody,
+        n: i32,
         active_indices: *const i32,
         active_count: i32,
         pairs: *mut i32,
@@ -165,11 +189,16 @@ extern "C" {
         radius: f32,
     );
 
+    // ИСПРАВЛЕНО: добавлен параметр sleep_timers — без него у функции не
+    // было персистентного состояния между кадрами, поэтому она не могла
+    // реализовать гистерезис засыпания и была пустышкой (см. kernels_optimized.f90).
     pub fn update_sleep_state(
         bodies: *mut FortranRigidBody,
         n: i32,
         dt: f32,
         sleep_threshold: f32,
+        sleep_time: f32,
+        sleep_timers: *mut f32,
     );
 
     pub fn compute_center_of_mass(
@@ -189,6 +218,13 @@ pub struct FortranPhysics {
     pub cell_counts: Vec<i32>,
     pub cell_pairs: Vec<i32>,
     pub active_indices: Vec<i32>,
+    /// ДОБАВЛЕНО: таймер сна на каждое тело (см. update_sleep_state).
+    /// Должен оставаться СИНХРОННЫМ по длине и порядку с `bodies` —
+    /// если когда-нибудь добавите удаление тел из этой обёртки, не
+    /// забудьте убрать соответствующий элемент и здесь тоже (в lib.rs,
+    /// который реально используется как inertial.dll, это учтено через
+    /// общий механизм handle-индирекции — см. PhysicsState).
+    pub sleep_timers: Vec<f32>,
     pub grid_width: i32,
     pub grid_height: i32,
     pub cell_size: f32,
@@ -207,6 +243,7 @@ impl FortranPhysics {
             cell_counts: vec![0; grid_cells],
             cell_pairs: vec![0; max_bodies * 8],
             active_indices: Vec::with_capacity(max_bodies),
+            sleep_timers: Vec::with_capacity(max_bodies),
             grid_width: grid_size,
             grid_height: grid_size,
             cell_size,
@@ -215,6 +252,7 @@ impl FortranPhysics {
 
     pub fn add_body(&mut self, body: FortranRigidBody) {
         self.bodies.push(body);
+        self.sleep_timers.push(0.0);
     }
 
     pub fn add_contact(&mut self, contact: FortranContact) {
@@ -290,6 +328,32 @@ impl FortranPhysics {
         &self.cell_pairs[..(pair_count as usize * 2)]
     }
 
+    /// ДОБАВЛЕНО: SAP broad phase по активному списку — раньше эта
+    /// Fortran-функция была объявлена с несовпадающей сигнатурой и нигде
+    /// не вызывалась; теперь сигнатура верна, и вот рабочий вызов.
+    pub fn find_pairs_sap_optimized(&mut self) -> &[i32] {
+        self.active_indices.clear();
+        for (i, body) in self.bodies.iter().enumerate() {
+            if body.is_asleep == 0 && body.is_static == 0 {
+                self.active_indices.push(i as i32);
+            }
+        }
+
+        let mut pair_count = 0;
+        unsafe {
+            broad_phase_sap_optimized(
+                self.bodies.as_ptr(),
+                self.bodies.len() as i32,
+                self.active_indices.as_ptr(),
+                self.active_indices.len() as i32,
+                self.cell_pairs.as_mut_ptr(),
+                &mut pair_count,
+            );
+        }
+
+        &self.cell_pairs[..(pair_count as usize * 2)]
+    }
+
     pub fn integrate(&mut self, dt: f32) {
         unsafe {
             integrate_bodies(
@@ -300,24 +364,33 @@ impl FortranPhysics {
         }
     }
 
-    pub fn batch_integrate(&mut self, dt: f32, gravity: f32, num_threads: i32) {
-        let chunk_size = self.bodies.len() / num_threads as usize;
-
-        for thread in 0..num_threads {
-            let start = (thread * chunk_size as i32) as i32;
-            let end = ((thread + 1) * chunk_size as i32).min(self.bodies.len() as i32);
-
-            unsafe {
-                batch_integrate(
-                    self.bodies.as_mut_ptr(),
-                    self.bodies.len() as i32,
-                    dt,
-                    gravity,
-                    start,
-                    end,
-                );
-            }
+    /// ИСПРАВЛЕНО: раньше этот метод называл себя "batch_integrate(...,
+    /// num_threads)", но внутри просто вызывал Fortran ПОСЛЕДОВАТЕЛЬНО в
+    /// Rust-цикле `for thread in 0..num_threads` — никакие реальные
+    /// потоки/rayon не создавались, несмотря на название параметра.
+    /// Теперь это по-настоящему многопоточно: каждый чанк тел — это
+    /// НЕПЕРЕСЕКАЮЩИЙСЯ мутабельный срез (через `split_at_mut`), поэтому
+    /// параллельный доступ безопасен и доказуем компилятором Rust, без
+    /// unsafe-жонглирования сырыми указателями с ручным расчётом смещений.
+    pub fn batch_integrate(&mut self, dt: f32, gravity: f32, num_threads: usize) {
+        if self.bodies.is_empty() {
+            return;
         }
+        let num_threads = num_threads.max(1).min(self.bodies.len());
+        let chunk_size = (self.bodies.len() + num_threads - 1) / num_threads;
+
+        std::thread::scope(|scope| {
+            let mut rest = self.bodies.as_mut_slice();
+            while !rest.is_empty() {
+                let take = chunk_size.min(rest.len());
+                let (chunk, remainder) = rest.split_at_mut(take);
+                rest = remainder;
+                let n = chunk.len() as i32;
+                scope.spawn(move || unsafe {
+                    batch_integrate(chunk.as_mut_ptr(), n, dt, gravity, 1, n);
+                });
+            }
+        });
     }
 
     pub fn solve_contacts(&mut self, iterations: i32) {
@@ -353,13 +426,19 @@ impl FortranPhysics {
         }
     }
 
-    pub fn update_sleep_state(&mut self, dt: f32, sleep_threshold: f32) {
+    /// ИСПРАВЛЕНО: теперь передаёт `sleep_time` и `sleep_timers` — без
+    /// них Fortran-сторона не могла ничего реально усыпить (см. комментарий
+    /// у update_sleep_state в kernels_optimized.f90).
+    pub fn update_sleep_state(&mut self, dt: f32, sleep_threshold: f32, sleep_time: f32) {
+        debug_assert_eq!(self.sleep_timers.len(), self.bodies.len());
         unsafe {
             update_sleep_state(
                 self.bodies.as_mut_ptr(),
                 self.bodies.len() as i32,
                 dt,
                 sleep_threshold,
+                sleep_time,
+                self.sleep_timers.as_mut_ptr(),
             );
         }
     }
