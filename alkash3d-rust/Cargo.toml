@@ -6,11 +6,29 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# ИСПРАВЛЕНО: раньше здесь был ОДИН [[bin]] с именем "tests" и ключами
+# path2/path3 — Cargo не поддерживает такие ключи (см. предупреждения
+# "unused manifest key: bin.0.path2/path3" при сборке), поэтому реально
+# собирался ТОЛЬКО src/bin/main.rs под именем "tests"; main1.rs и main2.rs
+# никогда не компилировались как отдельные бинарники. Теперь каждый demo —
+# свой [[bin]] с собственным именем: `cargo run --bin main` (ходьба по
+# плиткам + ночные фонари), `cargo run --bin main1` (солнечная система),
+# `cargo run --bin main2` (простые летающие кубы). Это и есть стандартный
+# способ Cargo объявлять несколько бинарников в одном пакете — по факту
+# Cargo и сам бы нашёл все три файла в src/bin/ автоматически даже без этих
+# секций (используя имя файла как имя бинарника), но явные секции понятнее
+# читать и не зависят от неявного поведения.
 [[bin]]
-name = "tests"
+name = "main"
 path = "src/bin/main.rs"
-path2 = "src/bin/main1.rs"
-path3 = "src/bin/main2.rs"
+
+[[bin]]
+name = "main1"
+path = "src/bin/main1.rs"
+
+[[bin]]
+name = "main2"
+path = "src/bin/main2.rs"
 
 
 [dependencies]
@@ -27,6 +45,7 @@ rayon = "1.8"
 sysinfo = "0.39.3"
 rand = "0.10.1"
 glam = "0.33.2"
+nalgebra = "0.35.0"
 
 [profile.release]
 opt-level = 3
