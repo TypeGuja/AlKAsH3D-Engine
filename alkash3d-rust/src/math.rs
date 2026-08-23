@@ -30,6 +30,16 @@ pub fn look_at(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
     glam::camera::lh::view::look_at_mat4(eye, target, up)
 }
 
+/// ДОБАВЛЕНО (Фаза 6 плана по реализму/фонарям — тени): ортографическая
+/// проекция для DirectX (Left-Handed, NDC Z в [0,1] — тот же диапазон,
+/// что и у `perspective` выше) — нужна для shadow map directional-света
+/// ("солнца"): в отличие от обычной камеры, свет не имеет точки схода
+/// лучей (все лучи параллельны), поэтому его проекция ортографическая, а
+/// не перспективная.
+pub fn orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> Mat4 {
+    glam::camera::lh::proj::directx::orthographic(left, right, bottom, top, near, far)
+}
+
 /// Матрица трансляции
 pub fn translation(x: f32, y: f32, z: f32) -> Mat4 {
     Mat4::from_translation(Vec3::new(x, y, z))

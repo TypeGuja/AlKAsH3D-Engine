@@ -1,8 +1,9 @@
 // alsnd_format.rs - Spatial Sound System
 
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Write};
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct AlsndHeader {
     pub magic: [u8; 8],           // "ALKALSND"
     pub version: u32,
@@ -23,6 +24,7 @@ pub struct AlsndHeader {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct SoundDescriptor {
     pub name_id: u32,
     pub format: u32,              // 0=WAV, 1=OGG, 2=MP3, 3=FLAC, 4=OPUS
@@ -41,6 +43,7 @@ pub struct SoundDescriptor {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct SoundBank {
     pub name_id: u32,
     pub sounds_start: u32,
@@ -51,6 +54,7 @@ pub struct SoundBank {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct SoundPreset {
     pub name_id: u32,
     pub sounds: [u32; 8],         // До 8 звуков на пресет
@@ -68,6 +72,7 @@ pub struct SoundPreset {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct ReverbZone {
     pub position: [f32; 3],
     pub radius: f32,
@@ -80,6 +85,7 @@ pub struct ReverbZone {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct AudioOcclusion {
     pub source_position: [f32; 3],
     pub listener_position: [f32; 3],
@@ -155,9 +161,246 @@ impl AlsndFile {
         snd
     }
 
-    fn add_string(&mut self, s: &str) -> u32 {
-        let id = self.strings.len() as u32;
+    // ИСПРАВЛЕНО (звуковая подсистема — save/load): раньше `add_string` не
+    // проверял, есть ли уже такая строка в таблице, и всегда добавлял новую
+    // — единственный формат движка (.alfar/.altex/.alcar/.alworld все
+    // дедуплицируют) с таким расхождением. При типичном использовании
+    // (`create_city_ambient` вызывает `add_string("City_Ambient_Day")`
+    // один раз, так что раньше это было незаметно) разницы не было, но при
+    // добавлении множества звуков с повторяющимися именами (например
+    // несколько пресетов, ссылающихся на одно и то же имя категории)
+    // раздувало бы строковую таблицу дубликатами. Теперь ведёт себя как
+    // остальные форматы.
+    pub fn add_string(&mut self, s: &str) -> u32 {
+        if let Some(pos) = self.strings.iter().position(|existing| existing == s) {
+            return pos as u32;
+        }
         self.strings.push(s.to_string());
-        id
+        (self.strings.len() - 1) as u32
+    }
+
+    pub fn get_string(&self, id: u32) -> &str {
+        self.strings.get(id as usize).map(|s| s.as_str()).unwrap_or("")
+    }
+
+    // =========================================================================
+    // ДОБАВЛЕНО (звуковая подсистема — save()/load() для .alsnd): раньше
+    // ЕДИНСТВЕННЫЙ формат движка без сериализации на диск вообще (в отличие
+    // от .alfar/.altex/.alcar/.alworld — у всех есть работающий save/load).
+    // Формат совпадает по духу с `.alworld` (см. AlworldFile::save/load в
+    // alworld_format.rs): header (с offset'ами на каждую таблицу) -> string
+    // table (count + [len(u32)+bytes]) -> sounds -> banks -> presets ->
+    // reverb_zones, каждая таблица — count(u32) + POD-массив своей
+    // структуры. AudioOcclusion сознательно НЕ сериализуется как часть
+    // файла — это не статические данные карты звука, а результат расчёта
+    // окклюзии между конкретным источником и слушателем в ТЕКУЩЕМ кадре
+    // (см. поля source_position/listener_position — они бессмысленны без
+    // текущих мировых координат обоих), т.е. чисто рантайм-величина,
+    // вычисляемая заново каждый кадр аудио-плейбек движком (см. audio.rs),
+    // а не то, что имеет смысл сохранять на диск — как и `state` у
+    // ChunkDescriptor в .alworld или как отсутствие сохранения текущих
+    // AABB в .altex.
+    // =========================================================================
+    pub fn save(&self, path: &str) -> std::io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+
+        let mut strings_data = Vec::new();
+        strings_data.extend_from_slice(&(self.strings.len() as u32).to_le_bytes());
+        for s in &self.strings {
+            strings_data.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            strings_data.extend_from_slice(s.as_bytes());
+        }
+
+        let mut sounds_data = Vec::new();
+        sounds_data.extend_from_slice(&(self.sounds.len() as u32).to_le_bytes());
+        for sound in &self.sounds {
+            sounds_data.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(sound as *const SoundDescriptor as *const u8, std::mem::size_of::<SoundDescriptor>())
+            });
+        }
+
+        let mut banks_data = Vec::new();
+        banks_data.extend_from_slice(&(self.banks.len() as u32).to_le_bytes());
+        for bank in &self.banks {
+            banks_data.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(bank as *const SoundBank as *const u8, std::mem::size_of::<SoundBank>())
+            });
+        }
+
+        let mut presets_data = Vec::new();
+        presets_data.extend_from_slice(&(self.presets.len() as u32).to_le_bytes());
+        for preset in &self.presets {
+            presets_data.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(preset as *const SoundPreset as *const u8, std::mem::size_of::<SoundPreset>())
+            });
+        }
+
+        let mut reverb_data = Vec::new();
+        reverb_data.extend_from_slice(&(self.reverb_zones.len() as u32).to_le_bytes());
+        for zone in &self.reverb_zones {
+            reverb_data.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(zone as *const ReverbZone as *const u8, std::mem::size_of::<ReverbZone>())
+            });
+        }
+
+        let header_size = std::mem::size_of::<AlsndHeader>() as u64;
+        let string_table_offset = header_size;
+        let sound_table_offset = string_table_offset + strings_data.len() as u64;
+        let bank_table_offset = sound_table_offset + sounds_data.len() as u64;
+        let preset_table_offset = bank_table_offset + banks_data.len() as u64;
+        let reverb_zones_offset = preset_table_offset + presets_data.len() as u64;
+        // occlusion_data_offset намеренно не указывает ни на какой блок в
+        // файле (окклюзия не сериализуется, см. комментарий выше) —
+        // оставлен 0 как явный "не используется", тот же приём, что и у
+        // некоторых offset-полей в .alworld/.altex, когда соответствующий
+        // блок в конкретном файле отсутствует.
+        let occlusion_data_offset = 0u64;
+
+        let header = AlsndHeader {
+            magic: self.header.magic,
+            version: self.header.version,
+            audio_engine: self.header.audio_engine,
+            channels: self.header.channels,
+            sample_rate: self.header.sample_rate,
+            bits_per_sample: self.header.bits_per_sample,
+            sound_count: self.sounds.len() as u32,
+            sound_bank_count: self.banks.len() as u32,
+            max_concurrent_sounds: self.header.max_concurrent_sounds,
+            string_table_offset,
+            sound_table_offset,
+            bank_table_offset,
+            preset_table_offset,
+            reverb_zones_offset,
+            occlusion_data_offset,
+            created_at: self.header.created_at,
+        };
+
+        file.write_all(unsafe {
+            std::slice::from_raw_parts(&header as *const AlsndHeader as *const u8, std::mem::size_of::<AlsndHeader>())
+        })?;
+        file.write_all(&strings_data)?;
+        file.write_all(&sounds_data)?;
+        file.write_all(&banks_data)?;
+        file.write_all(&presets_data)?;
+        file.write_all(&reverb_data)?;
+
+        Ok(())
+    }
+
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        let mut file = std::fs::File::open(path)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+
+        let header_size = std::mem::size_of::<AlsndHeader>();
+        if buf.len() < header_size {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "alsnd: файл короче заголовка AlsndHeader",
+            ));
+        }
+
+        // SAFETY: AlsndHeader — #[repr(C)], POD (только числа и [u8;8]),
+        // длина буфера уже проверена выше.
+        let header: AlsndHeader = unsafe {
+            std::ptr::read_unaligned(buf.as_ptr() as *const AlsndHeader)
+        };
+
+        if &header.magic != b"ALKALSND" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("alsnd: неверная сигнатура {:?}, ожидалось ALKALSND", header.magic),
+            ));
+        }
+        if header.version != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("alsnd: неподдерживаемая версия формата {}", header.version),
+            ));
+        }
+
+        let read_at = |offset: u64, size: usize, what: &str| -> std::io::Result<&[u8]> {
+            let start = offset as usize;
+            let end = start.checked_add(size).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("alsnd: переполнение при вычислении конца блока {}", what),
+            ))?;
+            buf.get(start..end).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("alsnd: блок {} выходит за пределы файла (offset={}, size={}, file_len={})", what, offset, size, buf.len()),
+            ))
+        };
+
+        // Строковая таблица: count(u32) + N раз [len(u32) + байты строки].
+        let strings_start = header.string_table_offset as usize;
+        if strings_start > buf.len() || strings_start + 4 > buf.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "alsnd: string_table_offset выходит за пределы файла",
+            ));
+        }
+        let string_count = u32::from_le_bytes(buf[strings_start..strings_start + 4].try_into().unwrap()) as usize;
+        let mut cursor = strings_start + 4;
+        let mut strings = Vec::with_capacity(string_count);
+        for _ in 0..string_count {
+            let len_bytes = read_at(cursor as u64, 4, "string length")?;
+            let len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+            cursor += 4;
+            let str_bytes = read_at(cursor as u64, len, "string data")?;
+            strings.push(String::from_utf8_lossy(str_bytes).into_owned());
+            cursor += len;
+        }
+
+        // Небольшой локальный хелпер, читающий "count(u32) + POD-массив T"
+        // блок по заданному offset'у — используется для sounds/banks/
+        // presets/reverb_zones ниже, все четыре имеют абсолютно одинаковую
+        // структуру блока, отличается только тип T.
+        fn read_table<T: Copy>(buf: &[u8], offset: u64, what: &str) -> std::io::Result<Vec<T>> {
+            let start = offset as usize;
+            if start + 4 > buf.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("alsnd: {}_offset выходит за пределы файла", what),
+                ));
+            }
+            let count = u32::from_le_bytes(buf[start..start + 4].try_into().unwrap()) as usize;
+            let item_size = std::mem::size_of::<T>();
+            let data_start = start + 4;
+            let data_end = data_start.checked_add(count * item_size).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("alsnd: переполнение при вычислении размера таблицы {}", what),
+            ))?;
+            let bytes = buf.get(data_start..data_end).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("alsnd: таблица {} выходит за пределы файла (offset={}, count={}, file_len={})", what, offset, count, buf.len()),
+            ))?;
+            let mut items = Vec::with_capacity(count);
+            for i in 0..count {
+                let s = i * item_size;
+                let item: T = unsafe { std::ptr::read_unaligned(bytes[s..s + item_size].as_ptr() as *const T) };
+                items.push(item);
+            }
+            Ok(items)
+        }
+
+        let sounds: Vec<SoundDescriptor> = read_table(&buf, header.sound_table_offset, "sound_table")?;
+        let banks: Vec<SoundBank> = read_table(&buf, header.bank_table_offset, "bank_table")?;
+        let presets: Vec<SoundPreset> = read_table(&buf, header.preset_table_offset, "preset_table")?;
+        let reverb_zones: Vec<ReverbZone> = read_table(&buf, header.reverb_zones_offset, "reverb_zones")?;
+
+        Ok(Self {
+            header,
+            strings,
+            sounds,
+            banks,
+            presets,
+            reverb_zones,
+        })
+    }
+}
+
+impl Default for AlsndFile {
+    fn default() -> Self {
+        Self::new(2, 48000)
     }
 }

@@ -2,9 +2,16 @@
 //! 3D версия с камерой и трансформациями
 
 use alkash3d_rs::engine::{AlkashEngine, MeshInstance};
+use alkash3d_rs::LightConfig;
+use windows::core::Interface;
 
 const WINDOW_WIDTH: u32 = 1280;
 const WINDOW_HEIGHT: u32 = 720;
+
+/// Путь к скомпилированному плагину FirstFires (соседняя директория
+/// относительно alkash3d-rust — см. main.rs/main1.rs). НЕ "firstfires.dll"
+/// (без подчёркивания) — не тот файл, не экспортирует ожидаемый API.
+const FIRSTFIRES_DLL_PATH: &str = "../alkash3d-FirstFires/target/release/alkash3d_firstfires.dll";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==========================================");
@@ -14,12 +21,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = AlkashEngine::new(WINDOW_WIDTH, WINDOW_HEIGHT);
     engine.init()?;
 
+    setup_lights(&mut engine);
     setup_3d_scene(&mut engine);
     run_3d_loop(&mut engine);
     engine.shutdown();
     println!("[MAIN] Goodbye!");
 
     Ok(())
+}
+
+/// См. main1.rs::setup_lights — тот же простой одноисточниковый вариант,
+/// без ошибок никак не влияет на остальную сцену.
+fn setup_lights(engine: &mut AlkashEngine) {
+    println!("\n[MAIN] Setting up lights...");
+
+    let device_ptr = match alkash3d_rs::get_device() {
+        Ok(device) => device.as_raw(),
+        Err(e) => {
+            eprintln!("[MAIN] Failed to get D3D12 device for lighting: {:?}", e);
+            return;
+        }
+    };
+
+    let config = LightConfig {
+        max_lights: 64,
+        tile_size: 16,
+        far_plane: 100.0,
+        lod_distances: [30.0, 60.0, 100.0],
+        grid_cell_size: 10.0,
+    };
+
+    if let Err(e) = engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config) {
+        eprintln!("[MAIN] Failed to init lights (scene will stay dark): {:?}", e);
+        return;
+    }
+
+    engine.add_street_light(0.0, 3.0, 0.0);
+
+    println!("✅ Lights ready (FirstFires plugin loaded, 1 street light)");
 }
 
 fn setup_3d_scene(engine: &mut AlkashEngine) {
@@ -128,6 +167,19 @@ fn run_3d_loop(engine: &mut AlkashEngine) {
             instance.position[1] = 0.5 + (time * 2.0).sin().abs() * 0.8;
             instance.rotation[0] = time * 1.2;
             instance.rotation[1] = time * 0.9;
+        }
+
+        // === ОБНОВЛЕНИЕ ДВИЖКА (свет и т.п.) ===
+        // ИСПРАВЛЕНО: раньше engine.update() здесь не вызывался вообще —
+        // плагин освещения не получал текущую камеру/view-proj.
+        {
+            let view_proj = engine.camera.projection_matrix() * engine.camera.view_matrix();
+            let camera_pos = [
+                engine.camera.position[0],
+                engine.camera.position[1],
+                engine.camera.position[2],
+            ];
+            engine.update(dt, -9.8, camera_pos, view_proj.to_cols_array());
         }
 
         // === РЕНДЕР ===

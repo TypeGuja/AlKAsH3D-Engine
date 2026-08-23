@@ -148,6 +148,105 @@ impl Buffer {
         }
     }
 
+    /// ДОБАВЛЕНО (Фаза 2 плана по реализму/фонарям): буфер под
+    /// `StructuredBuffer<T>` для чтения из шейдера через SRV (register
+    /// tN) — используется для передачи списка видимых `GPULight` из
+    /// FirstFires в пиксельный шейдер (см. `AlkashEngine::ensure_light_buffer_capacity`
+    /// и `render_frame` в engine/mod.rs).
+    ///
+    /// В отличие от `create_constant_buffer`, здесь НЕТ выравнивания на
+    /// 256 байт — это требование D3D12 специфично для CBV
+    /// (`D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT`), а не для SRV
+    /// structured buffer. Буфер создаётся в UPLOAD heap (то же, что и
+    /// вершинный/константный буферы) — для света это оправданно: список
+    /// перезаписывается каждый кадр (новый набор видимых после каллинга),
+    /// а не создаётся один раз, так что постоянный CPU-доступ через Map
+    /// важнее, чем более быстрый, но однократно инициализируемый DEFAULT
+    /// heap. Для очень больших городов (тысячи фонарей) это можно будет
+    /// пересмотреть в сторону DEFAULT heap + промежуточный upload-буфер,
+    /// но на диапазон источников, который считает сам FirstFires
+    /// (max_lights в LightConfig), UPLOAD heap достаточно дёшев.
+    pub fn create_structured_buffer(size_bytes: u64) -> Result<Self> {
+        println!("[BUFFER] Creating structured buffer, size: {} bytes", size_bytes);
+
+        let device = crate::get_device()?;
+
+        // D3D12 не создаёт ресурсы нулевого размера — минимум 1 элемент
+        // (вызывающий код всё равно не станет писать в него 0 байт).
+        let size = size_bytes.max(4);
+
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_UPLOAD,
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+        };
+
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            let hr = device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
+                &mut resource,
+            );
+            if hr.is_err() {
+                eprintln!("[BUFFER] CreateStructuredBuffer failed: {:?}", hr);
+                return Err(Error::from_hresult(HRESULT::from(hr)));
+            }
+
+            let resource = resource.ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
+
+            println!("[BUFFER] Structured buffer created successfully");
+            Ok(Self {
+                resource,
+                size,
+                vertex_stride: 0,
+            })
+        }
+    }
+
+    /// Записывает данные в structured buffer целиком (аналог
+    /// `update_constant_buffer`, но без ограничения `self.size` под
+    /// constant-buffer alignment — просто копирует ровно `data.len()`
+    /// байт, либо меньше `self.size`, если данных больше, чем выделено).
+    pub fn update_structured_buffer(&self, data: &[u8]) -> Result<()> {
+        unsafe {
+            let mut mapped = std::ptr::null_mut();
+            self.resource.Map(0, None, Some(&mut mapped))?;
+            if !mapped.is_null() {
+                let len = data.len().min(self.size as usize);
+                if len < data.len() {
+                    eprintln!(
+                        "[BUFFER] WARNING: update_structured_buffer: {} bytes переданы, но буфер вмещает только {} — обрезаю",
+                        data.len(), self.size
+                    );
+                }
+                std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, len);
+            } else {
+                eprintln!("[BUFFER] WARNING: update_structured_buffer: mapped pointer is null, data NOT copied");
+            }
+            self.resource.Unmap(0, None);
+        }
+        Ok(())
+    }
+
     /// Создаёт константный буфер, вмещающий несколько независимых "слотов"
     /// одинакового размера — по одному слоту на каждый объект, который
     /// нужно отрисовать в кадре со своей собственной трансформацией. См.

@@ -23,6 +23,32 @@ pub struct GPULight {
     pub params: [f32; 4],
 }
 
+/// ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям): параметры пространственной
+/// сетки, которую FirstFires уже строит внутри себя во время `cull()`
+/// (см. `LightState` в alkash3d-FirstFires/src/lib.rs — поля `world_min`,
+/// `cell_size`, `grid_width/height/depth`), но раньше НЕ отдавал наружу
+/// через ABI. Без этих чисел движок не может сопоставить мировую позицию
+/// пикселя (worldPos) с индексом ячейки `LightGridCells`/`LightGridEntries`
+/// — то есть не может реально ВОСПОЛЬЗОВАТЬСЯ уже посчитанной сеткой в
+/// шейдере, только читать её вслепую.
+///
+/// Технически эти параметры детерминированно выводятся из LightConfig
+/// (far_plane/grid_cell_size), и движок мог бы просто продублировать ту
+/// же формулу у себя — но это создало бы риск молчаливого рассинхрона,
+/// если формула в FirstFires когда-нибудь изменится, а копия в движке
+/// нет. Явный геттер — единственный источник истины.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct LightGridParams {
+    pub world_min: [f32; 3],
+    pub cell_size: f32,
+    pub world_max: [f32; 3],
+    pub grid_width: u32,
+    pub grid_height: u32,
+    pub grid_depth: u32,
+    pub _padding: u32,
+}
+
 /// Ячейка световой сетки
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +90,14 @@ pub struct LightAPI {
 
     // Статистика
     pub get_stats: extern "C" fn(instance: *mut c_void) -> LightStats,
+
+    // ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям): см. LightGridParams
+    // выше. Поле добавлено В КОНЕЦ структуры (не в середину) — порядок
+    // полей #[repr(C)] задаёт ABI layout, вставка в середину сдвинула бы
+    // смещения всех последующих fn-указателей и молча сломала бы уже
+    // скомпилированный firstfires.dll, если бы движок и плагин собрались
+    // не одновременно.
+    pub get_grid_params: extern "C" fn(instance: *mut c_void) -> LightGridParams,
 }
 
 /// Статистика каллинга

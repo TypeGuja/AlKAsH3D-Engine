@@ -12,6 +12,19 @@ pub struct AltexHeader {
     pub geometry_offset: u64,
     pub total_size: u64,
     pub created_at: u64,
+    // ДОБАВЛЕНО (Задача #15: текстуры и PBR-материалы). Раньше
+    // `materials`/`textures`/`texture_data` существовали как ПОЛЯ
+    // `AltexFile` (см. ниже), но НИКОГДА не сериализовались save()/load()
+    // — то есть в РЕАЛЬНОСТИ ни один .altex файл на диске не мог нести
+    // материал/текстуру, даже если код-экспортёр их заполнил перед
+    // вызовом save(). Поле добавлено В КОНЕЦ структуры (после
+    // существующих полей, не между ними) — это НЕ ломает бинарную
+    // совместимость чтения: `load()` ниже читает материалы ТОЛЬКО когда
+    // `version >= 2 && materials_offset != 0`, старые файлы версии 1
+    // (materials_offset была бы мусором за пределами реально записанных
+    // байт заголовка) для этого условия не подходят и получают пустые
+    // materials/textures/texture_data — так же, как получали раньше.
+    pub materials_offset: u64,
 }
 
 #[repr(C)]
@@ -128,6 +141,7 @@ impl AltexFile {
                 created_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap().as_secs(),
+                materials_offset: 0,
             },
             strings: Vec::new(),
             objects: Vec::new(),
@@ -169,6 +183,62 @@ impl AltexFile {
         self.vertices.extend(vertices);
         self.indices.extend(indices);
         mesh_id
+    }
+
+    /// ДОБАВЛЕНО (Задача #15: текстуры и PBR-материалы). Добавляет
+    /// текстуру (сырые пиксельные байты — RGBA8, см. `format`/`width`/
+    /// `height`, интерпретация формата — на совести загружающего кода,
+    /// сам `.altex` формат её не проверяет и не конвертирует) в общий пул
+    /// `texture_data` файла и регистрирует её метаданные в `textures`.
+    /// Возвращает индекс новой текстуры в `self.textures` — именно этот
+    /// индекс идёт в `Material::albedo_map`/`normal_map`/и т.д.
+    pub fn add_texture(&mut self, width: u32, height: u32, format: u32, pixels: &[u8], name: &str) -> u32 {
+        let texture_id = self.textures.len() as u32;
+        let name_id = self.add_string(name);
+        let data_offset = self.texture_data.len() as u64;
+        let data_size = pixels.len() as u64;
+
+        self.textures.push(Texture {
+            name_id,
+            width,
+            height,
+            mip_levels: 1,
+            format,
+            data_offset,
+            data_size,
+        });
+
+        self.texture_data.extend_from_slice(pixels);
+        texture_id
+    }
+
+    /// ДОБАВЛЕНО (Задача #15): добавляет материал — `albedo_map` (и
+    /// прочие *_map поля) должны быть либо валидным индексом в
+    /// `self.textures` (см. `add_texture`), либо `0xFFFFFFFF` ("карты
+    /// нет, использовать только скалярное значение `albedo`/`metallic`/
+    /// и т.п." — тот же sentinel-паттерн, что уже применён у
+    /// `Mesh::material_id`/`SceneObject::material_id` выше).
+    pub fn add_material(&mut self, albedo: [f32; 4], albedo_map: u32, name: &str) -> u32 {
+        let material_id = self.materials.len() as u32;
+        let name_id = self.add_string(name);
+
+        self.materials.push(Material {
+            name_id,
+            shader_id: 0,
+            albedo,
+            metallic: 0.0,
+            roughness: 0.8,
+            ao: 1.0,
+            emissive: [0.0, 0.0, 0.0],
+            albedo_map,
+            normal_map: 0xFFFFFFFF,
+            metallic_map: 0xFFFFFFFF,
+            roughness_map: 0xFFFFFFFF,
+            ao_map: 0xFFFFFFFF,
+            emissive_map: 0xFFFFFFFF,
+        });
+
+        material_id
     }
 
     pub fn add_object(&mut self, mesh_id: u32, transform: Transform, name: &str) -> u32 {
@@ -252,21 +322,57 @@ impl AltexFile {
             geom_data.extend_from_slice(&index.to_le_bytes());
         }
 
+        // ДОБАВЛЕНО (Задача #15: текстуры и PBR-материалы). Блок
+        // материалов/текстур — тот же общий стиль "count-header + POD-
+        // массив", что и у geom_data выше: count материалов, затем сами
+        // Material (POD), затем count текстур, затем сами Texture (POD,
+        // метаданные БЕЗ пиксельных данных), затем размер + сырые байты
+        // texture_data ОДНИМ блоком (не по одной текстуре — Texture::
+        // data_offset/data_size уже дают точные границы каждой текстуры
+        // внутри общего texture_data, отдельно нарезать на диске нет
+        // смысла).
+        let mut materials_data = Vec::new();
+        materials_data.extend_from_slice(&(self.materials.len() as u32).to_le_bytes());
+        for material in &self.materials {
+            materials_data.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(material as *const Material as *const u8, std::mem::size_of::<Material>())
+            });
+        }
+        materials_data.extend_from_slice(&(self.textures.len() as u32).to_le_bytes());
+        for texture in &self.textures {
+            materials_data.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(texture as *const Texture as *const u8, std::mem::size_of::<Texture>())
+            });
+        }
+        materials_data.extend_from_slice(&(self.texture_data.len() as u64).to_le_bytes());
+        materials_data.extend_from_slice(&self.texture_data);
+
         let header_size = std::mem::size_of::<AltexHeader>() as u64;
         let string_offset = header_size;
         let scene_offset = string_offset + strings_data.len() as u64;
         let geom_offset = scene_offset + scene_data.len() as u64;
-        let total_size = geom_offset + geom_data.len() as u64;
+        // materials_offset ставим ВСЕГДА (не только когда материалы
+        // реально есть) — `load()` определяет "материалов нет" по
+        // count==0 внутри самого блока, а не по нулевому офсету; нулевой
+        // офсет как раз ЗАРЕЗЕРВИРОВАН как признак "файл версии 1, блока
+        // вообще нет на диске" (см. `load()`).
+        let materials_offset = geom_offset + geom_data.len() as u64;
+        let total_size = materials_offset + materials_data.len() as u64;
 
+        // ДОБАВЛЕНО (Задача #15): version=2 — сигнализирует load(), что
+        // materials_offset действительно указывает на реальный блок (а не
+        // на мусор за пределами файла версии 1, у которой этого поля
+        // физически не было). См. подробный комментарий у AltexHeader.
         let header = AltexHeader {
             magic: self.header.magic,
-            version: self.header.version,
+            version: 2,
             flags: self.header.flags,
             string_table_offset: string_offset,
             scene_offset: scene_offset,
             geometry_offset: geom_offset,
             total_size,
             created_at: self.header.created_at,
+            materials_offset,
         };
 
         file.write_all(unsafe {
@@ -275,6 +381,7 @@ impl AltexFile {
         file.write_all(&strings_data)?;
         file.write_all(&scene_data)?;
         file.write_all(&geom_data)?;
+        file.write_all(&materials_data)?;
 
         Ok(())
     }
@@ -358,6 +465,48 @@ impl AltexFile {
             let mut index_bytes = [0u8; 4];
             file.read_exact(&mut index_bytes)?;
             altex.indices.push(u32::from_le_bytes(index_bytes));
+        }
+
+        // ДОБАВЛЕНО (Задача #15: текстуры и PBR-материалы). Блок
+        // материалов/текстур существует ТОЛЬКО в файлах version>=2 (см.
+        // подробный комментарий у `AltexHeader::materials_offset` и у
+        // `save()` выше) — файлы version 1 просто не имеют этих байт на
+        // диске вообще, попытка их прочитать увела бы `file.seek` за
+        // пределы файла и следующий `read_exact` вернул бы UnexpectedEof.
+        // Пустые Vec (уже установлены `AltexFile::new()` в самом начале
+        // этой функции) — корректный, ожидаемый результат для такого
+        // файла, а не ошибка.
+        if altex.header.version >= 2 && altex.header.materials_offset != 0 {
+            file.seek(SeekFrom::Start(altex.header.materials_offset))?;
+
+            let mut material_count_bytes = [0u8; 4];
+            file.read_exact(&mut material_count_bytes)?;
+            let material_count = u32::from_le_bytes(material_count_bytes);
+            for _ in 0..material_count {
+                let mut material: Material = unsafe { std::mem::zeroed() };
+                file.read_exact(unsafe {
+                    std::slice::from_raw_parts_mut(&mut material as *mut Material as *mut u8, std::mem::size_of::<Material>())
+                })?;
+                altex.materials.push(material);
+            }
+
+            let mut texture_count_bytes = [0u8; 4];
+            file.read_exact(&mut texture_count_bytes)?;
+            let texture_count = u32::from_le_bytes(texture_count_bytes);
+            for _ in 0..texture_count {
+                let mut texture: Texture = unsafe { std::mem::zeroed() };
+                file.read_exact(unsafe {
+                    std::slice::from_raw_parts_mut(&mut texture as *mut Texture as *mut u8, std::mem::size_of::<Texture>())
+                })?;
+                altex.textures.push(texture);
+            }
+
+            let mut texture_data_len_bytes = [0u8; 8];
+            file.read_exact(&mut texture_data_len_bytes)?;
+            let texture_data_len = u64::from_le_bytes(texture_data_len_bytes) as usize;
+            let mut texture_data = vec![0u8; texture_data_len];
+            file.read_exact(&mut texture_data)?;
+            altex.texture_data = texture_data;
         }
 
         Ok(altex)

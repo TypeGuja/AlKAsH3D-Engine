@@ -1,8 +1,16 @@
 // src/queue.rs
-use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use crate::STATE;
+
+/// ДОБАВЛЕНО (фикс "белого окна" + краша драйвера — см. подробный
+/// комментарий у `wait_for_fence` в engine/mod.rs про общий класс бага):
+/// `flush()` ниже раньше ждал `0xFFFFFFFF` (то есть `INFINITE`) без
+/// таймаута — тот же риск вечного зависания вызывающего потока при
+/// потерянном/зависшем GPU, что уже был исправлен для per-frame
+/// ожиданий в engine/mod.rs и для загрузки текстур в texture.rs.
+const WAIT_TIMEOUT_MS: u32 = 5000;
 
 pub struct CommandQueue;
 
@@ -87,8 +95,19 @@ impl CommandQueue {
                     println!("[QUEUE] Waiting for fence (completed={}, target={})", completed, fence_value);
                     let event = CreateEventW(None, true, false, None)?;
                     fence.SetEventOnCompletion(fence_value, event)?;
-                    WaitForSingleObject(event, 0xFFFFFFFF);
-                    CloseHandle(event);
+                    // ИЗМЕНЕНО: было `WaitForSingleObject(event, 0xFFFFFFFF)`
+                    // (INFINITE) — см. комментарий у `WAIT_TIMEOUT_MS` в
+                    // начале файла. Ограниченный таймаут вместо вечного
+                    // ожидания.
+                    let wait_result = WaitForSingleObject(event, WAIT_TIMEOUT_MS);
+                    let _ = CloseHandle(event);
+                    if wait_result == WAIT_TIMEOUT {
+                        eprintln!("[QUEUE] ERROR: timeout ({} ms) waiting for fence in flush()", WAIT_TIMEOUT_MS);
+                        if let Some(reason) = crate::device_removed_reason() {
+                            eprintln!("[QUEUE] Device removed, reason: {}", reason);
+                        }
+                        return Err(windows::core::Error::from_hresult(windows::core::HRESULT(1)));
+                    }
                     println!("[QUEUE] Fence completed");
                 } else {
                     println!("[QUEUE] Fence already completed");

@@ -10,6 +10,12 @@ mod buffer;
 mod command;
 mod render;
 mod utils;
+// ДОБАВЛЕНО (Фаза 5 плана по реализму/фонарям): texture.rs существовал в
+// репозитории (create_texture2d/create_render_target/create_depth_stencil,
+// с bounds-checked CPU->GPU upload), но НЕ был подключён к дереву
+// модулей — не компилировался и не был доступен вообще. Нужен для HDR
+// render target (Renderer::hdr_target) и промежуточных bloom-текстур.
+pub mod texture;
 mod shader;
 mod pso;
 mod altex_format;
@@ -22,6 +28,12 @@ mod alps_format;
 mod alsnd_format;
 mod alscript_format;
 mod aluv_format;
+// ДОБАВЛЕНО (звуковая подсистема — Фаза "Sound" плана): XAudio2-плейбек +
+// WAV-декодер + 3D-позиционирование, см. подробный комментарий в начале
+// audio.rs про архитектурное решение (нет отдельного готового аудио-
+// плагина на диске пользователя, в отличие от alkash3d-inertial/
+// alkash3d-FirstFires — поэтому звук реализован напрямую здесь).
+pub mod audio;
 
 mod plugin;
 mod scheduler;
@@ -49,6 +61,7 @@ pub use buffer::*;
 pub use command::*;
 pub use render::*;
 pub use utils::*;
+pub use texture::*;
 pub use plugin::*;
 pub use shader::*;
 pub use pso::*;
@@ -63,6 +76,7 @@ pub use alps_format::*;
 pub use alsnd_format::*;
 pub use alscript_format::*;
 pub use aluv_format::*;
+pub use audio::{AttenuationParams, AudioEngine, Listener, SoundClip, SoundHandle};
 
 // НОВЫЕ ЭКСПОРТЫ
 pub use math::*;
@@ -98,6 +112,12 @@ pub struct GlobalState {
     pub bound_vertex_buffers: Vec<u64>,
     pub bound_index_buffer: Option<u64>,
     pub scheduler: Option<EngineScheduler>,
+    /// ДОБАВЛЕНО (диагностика краша E_INVALIDARG): интерфейс D3D12 debug
+    /// layer для чтения подробных валидационных сообщений (см. device.rs —
+    /// заполняется там, если EnableDebugLayer()/QueryInterface прошли
+    /// успешно). `None`, если debug layer недоступен на машине — в этом
+    /// случае dump_d3d12_debug_messages() ниже просто ничего не печатает.
+    pub info_queue: Option<ID3D12InfoQueue>,
 }
 
 impl GlobalState {
@@ -121,6 +141,7 @@ impl GlobalState {
             bound_vertex_buffers: Vec::new(),
             bound_index_buffer: None,
             scheduler: None,
+            info_queue: None,
         }
     }
 }
@@ -205,5 +226,63 @@ pub fn device_removed_reason() -> Option<String> {
     match reason {
         Ok(()) => None, // устройство в порядке
         Err(e) => Some(format!("{:?}", e)),
+    }
+}
+
+/// ДОБАВЛЕНО (диагностика реального краша E_INVALIDARG на живой машине):
+/// печатает в stderr ВСЕ сообщения, накопленные D3D12 debug layer'ом (см.
+/// `device.rs::D3D12Device::create()` — там он включается и туда же
+/// сохраняется `ID3D12InfoQueue`). В отличие от голого HRESULT
+/// (`Error { code: HRESULT(0x80070057), message: "Параметр задан
+/// неверно." }` — не говорит НИЧЕГО о том, какой именно вызов и какой
+/// именно параметр не так), debug layer называет ИМЕННО нарушенное
+/// правило текстом (например "ID3D12CommandList::OMSetRenderTargets: ...
+/// descriptor handle ... resides in a heap that ... is not currently
+/// set..." — конкретный пример, реальный текст будет другим, но так же
+/// точным). Ничего не делает (тихо), если debug layer недоступен —
+/// `state.info_queue` в этом случае `None` (см. device.rs).
+///
+/// D3D12_MESSAGE — переменной длины структура: `GetMessage` вызывается
+/// ДВАЖДЫ на каждое сообщение — первый раз с `pmessage=None`, чтобы
+/// узнать нужный размер буфера в байтах, второй раз с реально выделенным
+/// буфером этого размера, интерпретируемым как `D3D12_MESSAGE` (первые
+/// байты буфера — сама структура, `pDescription` внутри неё указывает на
+/// текст, лежащий следом, в том же буфере, который заполняет сам API) —
+/// таков контракт этого COM-метода, тот же паттерн, что и в C++.
+pub fn dump_d3d12_debug_messages() {
+    let state = STATE.lock().unwrap();
+    let Some(info_queue) = &state.info_queue else {
+        eprintln!("[DEBUG-LAYER] Недоступен (debug layer не был включён при создании устройства) — подробностей об ошибке нет, только HRESULT выше.");
+        return;
+    };
+
+    unsafe {
+        let num = info_queue.GetNumStoredMessages();
+        if num == 0 {
+            eprintln!("[DEBUG-LAYER] Debug layer включён, но не накопил ни одного сообщения об этой ошибке (валидация могла не поймать её структурно) — HRESULT выше остаётся единственной подсказкой.");
+            return;
+        }
+        eprintln!("[DEBUG-LAYER] ===== {} сообщени(е/й) от D3D12 debug layer =====", num);
+        for i in 0..num {
+            let mut len: usize = 0;
+            if info_queue.GetMessage(i, None, &mut len).is_err() || len == 0 {
+                continue;
+            }
+            let mut buffer = vec![0u8; len];
+            let msg_ptr = buffer.as_mut_ptr() as *mut D3D12_MESSAGE;
+            if info_queue.GetMessage(i, Some(msg_ptr), &mut len).is_ok() {
+                let msg = &*msg_ptr;
+                if !msg.pDescription.is_null() && msg.DescriptionByteLength > 0 {
+                    let desc_bytes = std::slice::from_raw_parts(msg.pDescription, msg.DescriptionByteLength);
+                    let desc = String::from_utf8_lossy(desc_bytes);
+                    let desc = desc.trim_end_matches('\0');
+                    eprintln!("[DEBUG-LAYER] [{:?} / {:?}] {}", msg.Severity, msg.Category, desc);
+                } else {
+                    eprintln!("[DEBUG-LAYER] (сообщение #{} без текста, ID={:?})", i, msg.ID);
+                }
+            }
+        }
+        eprintln!("[DEBUG-LAYER] ===== конец сообщений =====");
+        info_queue.ClearStoredMessages();
     }
 }

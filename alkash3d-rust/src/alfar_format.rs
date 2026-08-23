@@ -17,7 +17,14 @@ pub struct AlfarHeader {
     pub created_at: u64,
 }
 
+// ДОБАВЛЕНО (Фаза 1 плана по реализму/фонарям): Clone/Copy — теперь эти
+// структуры хранятся напрямую в `AlkashEngine` (см.
+// `AlkashEngine::light_ambient`/`light_global_settings`,
+// `load_lights_from_alfar` в engine/mod.rs) и должны свободно читаться
+// каждый кадр без потребления/перемещения владения; обе — плоские POD
+// (только f32/u32/[f32;N]), так что Copy ничего не ломает.
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct AmbientLight {
     pub intensity: f32,
     pub color: [f32; 3],
@@ -26,6 +33,7 @@ pub struct AmbientLight {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct GlobalLightSettings {
     pub master_intensity: f32,
     pub shadow_quality: u32,
@@ -367,5 +375,159 @@ impl AlfarFile {
 
     pub fn get_group(&self, id: u32) -> Option<&LightGroup> {
         self.light_groups.get(id as usize)
+    }
+
+    // ================================================================
+    // ДОБАВЛЕНО (Фаза 1 плана по реализму/фонарям): чтение .alfar с диска.
+    //
+    // До этого момента формат использовался ТОЛЬКО на запись (`save()`) —
+    // ничего в движке не могло прочитать .alfar обратно, то есть вся
+    // богатая модель освещения (тени/мерцание/день-ночь/volumetrics),
+    // которую формат уже поддерживал, была недостижима в рантайме.
+    //
+    // `load()` — зеркало `save()`, читает ровно те же блоки в том же
+    // порядке и с теми же смещениями, которые вычисляет `save()`:
+    // header -> ambient -> global_settings -> lights_data (count строк +
+    // сами строки, null-terminated + все IndividualLight подряд).
+    //
+    // ВАЖНО: `save()` на сегодня НЕ сериализует реальные данные групп и
+    // анимаций (`groups_data`/`anim_data` в save() всегда пустые Vec,
+    // несмотря на то что `light_groups_count` в заголовке пишется) —
+    // поэтому `load()` тоже не пытается их читать, только считает
+    // `light_groups_count`/`total_lights` как метаданные для валидации.
+    // Если/когда `save()` научится реально писать группы и анимации,
+    // `load()` нужно будет расширить симметрично — до тех пор попытка
+    // прочитать несуществующие байты групп была бы либо чтением мусора,
+    // либо чтением байт следующего блока не по адресу.
+    // ================================================================
+    pub fn load(path: &str) -> std::io::Result<Self> {
+        let mut file = std::fs::File::open(path)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+
+        let header_size = std::mem::size_of::<AlfarHeader>();
+        if buf.len() < header_size {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "alfar: файл короче заголовка AlfarHeader",
+            ));
+        }
+
+        // SAFETY: AlfarHeader — #[repr(C)], POD (только числа и [u8;8]),
+        // мы только что проверили, что в буфере достаточно байт.
+        let header: AlfarHeader = unsafe {
+            std::ptr::read_unaligned(buf.as_ptr() as *const AlfarHeader)
+        };
+
+        if &header.magic != b"ALKALFAR" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("alfar: неверная сигнатура {:?}, ожидалось ALKALFAR", header.magic),
+            ));
+        }
+        if header.version != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("alfar: неподдерживаемая версия формата {}", header.version),
+            ));
+        }
+
+        let read_at = |offset: u64, size: usize, what: &str| -> std::io::Result<&[u8]> {
+            let start = offset as usize;
+            let end = start.checked_add(size).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("alfar: переполнение при вычислении конца блока {}", what),
+            ))?;
+            buf.get(start..end).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("alfar: блок {} выходит за пределы файла (offset={}, size={}, file_len={})", what, offset, size, buf.len()),
+            ))
+        };
+
+        let ambient_bytes = read_at(header.ambient_offset, std::mem::size_of::<AmbientLight>(), "ambient")?;
+        let ambient: AmbientLight = unsafe { std::ptr::read_unaligned(ambient_bytes.as_ptr() as *const AmbientLight) };
+
+        let global_bytes = read_at(header.global_settings_offset, std::mem::size_of::<GlobalLightSettings>(), "global_settings")?;
+        let global_settings: GlobalLightSettings = unsafe { std::ptr::read_unaligned(global_bytes.as_ptr() as *const GlobalLightSettings) };
+
+        // Блок lights_data начинается с individual_lights_offset и тянется
+        // до конца файла (либо до groups_offset, если он больше — на
+        // сегодня groups_data всегда пуст, так что оба варианта совпадают;
+        // берём min(groups_offset, file_len), чтобы не читать за пределы
+        // файла даже если когда-нибудь появятся непустые группы старой
+        // сериализации без апдейта load()).
+        let lights_start = header.individual_lights_offset as usize;
+        if lights_start > buf.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "alfar: individual_lights_offset выходит за пределы файла",
+            ));
+        }
+        let lights_end = (header.light_groups_offset as usize).min(buf.len()).max(lights_start);
+        let lights_data = &buf[lights_start..lights_end];
+
+        if lights_data.len() < 4 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "alfar: блок lights_data короче счётчика строк",
+            ));
+        }
+
+        let mut cursor = 0usize;
+        let string_count = u32::from_le_bytes(lights_data[0..4].try_into().unwrap()) as usize;
+        cursor += 4;
+
+        let mut strings = Vec::with_capacity(string_count);
+        for _ in 0..string_count {
+            let nul_pos = lights_data[cursor..].iter().position(|&b| b == 0).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "alfar: строка без завершающего нуля")
+            })?;
+            let s = String::from_utf8_lossy(&lights_data[cursor..cursor + nul_pos]).into_owned();
+            strings.push(s);
+            cursor += nul_pos + 1;
+        }
+
+        let light_size = std::mem::size_of::<IndividualLight>();
+        let remaining = &lights_data[cursor..];
+        if remaining.len() % light_size != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "alfar: остаток блока источников света ({} байт) не кратен размеру IndividualLight ({} байт)",
+                    remaining.len(), light_size
+                ),
+            ));
+        }
+        let light_count = remaining.len() / light_size;
+        let mut lights = Vec::with_capacity(light_count);
+        for i in 0..light_count {
+            let start = i * light_size;
+            let light: IndividualLight = unsafe {
+                std::ptr::read_unaligned(remaining[start..start + light_size].as_ptr() as *const IndividualLight)
+            };
+            lights.push(light);
+        }
+
+        if lights.len() != header.total_lights as usize {
+            eprintln!(
+                "[ALFAR] ПРЕДУПРЕЖДЕНИЕ: заголовок обещает total_lights={}, реально прочитано {} — файл мог быть обрезан или повреждён",
+                header.total_lights, lights.len()
+            );
+        }
+
+        Ok(Self {
+            header,
+            strings,
+            ambient,
+            global_settings,
+            lights,
+            // Группы/анимации на диске сейчас не хранятся (см. комментарий
+            // выше) — пустые, а не выдуманные из воздуха данные.
+            light_groups: Vec::new(),
+            animations: Vec::new(),
+            keyframes: Vec::new(),
+            custom_data: Vec::new(),
+            group_light_ids: Vec::new(),
+        })
     }
 }

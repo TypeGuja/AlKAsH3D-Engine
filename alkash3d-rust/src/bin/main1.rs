@@ -15,11 +15,21 @@
 use alkash3d_rs::engine::{AlkashEngine, MeshInstance};
 use alkash3d_rs::scene::EntityId;
 use alkash3d_rs::math::Vec3;
+use alkash3d_rs::LightConfig;
 use std::time::Instant;
+use windows::core::Interface;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-const WINDOW_WIDTH: u32 = 1280;
-const WINDOW_HEIGHT: u32 = 720;
+const WINDOW_WIDTH: u32 = 1366;
+const WINDOW_HEIGHT: u32 = 768;
+
+/// Путь к скомпилированному плагину FirstFires — соседняя директория
+/// относительно alkash3d-rust (см. main.rs про то, откуда взялось это имя
+/// файла: Cargo превращает дефис в имени пакета "alkash3d-firstfires" в
+/// подчёркивание, так что итоговый файл — alkash3d_firstfires.dll). НЕ
+/// "firstfires.dll" (без подчёркивания) — рядом лежит одноимённый файл от
+/// другой/старой сборки, не экспортирующий ожидаемый API ("No light API").
+const FIRSTFIRES_DLL_PATH: &str = "../alkash3d-FirstFires/target/release/alkash3d_firstfires.dll";
 
 /// Держит ID сущностей "солнечной системы", которые нужно анимировать
 /// каждый кадр (см. update_solar_system).
@@ -55,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(e.into());
     }
 
+    setup_lights(&mut engine);
     let solar_system = setup_scene(&mut engine);
     run_loop(&mut engine, &solar_system);
 
@@ -68,6 +79,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("[MAIN] Goodbye!");
     Ok(())
+}
+
+/// Инициализирует плагин освещения (FirstFires) и ставит один простой
+/// "уличный" источник света над сценой — в отличие от main.rs (который
+/// грузит целую ночную сцену из .alfar-файла), здесь достаточно одного
+/// источника, чтобы было видно, что HDR/bloom/tonemap-пайплайн из Фазы 5
+/// реально получает данные об освещении, а не просто рисует в темноту.
+/// Как и в main.rs, любая ошибка здесь не фатальна — сцена в худшем случае
+/// останется без дополнительного света, но не упадёт.
+fn setup_lights(engine: &mut AlkashEngine) {
+    println!("\n[MAIN] Setting up lights...");
+
+    let device_ptr = match alkash3d_rs::get_device() {
+        Ok(device) => device.as_raw(),
+        Err(e) => {
+            eprintln!("[MAIN] Failed to get D3D12 device for lighting: {:?}", e);
+            return;
+        }
+    };
+
+    let config = LightConfig {
+        max_lights: 64,
+        tile_size: 16,
+        far_plane: 100.0,
+        lod_distances: [30.0, 60.0, 100.0],
+        grid_cell_size: 10.0,
+    };
+
+    if let Err(e) = engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config) {
+        eprintln!("[MAIN] Failed to init lights (scene will stay dark): {:?}", e);
+        return;
+    }
+
+    engine.add_street_light(0.0, 3.0, 0.0);
+
+    println!("✅ Lights ready (FirstFires plugin loaded, 1 street light)");
 }
 
 fn setup_scene(engine: &mut AlkashEngine) -> SolarSystem {
@@ -230,6 +277,21 @@ fn run_loop(engine: &mut AlkashEngine, solar: &SolarSystem) {
 
         // ===== АНИМАЦИЯ: солнечная система (ECS) =====
         update_solar_system(engine, solar, time);
+
+        // ===== ОБНОВЛЕНИЕ ДВИЖКА (свет и т.п.) =====
+        // ИСПРАВЛЕНО: раньше engine.update() здесь вообще не вызывался,
+        // из-за чего плагин освещения (FirstFires) никогда не получал
+        // текущую позицию камеры/view-proj и не выполнял per-frame culling
+        // источников света после самого первого кадра.
+        {
+            let view_proj = engine.camera.projection_matrix() * engine.camera.view_matrix();
+            let camera_pos = [
+                engine.camera.position.x,
+                engine.camera.position.y,
+                engine.camera.position.z,
+            ];
+            engine.update(dt, -9.8, camera_pos, view_proj.to_cols_array());
+        }
 
         // ===== РЕНДЕР =====
         // ИСПРАВЛЕНО (см. предыдущие правки engine.rs): render_frame()

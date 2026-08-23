@@ -58,13 +58,32 @@ impl PluginManager {
                 return Err("Plugin init failed".into());
             }
 
+            // ИСПРАВЛЕНО (найдено при диагностике "No light API" на реальной
+            // машине пользователя — плагин грузился успешно, лог печатал
+            // "✅ Loaded light_culling plugin: ...", но get_light_api() всё
+            // равно возвращал None): ключ, под которым плагин кладётся в
+            // `self.plugins` HashMap — `path.display().to_string()` (ПОЛНЫЙ
+            // путь, например "../alkash3d-FirstFires/target/release/
+            // alkash3d_firstfires.dll"), а `self.physics_plugin`/
+            // `self.light_plugin` раньше сохраняли `path.file_stem()` —
+            // только имя файла БЕЗ пути и расширения (например
+            // "alkash3d_firstfires"). `get_light_api()`/`get_physics_api()`/
+            // `get_light_instance()`/`get_physics_instance()` ниже делают
+            // `self.plugins.get(plugin_name)` с этим сохранённым именем —
+            // но раз ключи не совпадают (полный путь vs просто stem),
+            // `.get()` всегда возвращал `None`, даже когда плагин на самом
+            // деле был успешно загружен и лежал в HashMap. Теперь сохраняем
+            // ТОТ ЖЕ `path.display().to_string()`, что используется как
+            // ключ при `insert` — единственный источник истины для этого
+            // ключа, без риска рассинхронизации в будущем.
+            let key = path.display().to_string();
             let name = match api.plugin_type {
                 PluginType::Physics => {
-                    self.physics_plugin = Some(path.file_stem().unwrap().to_str().unwrap().to_string());
+                    self.physics_plugin = Some(key.clone());
                     "physics"
                 }
                 PluginType::LightCulling => {
-                    self.light_plugin = Some(path.file_stem().unwrap().to_str().unwrap().to_string());
+                    self.light_plugin = Some(key.clone());
                     "light_culling"
                 }
                 _ => "unknown",
@@ -72,7 +91,7 @@ impl PluginManager {
 
             println!("✅ Loaded {} plugin: {}", name, path.display());
 
-            self.plugins.insert(path.display().to_string(), LoadedPlugin {
+            self.plugins.insert(key, LoadedPlugin {
                 lib,
                 api,
                 instance,
