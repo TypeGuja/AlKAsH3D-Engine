@@ -54,6 +54,24 @@ pub struct GPULight {
 unsafe impl bytemuck::Zeroable for GPULight {}
 unsafe impl bytemuck::Pod for GPULight {}
 
+/// ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям): явный ABI-контракт для
+/// параметров пространственной сетки, которую `LightState` уже строит
+/// внутри `cull()` (см. поля `world_min`/`cell_size`/`grid_width` и т.д.
+/// ниже), но раньше не отдавал наружу. ДОЛЖНА побайтово совпадать со
+/// своей копией в alkash3d-rust/src/plugin/light_api.rs — это две стороны
+/// одного и того же C-ABI, как и остальные структуры этого файла.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LightGridParams {
+    pub world_min: [f32; 3],
+    pub cell_size: f32,
+    pub world_max: [f32; 3],
+    pub grid_width: u32,
+    pub grid_height: u32,
+    pub grid_depth: u32,
+    pub _padding: u32,
+}
+
 /// Ячейка световой сетки
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -99,6 +117,10 @@ pub struct LightAPI {
     pub get_grid_cells_count: extern "C" fn(instance: *mut c_void) -> u32,
     pub get_grid_entries_count: extern "C" fn(instance: *mut c_void) -> u32,
     pub get_stats: extern "C" fn(instance: *mut c_void) -> LightStats,
+    // ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям) — см. LightGridParams.
+    // В КОНЦЕ структуры, не в середине (см. подробное объяснение в
+    // зеркальной копии LightAPI в alkash3d-rust/src/plugin/light_api.rs).
+    pub get_grid_params: extern "C" fn(instance: *mut c_void) -> LightGridParams,
 }
 
 /// Базовый API плагина
@@ -130,6 +152,15 @@ struct InternalLight {
     spot_angle: f32,
     spot_direction: Vector3<f32>,
     falloff: f32,
+    // ДОБАВЛЕНО (Фаза 4 плана по реализму/фонарям): раньше это поле
+    // отсутствовало — `add_light()` получал GPULight.params[2]
+    // (spot_inner_angle, см. движковую сторону в engine/mod.rs) на входе,
+    // но НИКУДА его не сохранял, а `to_gpu()` жёстко писал 0.0 обратно.
+    // То есть внутренний угол конуса молча ТЕРЯЛСЯ между add_light() и
+    // следующим cull()/get_gpu_lights() — движок получал бы обратно
+    // spot_inner_angle=0 независимо от того, что реально было передано.
+    // Теперь сохраняется и возвращается как есть (round-trip).
+    spot_inner_angle: f32,
 }
 
 impl InternalLight {
@@ -138,7 +169,7 @@ impl InternalLight {
             position: [self.position.x, self.position.y, self.position.z, self.light_type as u32 as f32],
             color: [self.color.x, self.color.y, self.color.z, self.intensity],
             direction: [self.spot_direction.x, self.spot_direction.y, self.spot_direction.z, self.range],
-            params: [self.spot_angle, self.falloff, 0.0, 0.0],
+            params: [self.spot_angle, self.falloff, self.spot_inner_angle, 0.0],
         }
     }
 }
@@ -209,6 +240,9 @@ impl LightState {
             spot_angle: light.params[0],
             spot_direction: Vector3::new(light.direction[0], light.direction[1], light.direction[2]),
             falloff: light.params[1],
+            // ДОБАВЛЕНО (Фаза 4 плана по реализму/фонарям) — см. комментарий
+            // у поля `spot_inner_angle` в InternalLight выше.
+            spot_inner_angle: light.params[2],
         };
 
         self.lights.push(internal);
@@ -216,6 +250,56 @@ impl LightState {
         id
     }
 
+    /// ИСПРАВЛЕНО (баг: мерцание/день-ночь фонарей молча не работали):
+    /// раньше `extern "C" fn update_light` ниже был пустой заглушкой
+    /// ("для простоты не реализуем обновление") — движковая сторона
+    /// (`AlkashEngine::update_day_night` в engine/mod.rs) каждый кадр
+    /// честно считала новую intensity (мерцание по flicker_speed/
+    /// flicker_intensity, включение/выключение по active_from/active_to)
+    /// и вызывала `LightPlugin::update_light`, но результат никуда не
+    /// попадал: свет, добавленный через `add_light()`, так и оставался с
+    /// ПЕРВОНАЧАЛЬНЫМИ параметрами навсегда — визуально это выглядело как
+    /// полностью статичные фонари без единого намёка на мерцание или
+    /// суточный цикл, хотя вся математика для этого была на месте.
+    ///
+    /// Ищем свет по `id` (линейный проход — при `max_lights` в единицы
+    /// десятков это пренебрежимо дёшево, а `remove_light()` не реализован
+    /// намеренно, см. комментарий там, так что `id` не гарантированно
+    /// совпадает с индексом после возможных будущих удалений — искать по
+    /// `id`, а не считать `id == index`, единственный надёжный вариант) и
+    /// перезаписываем ВСЕ поля, которые может передать `GPULight` — та же
+    /// раскладка полей, что и в `add_light()` выше, чтобы обновление вело
+    /// себя идентично повторному добавлению того же света.
+    fn update_light(&mut self, id: u32, light: &GPULight) {
+        if let Some(internal) = self.lights.iter_mut().find(|l| l.id == id) {
+            let light_type = match light.position[3] as u32 {
+                0 => LightType::Point,
+                1 => LightType::Spot,
+                2 => LightType::Directional,
+                _ => LightType::Point,
+            };
+            internal.position = Vector3::new(light.position[0], light.position[1], light.position[2]);
+            internal.color = Vector3::new(light.color[0], light.color[1], light.color[2]);
+            internal.intensity = light.color[3];
+            internal.range = light.direction[3];
+            internal.light_type = light_type;
+            internal.spot_angle = light.params[0];
+            internal.spot_direction = Vector3::new(light.direction[0], light.direction[1], light.direction[2]);
+            internal.falloff = light.params[1];
+            internal.spot_inner_angle = light.params[2];
+        }
+        // Свет с таким id не найден (например id из другого, уже
+        // выгруженного instance плагина) — тихо игнорируем, как и
+        // остальные функции этого ABI обходятся с невалидными id
+        // (см. `remove_light`), а не паникуют/логируют на каждый кадр.
+    }
+
+    // ИСПРАВЛЕНО: больше не используется в `cull()` — заменён на
+    // `get_cell_indices_for_sphere` (см. подробный комментарий там).
+    // Оставлен как есть (не удалён) — тривиальная и потенциально полезная
+    // утилита "какой ячейке принадлежит точка", `#[allow(dead_code)]`,
+    // чтобы не засорять сборку предупреждением.
+    #[allow(dead_code)]
     fn get_cell_index(&self, pos: Vector3<f32>) -> Option<usize> {
         let local = pos - self.world_min;
 
@@ -232,6 +316,69 @@ impl LightState {
         }
 
         Some((z * self.grid_height * self.grid_width + y * self.grid_width + x) as usize)
+    }
+
+    /// ИСПРАВЛЕНО (баг: "свет резко появляется/пропадает при ходьбе,
+    /// уступами" — фонарь физически ещё должен освещать пиксель, но пол
+    /// под ним резко темнеет): раньше свет регистрировался ТОЛЬКО в ОДНОЙ
+    /// ячейке сетки — той, где находится сам источник (`get_cell_index`
+    /// по позиции фонаря). Но пиксельный шейдер ищет фонари ТОЛЬКО в
+    /// ячейке, которой принадлежит ОСВЕЩАЕМЫЙ ПИКСЕЛЬ (см. `main()` в
+    /// `compile_default_shaders`, engine/mod.rs) — если `light.range`
+    /// (радиус физического действия света) больше `cell_size` (типичная
+    /// ситуация: уличный фонарь range=15м при cell_size=10м, см.
+    /// LightConfig в main.rs), сфера освещения фонаря выходит ЗА
+    /// пределы его собственной ячейки в соседние — но шейдер эти соседние
+    /// ячейки никогда не проверял, поэтому свет резко обрывался РОВНО НА
+    /// ГРАНИЦЕ ячейки сетки, а не на границе своего реального радиуса
+    /// действия. Это и создавало резкие "уступы" освещённости при ходьбе
+    /// — переход в соседнюю ячейку сетки (не самого фонаря!) выглядел как
+    /// внезапное гашение/разгорание света.
+    ///
+    /// Стандартное решение для clustered/tiled lighting: регистрировать
+    /// источник во ВСЕХ ячейках, которые пересекает его bounding sphere
+    /// (позиция + range), а не только в одной. Возвращает индексы всех
+    /// таких ячеек (может быть пусто, если сфера целиком вне границ
+    /// мира).
+    fn get_cell_indices_for_sphere(&self, pos: Vector3<f32>, radius: f32) -> Vec<usize> {
+        let min_local = pos - self.world_min - Vector3::new(radius, radius, radius);
+        let max_local = pos - self.world_min + Vector3::new(radius, radius, radius);
+
+        // Переводим в целочисленный диапазон индексов ячеек по каждой оси,
+        // clamped к границам сетки — сфера может частично выходить за
+        // world_min/world_max (например фонарь у самого края мира), в
+        // этом случае просто не регистрируем те ячейки, которых нет.
+        let cell_range = |min_v: f32, max_v: f32, dim: u32| -> Option<(u32, u32)> {
+            if max_v < 0.0 || min_v >= dim as f32 * self.cell_size {
+                return None; // сфера целиком вне диапазона этой оси
+            }
+            let lo = (min_v / self.cell_size).floor().max(0.0) as u32;
+            let hi = ((max_v / self.cell_size).floor() as i64).clamp(0, dim as i64 - 1) as u32;
+            if lo > hi { None } else { Some((lo, hi)) }
+        };
+
+        let (x_lo, x_hi) = match cell_range(min_local.x, max_local.x, self.grid_width) { Some(r) => r, None => return Vec::new() };
+        let (y_lo, y_hi) = match cell_range(min_local.y, max_local.y, self.grid_height) { Some(r) => r, None => return Vec::new() };
+        let (z_lo, z_hi) = match cell_range(min_local.z, max_local.z, self.grid_depth) { Some(r) => r, None => return Vec::new() };
+
+        // Небольшой защитный предел на число ячеек одной сферы — при
+        // разумных grid_cell_size/range (десятки метров) сфера пересекает
+        // единицы-десятки ячеек; предел ловит патологический случай
+        // (огромный range при крошечном cell_size), а не обычную работу.
+        const MAX_CELLS_PER_LIGHT: usize = 4096;
+        let mut result = Vec::new();
+        'outer: for z in z_lo..=z_hi {
+            for y in y_lo..=y_hi {
+                for x in x_lo..=x_hi {
+                    let idx = (z * self.grid_height * self.grid_width + y * self.grid_width + x) as usize;
+                    result.push(idx);
+                    if result.len() >= MAX_CELLS_PER_LIGHT {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        result
     }
 
     fn cull(&mut self, camera_pos: [f32; 3], view_proj: &[f32; 16], _dt: f32) {
@@ -261,6 +408,26 @@ impl LightState {
         let mut culled_dist = 0;
         let mut culled_frustum = 0;
 
+        // ИСПРАВЛЕНО (баг: уличные фонари резко гаснут/загораются при
+        // ходьбе игрока): раньше здесь был ДОПОЛНИТЕЛЬНЫЙ тест `distance >
+        // light.range * 1.2`, отдельный от LOD-дистанции. `light.range` —
+        // радиус ВЛИЯНИЯ СВЕТА НА ОСВЕЩАЕМУЮ ИМ ПОВЕРХНОСТЬ (уже корректно
+        // учтён в пиксельном шейдере через windowFalloff, см.
+        // ComputePointLightContribution в alkash3d-rust/src/engine/mod.rs)
+        // — он НЕ имеет отношения к тому, виден ли сам ИСТОЧНИК СВЕТА
+        // камерой. Смешивать эти два понятия было ошибкой: для типичного
+        // уличного фонаря (range=15м, см. create_night_city() в
+        // alfar_format.rs) порог `range*1.2`=18м оказывался ГОРАЗДО
+        // жёстче, чем LOD-дистанции (обычно 30-100+м, см. LightConfig в
+        // main.rs) — фонарь, который физически ещё освещает видимую в
+        // кадре геометрию (стены, пол рядом с камерой), резко пропадал из
+        // списка видимых источников уже на 18 метрах, что и ощущалось как
+        // "свет то есть, то резко гаснет" при обычной ходьбе вдоль улицы.
+        // LOD-дистанция и frustum test — уже достаточные и физически
+        // осмысленные критерии "не считать вклад этого света в данном
+        // кадре"; отдельный жёсткий cutoff по `range` только дублировал их
+        // менее подходящим порогом.
+
         // Параллельный каллинг
         let visible: Vec<(usize, u32, f32, Vector3<f32>)> = self.lights
             .par_iter()
@@ -279,11 +446,6 @@ impl LightState {
                     return None;
                 };
 
-                // Distance culling
-                if distance > light.range * 1.2 {
-                    return None;
-                }
-
                 // Frustum culling
                 if !frustum.test_sphere(light.position, light.range) {
                     return None;
@@ -298,14 +460,17 @@ impl LightState {
             let distance = (light.position - camera).magnitude();
             if distance >= self.config.lod_distances[2] {
                 culled_lod += 1;
-            } else if distance > light.range * 1.2 {
-                culled_dist += 1;
             } else if !frustum.test_sphere(light.position, light.range) {
                 culled_frustum += 1;
             }
         }
 
         self.stats.culled_by_lod = culled_lod;
+        // ИСПРАВЛЕНО: `culled_by_distance` больше не считается отдельно от
+        // LOD (см. подробный комментарий выше у убранного теста `distance
+        // > light.range * 1.2`) — всегда 0. Поле оставлено в
+        // `LightStats` ради стабильности публичного ABI плагина
+        // (`get_stats`/`LightStats` в этом же файле), а не удалено.
         self.stats.culled_by_distance = culled_dist;
         self.stats.culled_by_frustum = culled_frustum;
 
@@ -313,26 +478,62 @@ impl LightState {
         let mut visible_sorted = visible;
         visible_sorted.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
 
+        // ИСПРАВЛЕНО (продолжение фикса "свет резко появляется/пропадает
+        // уступами", см. подробный комментарий у
+        // `get_cell_indices_for_sphere` выше): раньше каждый свет сразу
+        // писался В ОДНУ ячейку прямо в этом цикле — `grid_cells[i].offset/
+        // count` предполагает, что все записи ОДНОЙ ячейки лежат ПОДРЯД в
+        // `grid_entries` (offset = начало диапазона, count = длина), что
+        // легко гарантировать, когда на ячейку приходится максимум одна
+        // запись за раз в порядке обхода. Теперь один свет может попасть
+        // в НЕСКОЛЬКО ячеек (пересечение bounding sphere с сеткой) — если
+        // писать записи сразу в порядке "по свету", записи одной и той же
+        // ячейки окажутся раскиданы по `grid_entries`, а не подряд, и
+        // offset/count перестанут быть валидным диапазоном. Поэтому
+        // сначала собираем ВСЕ пары (cell_idx, entry) для всех светов,
+        // затем группируем по cell_idx (stable sort по ключу ячейки
+        // сохраняет исходный порядок по глубине внутри каждой ячейки —
+        // важно для LOD/прозрачности), и только потом одним проходом
+        // заполняем `grid_entries`/`grid_cells`, зная, что все записи
+        // одной ячейки идут подряд.
+        struct PendingEntry {
+            cell_idx: usize,
+            entry: LightGridEntry,
+        }
+        let mut pending: Vec<PendingEntry> = Vec::new();
+
         for (idx, lod, depth, position) in visible_sorted {
             let light = &self.lights[idx];
             let light_idx = self.gpu_lights.len() as u32;
             self.gpu_lights.push(light.to_gpu());
 
-            if let Some(cell_idx) = self.get_cell_index(position) {
-                let entry = LightGridEntry {
-                    light_index: light_idx,
-                    lod_level: lod,
-                    depth,
-                    padding: 0,
-                };
-                self.grid_entries.push(entry);
-
-                let cell = &mut self.grid_cells[cell_idx];
-                if cell.count == 0 {
-                    cell.offset = (self.grid_entries.len() - 1) as u32;
-                }
-                cell.count += 1;
+            let cell_indices = self.get_cell_indices_for_sphere(position, light.range);
+            for cell_idx in cell_indices {
+                pending.push(PendingEntry {
+                    cell_idx,
+                    entry: LightGridEntry {
+                        light_index: light_idx,
+                        lod_level: lod,
+                        depth,
+                        padding: 0,
+                    },
+                });
             }
+        }
+
+        // Стабильная сортировка по cell_idx — группирует все записи одной
+        // ячейки подряд, не переставляя записи РАЗНЫХ светов внутри одной
+        // ячейки местами (сохраняется относительный порядок вставки —
+        // порядок по глубине, заданный visible_sorted выше).
+        pending.sort_by_key(|p| p.cell_idx);
+
+        for p in pending {
+            self.grid_entries.push(p.entry);
+            let cell = &mut self.grid_cells[p.cell_idx];
+            if cell.count == 0 {
+                cell.offset = (self.grid_entries.len() - 1) as u32;
+            }
+            cell.count += 1;
         }
 
         self.stats.visible_lights = self.gpu_lights.len() as u32;
@@ -365,8 +566,16 @@ extern "C" fn remove_light(instance: *mut c_void, _id: u32) {
     // Для простоты не реализуем удаление
 }
 
-extern "C" fn update_light(_instance: *mut c_void, _id: u32, _light: *const GPULight) {
-    // Для простоты не реализуем обновление
+/// ИСПРАВЛЕНО (баг: мерцание/день-ночь фонарей молча не работали) — см.
+/// подробный комментарий у `LightState::update_light` выше. Раньше эта
+/// функция была пустой заглушкой и молча отбрасывала ЛЮБОЕ обновление
+/// уже добавленного света.
+extern "C" fn update_light(instance: *mut c_void, id: u32, light: *const GPULight) {
+    if instance.is_null() || light.is_null() { return; }
+    unsafe {
+        let state = &mut *(instance as *mut LightState);
+        state.update_light(id, &*light);
+    }
 }
 
 extern "C" fn get_lights_count(instance: *mut c_void) -> u32 {
@@ -443,6 +652,27 @@ extern "C" fn get_stats(instance: *mut c_void) -> LightStats {
     }
 }
 
+/// ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям): отдаёт наружу параметры
+/// сетки, которые `LightState::new()` вычисляет из LightConfig при
+/// инициализации и хранит в приватных полях `world_min`/`cell_size`/
+/// `grid_width`/... — до этой функции движок не мог сопоставить мировую
+/// позицию пикселя с индексом ячейки `grid_cells`/`grid_entries`.
+extern "C" fn get_grid_params(instance: *mut c_void) -> LightGridParams {
+    if instance.is_null() { return LightGridParams::default(); }
+    unsafe {
+        let state = &mut *(instance as *mut LightState);
+        LightGridParams {
+            world_min: [state.world_min.x, state.world_min.y, state.world_min.z],
+            cell_size: state.cell_size,
+            world_max: [state.world_max.x, state.world_max.y, state.world_max.z],
+            grid_width: state.grid_width,
+            grid_height: state.grid_height,
+            grid_depth: state.grid_depth,
+            _padding: 0,
+        }
+    }
+}
+
 static LIGHT_API: LightAPI = LightAPI {
     add_light,
     remove_light,
@@ -456,6 +686,7 @@ static LIGHT_API: LightAPI = LightAPI {
     get_grid_cells_count,
     get_grid_entries_count,
     get_stats,
+    get_grid_params,
 };
 
 // ===================================================================

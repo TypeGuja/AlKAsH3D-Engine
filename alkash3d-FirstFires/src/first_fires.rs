@@ -152,6 +152,25 @@ impl FirstFiresSystem {
         let mut culled_dist = 0u32;
         let mut culled_frustum = 0u32;
 
+        // ИСПРАВЛЕНО (баг: фонари резко гаснут/загораются при ходьбе):
+        // раньше здесь был ДОПОЛНИТЕЛЬНЫЙ тест `distance > light.range *
+        // 1.2`, отдельный от LOD-дистанции. `light.range` — радиус
+        // ВЛИЯНИЯ СВЕТА НА ОСВЕЩАЕМУЮ ИМ ПОВЕРХНОСТЬ (уже корректно учтён
+        // в пиксельном шейдере через windowFalloff, см.
+        // ComputePointLightContribution в engine/mod.rs) — он НЕ имеет
+        // отношения к тому, виден ли сам ИСТОЧНИК СВЕТА камерой. Смешивать
+        // эти два понятия было ошибкой: для типичного уличного фонаря
+        // (range=15м) порог `range*1.2`=18м оказывался ГОРАЗДО жёстче,
+        // чем LOD/frustum-дистанции (обычно 30-100+м) — фонарь, который
+        // физически ещё освещает видимую в кадре геометрию (стены, пол
+        // рядом с камерой), резко пропадал из списка видимых источников
+        // уже на 18 метрах, что и ощущалось как "свет то есть, то резко
+        // гаснет" при обычной ходьбе вдоль улицы. LOD-дистанция
+        // (`lod_distances`, настраивается через LightConfig, см.
+        // `AlkashEngine::init_lights`) и frustum test — уже достаточные и
+        // физически осмысленные критерии "не считать вклад этого света в
+        // данном кадре"; отдельный жёсткий cutoff по `range` только
+        // дублировал их менее подходящим порогом.
         let visible: Vec<(usize, i32, f32)> = self.lights
             .par_iter()
             .enumerate()
@@ -160,10 +179,6 @@ impl FirstFiresSystem {
 
                 let lod = self.culler.get_lod_level(distance);
                 if lod < 0 {
-                    return None;
-                }
-
-                if distance > light.range * 1.2 {
                     return None;
                 }
 
@@ -180,14 +195,17 @@ impl FirstFiresSystem {
             let distance = (light.position - camera_pos).magnitude();
             if self.culler.get_lod_level(distance) < 0 {
                 culled_lod += 1;
-            } else if distance > light.range * 1.2 {
-                culled_dist += 1;
             } else if !frustum.test_sphere(light.position, light.range) {
                 culled_frustum += 1;
             }
         }
 
         self.stats.culled_by_lod = culled_lod;
+        // ИСПРАВЛЕНО: `culled_by_distance` больше не считается отдельно от
+        // LOD (см. подробный комментарий выше у убранного теста `distance
+        // > light.range * 1.2`) — всегда 0. Поле оставлено в
+        // `CullingStats` ради стабильности публичного ABI плагина
+        // (`get_stats`/`CullingStats` в lib.rs), а не удалено.
         self.stats.culled_by_distance = culled_dist;
         self.stats.culled_by_frustum = culled_frustum;
 
