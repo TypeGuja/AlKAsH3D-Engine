@@ -32,7 +32,17 @@ path = "src/bin/main2.rs"
 
 
 [dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Graphics_Dxgi_Common", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse"] }
+# ДОБАВЛЕНО (звуковая подсистема — XAudio2): "Win32_Media_Audio_XAudio2"
+# тянет за собой "Win32_Media_Audio" (см. windows-0.62.2/Cargo.toml —
+# Win32_Media_Audio_XAudio2 = ["Win32_Media_Audio"]), которая, в свою
+# очередь, даёт WAVEFORMATEX и остальные общие Media::Audio типы.
+# XAudio2 в этой версии крейта линкуется статически против "xaudio2_8.dll"
+# (см. windows-0.62.2/src/.../XAudio2/mod.rs — XAudio2CreateWithVersionInfo
+# использует windows_core::link!("xaudio2_8.dll" ...)) — версия 2.8 API
+# ВСТРОЕНА в саму ОС начиная с Windows 8 (часть XAudio2Redist слился в
+# системный компонент), никакого отдельного redist/vcredist не требуется
+# — то, что нужно под цель "10 лет минимального железа" из ТЗ движка.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Graphics_Dxgi_Common", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_Media_Audio_XAudio2", "Win32_Media_Audio", "Win32_Media_Multimedia"] }
 widestring = "1.0"
 windows-core = "0.62.2"
 winit = "0.31.0-beta.2"
