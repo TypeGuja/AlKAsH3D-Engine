@@ -8,6 +8,7 @@ use std::path::Path;
 use super::abi::*;
 use super::physics_api::*;
 use super::light_api::*;
+use super::scripting_api::*;
 
 pub struct PluginManager {
     plugins: HashMap<String, LoadedPlugin>,
@@ -86,6 +87,19 @@ impl PluginManager {
                     self.light_plugin = Some(key.clone());
                     "light_culling"
                 }
+                // ДОБАВЛЕНО (скриптинг — нативные C++/Rust плагины): в
+                // отличие от Physics/LightCulling (singleton — ОДИН плагин
+                // такого типа на весь движок, отсюда self.physics_plugin/
+                // self.light_plugin как Option<String>), скриптовых DLL
+                // может быть загружено НЕСКОЛЬКО одновременно (разная
+                // игровая логика в разных .dll). Поэтому здесь намеренно
+                // НЕТ singleton-поля вроде self.scripting_plugin — плагин
+                // просто остаётся в `self.plugins` под своим ключом (путь
+                // к DLL), и `get_scripting_api`/`get_scripting_instance`
+                // ниже находят его по этому же ключу, который вызывающая
+                // сторона (ScriptingPlugin::load в plugin/mod.rs) и так уже
+                // знает — тот самый путь, что был передан в load_plugin().
+                PluginType::Scripting => "scripting",
                 _ => "unknown",
             };
 
@@ -141,6 +155,39 @@ impl PluginManager {
         let plugin_name = self.light_plugin.as_ref()?;
         let plugin = self.plugins.get(plugin_name)?;
         Some(plugin.instance)
+    }
+
+    /// ДОБАВЛЕНО (скриптинг — нативные C++/Rust плагины): в отличие от
+    /// get_physics_api/get_light_api (без параметров — ищут ЕДИНСТВЕННый
+    /// загруженный плагин своего типа через singleton-поле), здесь нужен
+    /// явный `key` — тот же путь к DLL, что был передан в `load_plugin()`
+    /// — потому что скриптовых плагинов может быть загружено несколько
+    /// одновременно (см. комментарий у `PluginType::Scripting` выше в
+    /// `load_plugin`).
+    pub fn get_scripting_api(&self, key: &str) -> Option<&ScriptingAPI> {
+        let plugin = self.plugins.get(key)?;
+        unsafe {
+            let api_ptr = (plugin.api.get_scripting_api)(plugin.instance);
+            if api_ptr.is_null() {
+                None
+            } else {
+                Some(&*(api_ptr as *const ScriptingAPI))
+            }
+        }
+    }
+
+    /// Получить instance скриптового плагина по тому же ключу.
+    pub fn get_scripting_instance(&self, key: &str) -> Option<*mut c_void> {
+        let plugin = self.plugins.get(key)?;
+        Some(plugin.instance)
+    }
+
+    /// Загружен ли уже плагин с таким ключом (путём к DLL) — используется
+    /// `ScriptingPlugin::load`, чтобы НЕ грузить одну и ту же DLL повторно,
+    /// если она уже нужна другому скрипту/сущности (см. подробный
+    /// комментарий в scripting_api.rs про "одна DLL — много прикреплений").
+    pub fn is_loaded(&self, key: &str) -> bool {
+        self.plugins.contains_key(key)
     }
 
     /// Выгрузить все плагины

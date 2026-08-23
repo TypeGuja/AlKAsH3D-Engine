@@ -1,0 +1,30 @@
+[package]
+name = "alkash3d-luascript"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# Универсальный Lua DLL-плагин (скриптинг, вторая волна) — по решению
+# пользователя Lua компилируется в DLL ТЕМ ЖЕ способом, что C++/Rust
+# (ScriptingAPI C-ABI, см. alkash3d-rust/src/plugin/scripting_api.rs), а
+# не как отдельная hot-reload архитектура (та осталась только у Python,
+# см. engine::scripting_python в alkash3d-rust). В отличие от
+# alkash3d-examplescript (одна DLL = одна зашитая в код логика), эта DLL
+# — универсальный Lua-рантайм: сама грузит ЛЮБОЙ .lua-файл текстом при
+# create_script_with_source, поэтому одна и та же .dll обслуживает
+# сколько угодно разных .lua-скриптов проекта.
+name = "alkash3d_luascript"
+crate-type = ["cdylib"]
+
+[dependencies]
+# "vendored" — компилирует Lua из исходников вместе с крейтом, без
+# зависимости от системной установки Lua на машине пользователя (тот же
+# принцип самодостаточности, что и у остальных плагинов движка — DLL не
+# должна требовать ничего, кроме себя самой + libloading со стороны
+# движка). "lua54" — Lua 5.4, актуальная стабильная ветка на 2026 год.
+mlua = { version = "0.9", features = ["lua54", "vendored"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

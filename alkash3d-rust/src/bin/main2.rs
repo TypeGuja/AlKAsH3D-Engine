@@ -43,12 +43,18 @@ fn setup_lights(engine: &mut AlkashEngine) {
         }
     };
 
+    // ИСПРАВЛЕНО (та же просадка FPS, что и в main.rs — см. подробный
+    // комментарий там): `add_street_light` ниже использует range=100.0,
+    // при far_plane=100/grid_cell_size=10 сфера фонаря (диаметр 200)
+    // покрывала бы весь мир [-100,100]^3 целиком, вырождая сетку
+    // каллинга. far_plane=200/grid_cell_size=20 — та же память (8000
+    // ячеек), но сфера снова покрывает лишь часть сетки.
     let config = LightConfig {
         max_lights: 64,
         tile_size: 16,
-        far_plane: 100.0,
-        lod_distances: [30.0, 60.0, 100.0],
-        grid_cell_size: 10.0,
+        far_plane: 200.0,
+        lod_distances: [30.0, 60.0, 200.0],
+        grid_cell_size: 20.0,
     };
 
     if let Err(e) = engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config) {

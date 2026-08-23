@@ -56,6 +56,14 @@ sysinfo = "0.39.3"
 rand = "0.10.1"
 glam = "0.33.2"
 nalgebra = "0.35.0"
+# ДОБАВЛЕНО (скриптинг, вторая волна — Python как hot-reload): чистый
+# Rust, никаких системных зависимостей (в отличие от pyo3, требующего
+# embeddable CPython, установленный на машине сборки/игрока) — см.
+# подробное обоснование в engine/scripting_python.rs. rustpython-stdlib
+# нужна отдельно от rustpython-vm — сам движок VM не включает модули
+# стандартной библиотеки (в т.ч. `math`, нужный примеру bobber.py).
+rustpython-vm = "0.4"
+rustpython-stdlib = "0.4"
 
 [profile.release]
 opt-level = 3

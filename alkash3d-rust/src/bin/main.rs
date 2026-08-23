@@ -131,6 +131,45 @@ const INERTIAL_DLL_PATH: &str = "../alkash3d-inertial/target/x86_64-pc-windows-g
 /// применённая к звуку.
 const SOUND_DEMO_DIR: &str = "sound_demo";
 
+/// ДОБАВЛЕНО (скриптинг — Python hot-reload, первое реальное подключение
+/// в main): путь к эталонному Python-скрипту "bobber" — переиспользует
+/// УЖЕ существующий `examples_scripts/bobber.py` (тот же контракт
+/// update/on_event, что задокументирован и здесь, и в bobber.lua) вместо
+/// создания нового дублирующего файла. Относительный путь верен при
+/// запуске через `cargo run`/`cargo run --release` ИЗНУТРИ папки
+/// alkash3d-rust, как и остальные пути выше (FIRSTFIRES_DLL_PATH и т.п.).
+/// В отличие от Native/Lua, здесь НЕТ пути к .dll вообще — Python
+/// исполняется встроенным интерпретатором прямо в движке (см.
+/// engine::scripting_python), .py-файл читается движком напрямую.
+const PYTHON_BOBBER_SCRIPT_PATH: &str = "examples_scripts/bobber.py";
+
+/// ДОБАВЛЕНО (скриптинг — Native/Rust DLL-плагин, проверка вживую): путь
+/// к собранному `alkash3d-examplescript` (см. cargo build --release в
+/// той папке) — та же схема относительных путей, что и у
+/// FIRSTFIRES_DLL_PATH/INERTIAL_DLL_PATH выше (СОСЕДНЯЯ папка репозитория
+/// относительно alkash3d-rust). Если DLL не собрана — `load_native_script`
+/// вернёт понятную ошибку, а не тихо промолчит (см. setup_scripting).
+const NATIVE_EXAMPLE_DLL_PATH: &str = "../alkash3d-examplescript/target/release/alkash3d_examplescript.dll";
+
+/// ДОБАВЛЕНО (скриптинг — Lua DLL-плагин, проверка вживую): путь к
+/// собранному УНИВЕРСАЛЬНОМУ Lua-рантайм-плагину `alkash3d-luascript` —
+/// одна и та же DLL грузит ЛЮБОЙ .lua-файл текстом (см.
+/// LUA_BOBBER_SCRIPT_PATH ниже), поэтому здесь только путь к самой DLL,
+/// а не к конкретному скрипту.
+const LUA_RUNTIME_DLL_PATH: &str = "../alkash3d-luascript/target/release/alkash3d_luascript.dll";
+
+/// Путь к .lua-исходнику — уже существующий эталонный пример (см.
+/// alkash3d-luascript/examples/bobber.lua), тот же демо-сценарий, что и
+/// у bobber.py.
+const LUA_BOBBER_SCRIPT_PATH: &str = "../alkash3d-luascript/examples/bobber.lua";
+
+// ВЫРЕЗАНО (по прямой просьбе пользователя — "вырежи C# из скриптинга,
+// будет жить на том что есть"): C# как язык скриптинга удалён из движка
+// целиком (alkash3d-csscript/alkash3d-csscript-managed убраны из
+// репозитория) — не требовал бы .NET SDK для сборки/запуска. Скриптинг
+// движка живёт на трёх языках: Python (hot-reload), Lua (DLL), Native/
+// C++/Rust (DLL).
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==========================================");
     println!("Alkash3D Engine v{}", alkash3d_rs::VERSION);
@@ -152,10 +191,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     setup_lights(&mut engine);
     setup_scene(&mut engine);
-    setup_physics(&mut engine);
+    let physics_debug_entities = setup_physics(&mut engine);
     setup_world_streaming(&mut engine);
     setup_audio(&mut engine);
-    run_loop(&mut engine);
+    let scripting_handles = setup_scripting(&mut engine);
+    run_loop(&mut engine, scripting_handles, physics_debug_entities);
 
     engine.shutdown();
     println!("[MAIN] Goodbye!");
@@ -185,19 +225,34 @@ fn setup_lights(engine: &mut AlkashEngine) {
         }
     };
 
-    // far_plane=100 -> мир освещения это куб [-100,100]^3, с запасом
-    // покрывает 20 фонарей вдоль оси X (расставлены в create_night_city
-    // с шагом 5 от -50 до +45) и весь путь ходьбы демо-сцены.
-    // grid_cell_size=10 -> сетка каллинга 20x20x20 = 8000 ячеек, разумный
-    // компромисс между точностью каллинга и памятью для сцены такого
-    // масштаба (см. роадмап, раздел 2.2 — это далеко не топовый профиль
-    // качества, а нижняя граница, поэтому сетка должна быть дешёвой).
+    // ИСПРАВЛЕНО (просадка FPS до ~20 после range 15->100, обнаружено
+    // пользователем на реальной сборке): при far_plane=100/grid_cell_size=10
+    // (старые значения) мир — куб [-100,100]^3 (сторона 200), а сфера
+    // влияния фонаря с range=100 имеет ДИАМЕТР 200 — то есть РАВНА самому
+    // миру по размеру. Каждый из 20 фонарей регистрировался буквально во
+    // ВСЕ 8000 ячеек сетки сразу (см. get_cell_indices_for_sphere в
+    // alkash3d-FirstFires/src/lib.rs) — пространственная сетка каллинга
+    // переставала хоть что-то фильтровать, и пиксельный шейдер
+    // (ComputePointLightContribution, engine/mod.rs) перебирал все 20
+    // фонарей на КАЖДЫЙ пиксель КАЖДОЙ ячейки, а не 1-3 ближайших, как
+    // задумано архитектурой сетки — отсюда и просадка.
+    //
+    // Фикс — не уменьшать range обратно (это вернуло бы уже исправленный
+    // баг с обрывом света), а увеличить far_plane (размер мира) ВМЕСТЕ с
+    // grid_cell_size, чтобы диаметр сферы фонаря (200) стал заметно
+    // МЕНЬШЕ размера мира. far_plane=200 -> мир [-200,200]^3 (сторона
+    // 400), grid_cell_size=20 -> сетка снова 20x20x20=8000 ячеек (ТА ЖЕ
+    // память, что и раньше) — но теперь сфера фонаря покрывает ~17%
+    // сетки вместо 100%. lod_distances максимум поднят с 100 до 200
+    // синхронно с far_plane — иначе LOD-каллинг обрезал бы фонарей на
+    // дистанции 100 ещё до того, как размер мира вообще стал бы иметь
+    // значение.
     let config = LightConfig {
         max_lights: 64,
         tile_size: 16,
-        far_plane: 100.0,
-        lod_distances: [30.0, 60.0, 100.0],
-        grid_cell_size: 10.0,
+        far_plane: 200.0,
+        lod_distances: [30.0, 60.0, 200.0],
+        grid_cell_size: 20.0,
     };
 
     if let Err(e) = engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config) {
@@ -325,10 +380,11 @@ fn setup_scene(engine: &mut AlkashEngine) {
 /// над полом — простейшая, но реальная демонстрация всего конвейера
 /// (интегрирование + широкая/узкая фаза + solver + sleep), а не просто
 /// "плагин загрузился и ничего не делает". Пол демо-сцены — плитки на
-/// GROUND_Y=0.0 (см. `setup_scene`), поэтому одно статическое физическое
-/// тело-плоскость на той же высоте достаточно, чтобы сферы падали именно
-/// на видимый пол, а не проваливались сквозь него.
-fn setup_physics(engine: &mut AlkashEngine) {
+/// GROUND_Y=0.0 (см. `setup_scene`) — физический пол под ним СОБИРАЕТСЯ
+/// из ряда статических сфер (см. FLOOR_SPHERE_SPACING ниже — у Inertial
+/// нет коллайдера-плоскости, только sphere-sphere), чтобы падающие сферы
+/// приземлялись именно на видимый пол, а не проваливались сквозь него.
+fn setup_physics(engine: &mut AlkashEngine) -> Vec<alkash3d_rs::scene::EntityId> {
     println!("\n[MAIN] Loading Inertial physics plugin...");
 
     // world_size/cell_size — тот же порядок величин, что far_plane/
@@ -350,16 +406,51 @@ fn setup_physics(engine: &mut AlkashEngine) {
              Проверь, что alkash3d-inertial собран в release (cargo build --release из папки alkash3d-inertial).",
             INERTIAL_DLL_PATH, e
         );
-        return;
+        return Vec::new();
     }
     println!("[MAIN] ✓ Inertial loaded");
 
-    // Статический пол — та же высота, что GROUND_Y у визуальных плиток
-    // (см. setup_scene). `mass<=0.0` внутри `add_sphere_body` (см.
-    // engine/mod.rs) сам выставляет `is_static=1`, поэтому 0.0 здесь —
-    // не "невесомое тело", а явный маркер статики.
-    if engine.add_sphere_body(0.0, GROUND_Y, 0.0, 0.0).is_none() {
+    // ИСПРАВЛЕНО (баг: "все кубы вне дороги упали" — воспроизведён
+    // пользователем ПОСЛЕ того, как Inertial реально собрался и физика
+    // заработала первый раз): у Inertial narrow-phase — ЧЕСТНЫЙ
+    // sphere-sphere тест (см. `narrow_phase_gjk` в alkash3d-inertial), у
+    // `PhysicsBody` НЕТ поля `radius` вообще — каждое тело (в т.ч.
+    // "статический пол") трактуется как сфера ФИКСИРОВАННОГО радиуса
+    // `IMPLICIT_RADIUS = 0.5` (см. alkash3d-inertial/src/lib.rs). Один
+    // `add_sphere_body(0.0, GROUND_Y, 0.0, 0.0)` — это НЕ плоскость-пол,
+    // а один статический шарик диаметром 1м РОВНО в точке (0,0,0). Пока
+    // Inertial был не собран (init_physics падал с WARNING), это не было
+    // заметно — Transform падающих сфер просто не двигался вообще. Как
+    // только физика реально заработала, гравитация потянула вниз все 5
+    // сфер (стартующих на x = -8.0..-2.0, см. цикл ниже) — ни одна из них
+    // не оказывается рядом с единственной точкой-полом на x=0, и все
+    // проваливаются в бесконечность.
+    //
+    // Фикс — вместо одной точечной сферы-пола кладём РЯД статических
+    // сфер вдоль всей ширины улицы (тот же диапазон X, что и у пола из
+    // плиток, GRID_HALF_X=52, см. setup_scene), с шагом чуть меньше
+    // диаметра сферы (IMPLICIT_RADIUS*2=1.0), чтобы соседние сферы-пол
+    // перекрывались и не оставляли "щелей", в которые падающее тело
+    // могло бы провалиться между двумя опорными точками.
+    const FLOOR_SPHERE_SPACING: f32 = 0.9; // < 2*IMPLICIT_RADIUS (1.0) — с нахлёстом
+    let floor_half_x = GRID_HALF_X as f32 * TILE_SPACING;
+    let floor_sphere_count = (2.0 * floor_half_x / FLOOR_SPHERE_SPACING) as i32;
+    let mut floor_spheres_created = 0;
+    for i in 0..=floor_sphere_count {
+        let x = -floor_half_x + i as f32 * FLOOR_SPHERE_SPACING;
+        // `mass<=0.0` внутри `add_sphere_body` сам выставляет
+        // `is_static=1` (не "невесомое тело", а явный маркер статики) —
+        // z=1.5 совпадает с z падающих сфер ниже (см. цикл
+        // spawn_physics_sphere), чтобы опора была ровно под ними, а не
+        // сбоку.
+        if engine.add_sphere_body(x, GROUND_Y, 1.5, 0.0).is_some() {
+            floor_spheres_created += 1;
+        }
+    }
+    if floor_spheres_created == 0 {
         eprintln!("[MAIN] WARNING: не удалось создать физический пол — сферы будут падать бесконечно");
+    } else {
+        println!("[MAIN] ✓ Физический пол: {} опорных сфер вдоль улицы", floor_spheres_created);
     }
 
     // Несколько падающих сфер над улицей, в зоне, где камера гарантированно
@@ -367,15 +458,50 @@ fn setup_physics(engine: &mut AlkashEngine) {
     // смотрит в сторону x=0.0).
     let sphere_mesh = engine.add_cube_colored(0.7, 0.9, 0.35, 0.25, 1.0); // тёплый зелёный — заметно отличается от серого пола/столбов
     let mut spawned = 0;
+    // ДОБАВЛЕНО (диагностика бага "падают и пропадают под картой" — нужны
+    // точные позиции по кадрам, а не гадание по коду): собираем EntityId
+    // каждой заспавненной тестовой сферы, чтобы run_loop мог периодически
+    // печатать их реальную Transform.position (та же позиция, что
+    // sync_physics_transforms пишет туда каждый кадр из физики).
+    let mut sphere_entities = Vec::new();
     for i in 0..5 {
         let x = -8.0 + i as f32 * 1.5;
         let y = 4.0 + i as f32 * 1.2; // разная высота старта — падают не синхронно, нагляднее видно физику
-        if engine.spawn_physics_sphere(sphere_mesh, x, y, 1.5, 1.0).is_some() {
+        if let Some((_body_id, entity)) = engine.spawn_physics_sphere(sphere_mesh, x, y, 1.5, 1.0) {
             spawned += 1;
+            sphere_entities.push(entity);
         }
     }
 
     println!("[MAIN] ✓ Физика готова: пол + {} падающих сфер", spawned);
+
+    // ИСПРАВЛЕНО (баг: "кубы-дома тоже [падают]" — тот же класс бага, что
+    // и выше, но в ДРУГОМ месте): `AlworldFile::create_and_save_demo_world`
+    // (alworld_format.rs) кладёт ровно ОДИН физический объект — в
+    // центральном чанке demo_world (grid x=0,z=0), приподнятый на 5м,
+    // mass=1.0 — падает при загрузке чанка через `load_chunk`.
+    //
+    // ИСПРАВЛЕНО (это было НЕВЕРНО в предыдущей версии этого фикса —
+    // подтверждено логом пользователя: "81 чанков по 64м"): реальный
+    // `chunk_size` demo_world — 64.0, а НЕ 0.6! `AlworldFile::new(0.6)`
+    // передаёт 0.6 как `world_size_km` (используется только для
+    // вычисления `chunks_per_axis`/границ мира), а `chunk_size` внутри
+    // `AlworldFile::new()` ЖЁСТКО захардкожен как `64.0` — не зависит от
+    // аргумента вообще (см. `alworld_format.rs::AlworldFile::new`,
+    // `let chunk_size = 64.0;`). Прошлая версия этого фикса считала опору
+    // по 0.6 и клала её в (0.3, *, 0.3) — почти в 100 раз мимо реальной
+    // точки падения объекта (32.0, *, 32.0), что и объясняет, почему куб
+    // всё ещё падал и не возвращался после первого фикса.
+    const DEMO_WORLD_CHUNK_SIZE: f32 = 64.0; // должно совпадать с захардкоженным chunk_size в AlworldFile::new()
+    let demo_world_floor_x = (0.0 + 0.5) * DEMO_WORLD_CHUNK_SIZE; // тот же center_x, что в create_and_save_demo_world для x=0
+    let demo_world_floor_z = (0.0 + 0.5) * DEMO_WORLD_CHUNK_SIZE;
+    if engine.add_sphere_body(demo_world_floor_x, GROUND_Y, demo_world_floor_z, 0.0).is_none() {
+        eprintln!("[MAIN] WARNING: не удалось создать опору под физическим объектом demo_world");
+    } else {
+        println!("[MAIN] ✓ Опора под demo_world объектом создана ({:.1}, {:.1}, {:.1})", demo_world_floor_x, GROUND_Y, demo_world_floor_z);
+    }
+
+    sphere_entities
 }
 
 /// ДОБАВЛЕНО (World Streaming — проверка стриминга .alworld вживую):
@@ -521,6 +647,104 @@ fn setup_audio(engine: &mut AlkashEngine) {
     }
 }
 
+/// ДОБАВЛЕНО (скриптинг — три языка сразу для наглядной сравнительной
+/// проверки; C# как язык скриптинга вырезан из движка по просьбе
+/// пользователя, см. комментарий у `fn main` выше): три одинаковых
+/// "bobber"-куба РЯДОМ друг с другом, каждый на своём языке скриптинга —
+/// Python (hot-reload, встроенный интерпретатор), Lua (DLL, универсальный
+/// рантайм alkash3d-luascript), Native/Rust (DLL, alkash3d-examplescript).
+/// Все три — НЕ физические тела (физика в `update()` каждый кадр
+/// перезаписывает Transform, конфликтовало бы со скриптом). Каждый язык
+/// загружается НЕЗАВИСИМО — ошибка в одном (например Native/Lua не
+/// собраны) не мешает остальным, только печатает WARNING и оставляет
+/// свой куб неподвижным.
+///
+/// Возвращает `ScriptingHandles` — нужен `run_loop`, чтобы периодически
+/// слать `on_event`/`dispatch_script_event` каждому языку (демонстрация
+/// не только per-frame `update`, но и событий).
+struct ScriptingHandles {
+    python_entity: Option<alkash3d_rs::scene::EntityId>,
+    // ВАЖНО: `ScriptHandle` реэкспортирован из `engine::mod.rs`
+    // (`pub use scripting::{ScriptHandle, pack_entity_id};`), а НЕ из
+    // корня крейта — в отличие от `plugin::*` (см. `use
+    // alkash3d_rs::PhysicsConfig` выше), `alkash3d_rs::ScriptHandle` был
+    // бы E0433, нужен полный путь `alkash3d_rs::engine::ScriptHandle`.
+    native_handle: Option<alkash3d_rs::engine::ScriptHandle>,
+    lua_handle: Option<alkash3d_rs::engine::ScriptHandle>,
+}
+
+fn setup_scripting(engine: &mut AlkashEngine) -> ScriptingHandles {
+    println!("\n[MAIN] Setting up scripting (Python/Lua/Native)...");
+
+    // ===== PYTHON (hot-reload, встроенный интерпретатор) =====
+    let bobber_mesh = engine.add_cube_colored(0.6, 0.95, 0.55, 0.2, 1.0); // жёлтый
+    let python_entity_raw = engine.spawn_mesh_entity(bobber_mesh);
+    if let Some(t) = engine.scene.transform_mut(python_entity_raw) {
+        t.position = [-4.0, GROUND_Y + 1.0, -1.5];
+        t.scale = [0.4, 0.4, 0.4];
+    }
+    let python_entity = match engine.load_python_script(PYTHON_BOBBER_SCRIPT_PATH, python_entity_raw) {
+        Ok(()) => {
+            println!("[MAIN] ✓ Python-скрипт '{}' загружен (жёлтый куб)", PYTHON_BOBBER_SCRIPT_PATH);
+            Some(python_entity_raw)
+        }
+        Err(e) => {
+            eprintln!("[MAIN] WARNING: Python-скрипт '{}' не загружен: {:?}", PYTHON_BOBBER_SCRIPT_PATH, e);
+            None
+        }
+    };
+
+    // ===== LUA (DLL, универсальный рантайм) =====
+    let lua_mesh = engine.add_cube_colored(0.3, 0.5, 0.85, 0.2, 1.0); // синий
+    let lua_entity = engine.spawn_mesh_entity(lua_mesh);
+    if let Some(t) = engine.scene.transform_mut(lua_entity) {
+        t.position = [-3.0, GROUND_Y + 1.0, -1.5];
+        t.scale = [0.4, 0.4, 0.4];
+    }
+    let lua_handle = match engine.load_lua_script(LUA_RUNTIME_DLL_PATH, LUA_BOBBER_SCRIPT_PATH, lua_entity) {
+        Ok(handle) => {
+            println!("[MAIN] ✓ Lua-скрипт '{}' загружен (синий куб)", LUA_BOBBER_SCRIPT_PATH);
+            Some(handle)
+        }
+        Err(e) => {
+            eprintln!(
+                "[MAIN] WARNING: Lua-плагин '{}' не загружен: {:?} — проверь, что alkash3d-luascript собран \
+                 (cargo build --release из папки alkash3d-luascript)",
+                LUA_RUNTIME_DLL_PATH, e
+            );
+            None
+        }
+    };
+
+    // ===== NATIVE / Rust (DLL, alkash3d-examplescript) =====
+    let native_mesh = engine.add_cube_colored(0.85, 0.35, 0.3, 0.2, 1.0); // красный
+    let native_entity = engine.spawn_mesh_entity(native_mesh);
+    if let Some(t) = engine.scene.transform_mut(native_entity) {
+        t.position = [-2.0, GROUND_Y + 1.0, -1.5];
+        t.scale = [0.4, 0.4, 0.4];
+    }
+    let native_handle = match engine.load_native_script(NATIVE_EXAMPLE_DLL_PATH, native_entity) {
+        Ok(handle) => {
+            println!("[MAIN] ✓ Native-скрипт '{}' загружен (красный куб)", NATIVE_EXAMPLE_DLL_PATH);
+            Some(handle)
+        }
+        Err(e) => {
+            eprintln!(
+                "[MAIN] WARNING: Native-плагин '{}' не загружен: {:?} — проверь, что alkash3d-examplescript собран \
+                 (cargo build --release из папки alkash3d-examplescript)",
+                NATIVE_EXAMPLE_DLL_PATH, e
+            );
+            None
+        }
+    };
+
+    ScriptingHandles {
+        python_entity,
+        native_handle,
+        lua_handle,
+    }
+}
+
 /// ДОБАВЛЕНО (звуковая подсистема — Фаза "Sound" плана): генерирует
 /// простой несжатый PCM WAV-файл с чистым синусоидальным тоном заданной
 /// частоты/длительности — единственный способ получить РЕАЛЬНЫЙ,
@@ -581,7 +805,7 @@ fn write_tone_wav(path: &str, frequency_hz: f32, duration_secs: f32, amplitude: 
     Ok(())
 }
 
-fn run_loop(engine: &mut AlkashEngine) {
+fn run_loop(engine: &mut AlkashEngine, scripting_handles: ScriptingHandles, physics_debug_entities: Vec<alkash3d_rs::scene::EntityId>) {
     println!("\n=== RENDER LOOP STARTING ===\n");
 
     let mut frame_count: u64 = 0;
@@ -590,6 +814,20 @@ fn run_loop(engine: &mut AlkashEngine) {
 
     let mut fps_window_start = Instant::now();
     let mut fps_window_frames: u32 = 0;
+
+    // ДОБАВЛЕНО (скриптинг — демонстрация on_event/dispatch_script_event
+    // для ВСЕХ 3 языков сразу, не только update): раз в
+    // BOBBER_EVENT_PERIOD_SECS секунд каждому из трёх bobber-кубов шлём
+    // событие Custom (0) со случайно-циклической амплитудой (1x/2x/3x от
+    // базовой 0.3м, одинаковое соглашение во всех языках — см.
+    // bobber.py/bobber.lua/alkash3d-examplescript) — так видно, что и
+    // `dispatch_python_event`, и `dispatch_script_event` (Native/Lua
+    // используют один и тот же метод, см. engine/scripting.rs) реально
+    // доходят до скрипта и меняют его поведение в рантайме, а не только
+    // что update() вызывается каждый кадр.
+    const BOBBER_EVENT_PERIOD_SECS: f32 = 5.0;
+    let mut bobber_event_timer = 0.0f32;
+    let mut bobber_amplitude_step: u32 = 1;
 
     // ИЗМЕНЕНО: старое z=4.0 оказалось РОВНО на краю нового узкого пола
     // улицы (GRID_HALF_Z=4, см. константы выше) — сдвинуто ближе к
@@ -679,6 +917,40 @@ fn run_loop(engine: &mut AlkashEngine) {
             view_proj.to_cols_array(),
         );
 
+        // ===== СКРИПТИНГ: периодическое событие ВСЕМ 3 bobber'ам =====
+        {
+            bobber_event_timer += dt;
+            if bobber_event_timer >= BOBBER_EVENT_PERIOD_SECS {
+                bobber_event_timer = 0.0;
+                bobber_amplitude_step = bobber_amplitude_step % 3 + 1; // цикл 1 -> 2 -> 3 -> 1 ...
+                let amplitude_data = [bobber_amplitude_step as f32, 0.0, 0.0, 0.0];
+
+                // Python — отдельный метод (нет ScriptHandle/DLL, ключ —
+                // сама сущность, см. dispatch_python_event в
+                // engine/scripting.rs).
+                if let Some(entity) = scripting_handles.python_entity {
+                    engine.dispatch_python_event(entity, 0, amplitude_data);
+                }
+
+                // Native/Lua — ОДИН И ТОТ ЖЕ метод dispatch_script_event
+                // для обоих (оба — DLL-плагины с одинаковым ScriptingAPI
+                // C-ABI, см. engine/scripting.rs — разница между ними уже
+                // "спрятана" внутри загруженной DLL).
+                let script_event = alkash3d_rs::ScriptEvent {
+                    event_type: 0, // Custom
+                    source_entity: 0,
+                    target_entity: 0,
+                    data: amplitude_data,
+                };
+                if let Some(handle) = &scripting_handles.lua_handle {
+                    engine.dispatch_script_event(handle, &script_event);
+                }
+                if let Some(handle) = &scripting_handles.native_handle {
+                    engine.dispatch_script_event(handle, &script_event);
+                }
+            }
+        }
+
         // ===== РЕНДЕР =====
         if let Err(e) = engine.render_frame() {
             eprintln!("[MAIN] Render error, stopping: {:?}", e);
@@ -690,8 +962,7 @@ fn run_loop(engine: &mut AlkashEngine) {
 
         if frame_count == 1 {
             println!("*** FIRST FRAME COMPLETED ***");
-            println!(
-                "*** Camera pos: ({:.2}, {:.2}, {:.2}) ***",
+            println!("*** Camera pos: ({:.2}, {:.2}, {:.2}) ***",
                 engine.camera.position.x, engine.camera.position.y, engine.camera.position.z
             );
             println!("*** {} ECS entities rendering ***\n", engine.scene.len());
@@ -713,6 +984,23 @@ fn run_loop(engine: &mut AlkashEngine) {
                 frame_count, fps, engine.scene.len(),
                 engine.camera.position.x, engine.camera.position.y, engine.camera.position.z
             );
+            // ДОБАВЛЕНО (диагностика бага "падают и пропадают под картой"):
+            // печатаем РЕАЛЬНУЮ Transform.position каждой тестовой
+            // физической сферы раз в секунду — та же позиция, которую
+            // sync_physics_transforms пишет туда каждый кадр из физики
+            // (engine::mod.rs). Если сферы реально проваливаются сквозь
+            // пол, здесь будет видно постоянно убывающий Y без остановки;
+            // если они на самом деле стоят на месте, а пропадает только
+            // ВИДИМОСТЬ — Y здесь остановится около 1.0, и проблема не в
+            // физике, а в рендере/culling.
+            for (i, entity) in physics_debug_entities.iter().enumerate() {
+                if let Some(t) = engine.scene.transform(*entity) {
+                    println!(
+                        "[PHYS-DEBUG] sphere[{}] pos=({:.2},{:.2},{:.2})",
+                        i, t.position[0], t.position[1], t.position[2]
+                    );
+                }
+            }
             fps_window_frames = 0;
             fps_window_start = Instant::now();
         }

@@ -22,8 +22,33 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_D32_FLOAT,
 // (`WAIT_TIMEOUT_MS`) — при его истечении возвращаем явную ошибку вместо
 // вечной блокировки.
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-use windows::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{HANDLE, WAIT_TIMEOUT};
 use crate::STATE;
+
+// ДОБАВЛЕНО (оптимизация — жалоба пользователя на лаги/просадки FPS при
+// загрузке новых чанков world streaming): `upload_and_copy` раньше
+// создавала НОВЫЙ `CreateEventW` win32-объект (kernel syscall, дороже,
+// чем кажется — переход в режим ядра, аллокация object header'а) и сразу
+// же `CloseHandle` его на КАЖДЫЙ вызов — то есть на каждую загружаемую
+// текстуру каждого материала каждого объекта каждого чанка. Загрузка
+// объекта .altex с PBR-материалом (albedo+normal+metallic-roughness —
+// Задача #15) создаёт до 3 текстур за раз, а `load_chunk` (engine/mod.rs)
+// может грузить несколько таких объектов в одном кадре при входе камеры
+// в новый чанк. Event-объект переиспользуем — создаём один раз на поток
+// (загрузка ресурсов всегда идёт из главного потока движка, отдельного
+// потока рендера или загрузки в этом движке нет) и просто сбрасываем его
+// автосбросом (`bManualReset = false` в `CreateEventW` — событие само
+// сбрасывается в non-signaled после того, как `WaitForSingleObject`
+// однажды его дождался, так что переиспользование безопасно раз за
+// разом). Семантика ожидания (fence + `SetEventOnCompletion` +
+// `WaitForSingleObject` с тем же `WAIT_TIMEOUT_MS`) не меняется —
+// убирается только стоимость create/close самого handle.
+thread_local! {
+    static UPLOAD_WAIT_EVENT: HANDLE = unsafe {
+        CreateEventW(None, false, false, None)
+            .expect("[TEXTURE] не удалось создать переиспользуемый event для ожидания GPU-загрузки текстур")
+    };
+}
 
 /// См. комментарий у импорта `WaitForSingleObject` выше — максимальное
 /// время ожидания однократного GPU-копирования текстуры при загрузке.
@@ -74,8 +99,10 @@ impl Texture {
     /// чтобы вызывающий код (`register_material_texture` и т.п.) мог
     /// использовать результат сразу же, как и раньше.
     pub fn create_texture2d(width: u32, height: u32, format: DXGI_FORMAT, data: Option<&[u8]>) -> Result<Self> {
-        println!("[TEXTURE] Creating 2D texture: {}x{}, format={:?}, data={}", width, height, format, data.is_some());
-
+        // УБРАНО (оптимизация — см. подробный комментарий в
+        // create_vertex_buffer в buffer.rs про ту же причину): success-
+        // логи убраны из hot path загрузки материалов чанков. Ошибочные
+        // пути (`eprintln!`) оставлены.
         let device = crate::get_device()?;
 
         let resource_desc = D3D12_RESOURCE_DESC {
@@ -107,7 +134,6 @@ impl Texture {
 
         unsafe {
             let mut resource: Option<ID3D12Resource> = None;
-            println!("[TEXTURE] Creating committed resource (DEFAULT heap)...");
             device.CreateCommittedResource(
                 &heap_properties,
                 D3D12_HEAP_FLAG_NONE,
@@ -121,7 +147,6 @@ impl Texture {
                 eprintln!("[TEXTURE] ERROR: Resource is None!");
                 Error::from_hresult(HRESULT(1))
             })?;
-            println!("[TEXTURE] ✓ Resource created");
 
             if let Some(bytes) = data {
                 // ИСПРАВЛЕНО (защита от паники): раньше здесь было
@@ -141,7 +166,6 @@ impl Texture {
                 }
 
                 Self::upload_and_copy(&device, &resource, width, height, format, bytes, row_pitch)?;
-                println!("[TEXTURE] Data uploaded via staging buffer + CopyTextureRegion");
             }
 
             Ok(Self {
@@ -302,17 +326,20 @@ impl Texture {
         let fence_value = 1u64;
         command_queue.Signal(&fence, fence_value)?;
         if fence.GetCompletedValue() < fence_value {
-            let event = CreateEventW(None, false, false, None)?;
-            fence.SetEventOnCompletion(fence_value, event)?;
-            // ИЗМЕНЕНО: было `WaitForSingleObject(event, INFINITE)` — см.
-            // подробный комментарий у импорта `WaitForSingleObject` в
-            // начале файла. Ограниченный таймаут вместо вечного ожидания:
-            // при истечении логируем причину (если устройство реально
-            // потеряно) и возвращаем явную ошибку вместо того, чтобы
-            // молча повиснуть здесь навсегда.
-            let wait_result = WaitForSingleObject(event, WAIT_TIMEOUT_MS);
-            let _ = CloseHandle(event);
-            if wait_result == WAIT_TIMEOUT {
+            // ИЗМЕНЕНО (оптимизация — см. комментарий у `UPLOAD_WAIT_EVENT`
+            // в начале файла): переиспользуемый event вместо
+            // create/close на каждый вызов.
+            let wait_result = UPLOAD_WAIT_EVENT.with(|&event| -> Result<u32> {
+                fence.SetEventOnCompletion(fence_value, event)?;
+                // ИЗМЕНЕНО: было `WaitForSingleObject(event, INFINITE)` —
+                // см. подробный комментарий у импорта `WaitForSingleObject`
+                // в начале файла. Ограниченный таймаут вместо вечного
+                // ожидания: при истечении логируем причину (если
+                // устройство реально потеряно) и возвращаем явную ошибку
+                // вместо того, чтобы молча повиснуть здесь навсегда.
+                Ok(WaitForSingleObject(event, WAIT_TIMEOUT_MS).0)
+            })?;
+            if wait_result == WAIT_TIMEOUT.0 {
                 eprintln!("[TEXTURE] ERROR: timeout ({} ms) waiting for texture upload GPU copy to complete", WAIT_TIMEOUT_MS);
                 if let Some(reason) = crate::device_removed_reason() {
                     eprintln!("[TEXTURE] Device removed, reason: {}", reason);

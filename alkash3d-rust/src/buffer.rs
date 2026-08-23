@@ -13,8 +13,21 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn create_vertex_buffer(data: &[u8], stride: u32) -> Result<Self> {
-        println!("[BUFFER] Creating vertex buffer, size: {} bytes, stride: {}", data.len(), stride);
-
+        // УБРАНО (оптимизация — жалоба пользователя на лаги/просадки FPS
+        // при загрузке новых чанков world streaming): этот println! (и
+        // ещё два success-лога ниже — "Data copied successfully",
+        // "Vertex buffer created successfully") выполнялись СИНХРОННО на
+        // КАЖДЫЙ вызов создания vertex/index-буфера, а `load_chunk`
+        // (см. engine/mod.rs) может создавать десятки буферов/текстур за
+        // один кадр при входе камеры в новый чанк с несколькими
+        // объектами. stdout на Windows, когда подключена консоль, пишет
+        // построчно и синхронно (в т.ч. ANSI-парсинг терминала) — пачка
+        // из 20-30 println! в одном кадре реально стоит миллисекунды и
+        // складывается в заметный фриз в момент загрузки чанка, отдельно
+        // от самой GPU-операции создания ресурса. Ошибочные пути
+        // (`eprintln!` ниже) — редкие, некритичные по перфомансу,
+        // оставлены как есть для диагностики.
+        //
         // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()` —
         // паниковало, если вызвано до инициализации устройства. Теперь
         // явная ошибка через `?`.
@@ -72,13 +85,11 @@ impl Buffer {
 
             if !mapped.is_null() {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len());
-                println!("[BUFFER] Data copied successfully");
             } else {
                 eprintln!("[BUFFER] Mapped pointer is null");
             }
             resource.Unmap(0, None);
 
-            println!("[BUFFER] Vertex buffer created successfully");
             Ok(Self {
                 resource,
                 size,
@@ -88,7 +99,8 @@ impl Buffer {
     }
 
     pub fn create_index_buffer(data: &[u32]) -> Result<Self> {
-        println!("[BUFFER] Creating index buffer, {} indices", data.len());
+        // См. комментарий в create_vertex_buffer выше — success-лог убран
+        // из hot path загрузки чанков по той же причине.
         let bytes: Vec<u8> = data.iter().flat_map(|&x| x.to_le_bytes()).collect();
         Self::create_vertex_buffer(&bytes, 4)
     }

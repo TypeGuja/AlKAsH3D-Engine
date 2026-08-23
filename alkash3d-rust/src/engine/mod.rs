@@ -1,6 +1,22 @@
 // src/engine/mod.rs
 //! Основной движок Alkash3D
 
+// ДОБАВЛЕНО (скриптинг, вторая волна — Python как hot-reload, см.
+// подробности в шапке самого файла): единственный submodule engine/ —
+// раньше вся логика жила прямо в этом mod.rs одним файлом.
+mod scripting_python;
+pub use scripting_python::PythonScriptRuntime;
+
+// ДОБАВЛЕНО (рефакторинг по просьбе пользователя — mod.rs разросся до
+// ~8400 строк): все impl AlkashEngine методы скриптинга (Native/Lua-DLL,
+// Python hot-reload — load/dispatch/unload/update для всех трёх) и
+// вспомогательные ScriptHandle/pack_entity_id вынесены в scripting.rs.
+// mod.rs теперь только объявляет вызовы этих методов внутри
+// AlkashEngine::update, сама реализация переехала целиком — см. подробный
+// комментарий в шапке scripting.rs.
+mod scripting;
+pub use scripting::{ScriptHandle, pack_entity_id};
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};     // проблема по свету при повороте камеры
 use windows::core::*;
@@ -581,6 +597,48 @@ pub struct AlkashEngine {
     /// physics/lights — приложение (main.rs) решает, нужен ли звук в
     /// конкретном запуске, движок не навязывает его.
     pub audio: Option<AudioEngine>,
+
+    /// ДОБАВЛЕНО (скриптинг, этап 1 — нативные C++/Rust плагины): в
+    /// отличие от `physics`/`lights` (singleton — один плагин своего типа
+    /// на весь движок), скриптовых DLL может быть загружено НЕСКОЛЬКО
+    /// одновременно, и одна и та же DLL может обслуживать несколько
+    /// сущностей (см. подробный комментарий в
+    /// `plugin/scripting_api.rs`/`plugin/mod.rs::ScriptingPlugin`). Ключ —
+    /// путь к DLL, тот же, что использовался при `load_native_script`
+    /// (позволяет узнать, уже ли загружена конкретная DLL, не грузя её
+    /// повторно).
+    pub native_scripts: std::collections::HashMap<String, crate::plugin::ScriptingPlugin>,
+
+    /// Все текущие живые прикрепления скриптов к сущностям — обновляются
+    /// КАЖДЫЙ кадр в `update()` (см. `update_native_scripts`). Хранится
+    /// отдельно от `native_scripts` (которое хранит САМИ DLL, а не их
+    /// прикрепления к конкретным entity) по той же причине, по которой
+    /// `physics_links` хранится отдельно от `physics`.
+    pub active_scripts: Vec<ScriptHandle>,
+
+    /// Монотонный счётчик кадров для `ScriptContext::frame_number` —
+    /// нужен скриптам, которым важно различать "первый кадр после
+    /// create_script" от последующих, или делать что-то раз в N кадров
+    /// без своего собственного таймера на стороне DLL.
+    ///
+    /// ИЗМЕНЕНО (рефакторинг — вынос скриптинга в engine/scripting.rs):
+    /// `pub(super)` вместо приватного — `update_native_scripts` (теперь в
+    /// scripting.rs, отдельном подмодуле) читает и увеличивает это поле;
+    /// см. подробное объяснение `pub(super)` у `deps_fallback_path` выше.
+    pub(super) script_frame_counter: u64,
+
+    /// ДОБАВЛЕНО (скриптинг, вторая волна — Python как hot-reload): в
+    /// отличие от `native_scripts`/`active_scripts` (Native/Lua — общий
+    /// DLL-плагинный путь через `ScriptingPlugin`/`ScriptHandle`), Python
+    /// работает БЕЗ DLL — каждое прикрепление это просто
+    /// `PythonScriptRuntime` (собственный Python-scope + путь к .py-файлу
+    /// + mtime для hot-reload), живущий прямо здесь. Ключ — `EntityId`
+    /// владельца: в отличие от Native/Lua, где несколько разных сущностей
+    /// МОГУТ делить одну DLL, каждой Python-сущности всегда соответствует
+    /// РОВНО одно прикрепление (упрощение первой версии — если понадобится
+    /// несколько .py-скриптов на одной сущности одновременно, ключ надо
+    /// будет расширить до (EntityId, script_slot)).
+    pub python_scripts: std::collections::HashMap<crate::scene::EntityId, PythonScriptRuntime>,
 
     /// ДОБАВЛЕНО (Задача #16 плана — физика и коллизии): связь физического
     /// тела (id, присвоенный плагином Inertial через `add_body`/
@@ -1182,6 +1240,15 @@ struct ChunkRuntimeState {
     /// заспавненные сущности ИЛИ чанк пуст, но всё равно отмечен
     /// загруженным, чтобы не пытаться перезагружать его каждый кадр).
     loaded: bool,
+    /// ИСПРАВЛЕНО (баг: "фризы как будто GC" при ходьбе — жалоба
+    /// пользователя, см. `WorldStreamingState::pending_load`): true, если
+    /// чанк уже поставлен в очередь `pending_load`/`pending_unload`, но
+    /// ещё физически не обработан `drain_pending_chunk_io`. Нужно, чтобы
+    /// `update_world_streaming` не добавил один и тот же чанк в очередь
+    /// повторно при следующем пересчёте (каждые
+    /// `WORLD_STREAMING_INTERVAL_FRAMES` кадров), пока он ещё ждёт своей
+    /// очереди.
+    queued: bool,
 }
 
 /// Полное рантайм-состояние стриминга — хранится в
@@ -1209,6 +1276,25 @@ pub struct WorldStreamingState {
     /// Сколько чанков реально загружено прямо сейчас — для диагностики/
     /// логов, не участвует в логике загрузки напрямую.
     loaded_chunk_count: usize,
+    /// ИСПРАВЛЕНО (баг: "фризы как будто GC" при ходьбе — жалоба
+    /// пользователя): `load_chunk`/`unload_chunk` синхронно читают файл
+    /// чанка с диска и парсят его ПРЯМО в кадре рендера (см. `load_chunk`
+    /// — `ChunkContent::load_from_file` блокирующий). Раньше
+    /// `update_world_streaming` находил ВСЕ чанки, попавшие в
+    /// load_distance за один пересчёт, и грузил их ВСЕ в одном кадре — при
+    /// первом входе в мир или после резкого скачка позиции камеры (или
+    /// после нескольких пропущенных пересчётов, см.
+    /// `WORLD_STREAMING_INTERVAL_FRAMES`) это могло быть сразу 10-30+
+    /// чанков разом, что и ощущается как долгий стоп-пауза ("будто GC"),
+    /// хотя в Rust нет GC — тормозит именно синхронный дисковый I/O кучей
+    /// файлов подряд на одном кадре. Фикс — очередь: `update_world_streaming`
+    /// теперь только ОПРЕДЕЛЯЕТ, какие чанки нужно загрузить/выгрузить, и
+    /// складывает их сюда, а реальная загрузка размазывается по
+    /// нескольким последующим кадрам с бюджетом `CHUNK_LOAD_BUDGET_PER_FRAME`
+    /// чанков за кадр (см. `drain_pending_chunk_io`, вызывается из
+    /// `update()` каждый кадр, а не только когда истёк интервал пересчёта).
+    pending_load: Vec<usize>,
+    pending_unload: Vec<usize>,
 }
 
 /// ДОБАВЛЕНО (World Streaming): стриминг пересчитывается не КАЖДЫЙ кадр, а
@@ -1219,6 +1305,16 @@ pub struct WorldStreamingState {
 /// физически не успевает пересечь границу load/unload-дистанции за 1/60
 /// секунды при разумных скоростях перемещения.
 const WORLD_STREAMING_INTERVAL_FRAMES: u32 = 15;
+
+/// ИСПРАВЛЕНО (фризы при стриминге, см. комментарий у `pending_load`
+/// выше): сколько чанков максимум грузится/выгружается за ОДИН кадр из
+/// накопленной очереди. 2 — консервативный выбор специально под "минимум
+/// 10-летнее железо" из ТЗ (медленный HDD/eMMC на такой машине делает
+/// даже один синхронный файловый I/O заметным на кадре) — при обычной
+/// ходьбе очередь почти всегда пуста или содержит 1 чанк за раз, бюджет
+/// реально ограничивает только "взрывные" случаи (первый вход в мир,
+/// резкий скачок позиции камеры, телепорт).
+const CHUNK_LOAD_BUDGET_PER_FRAME: usize = 2;
 
 impl AlkashEngine {
     pub fn new(width: u32, height: u32) -> Self {
@@ -1238,6 +1334,10 @@ impl AlkashEngine {
             physics: None,
             lights: None,
             audio: None,
+            native_scripts: std::collections::HashMap::new(),
+            active_scripts: Vec::new(),
+            script_frame_counter: 0,
+            python_scripts: std::collections::HashMap::new(),
             physics_links: Vec::new(),
             hwnd: None,
             running: false,
@@ -6492,7 +6592,16 @@ impl AlkashEngine {
     /// именем файла. Возвращает `None`, если у пути нет родительской папки
     /// (не должно происходить для реальных путей вида
     /// "../alkash3d-FirstFires/target/release/alkash3d_firstfires.dll").
-    fn deps_fallback_path(dll_path: &str) -> Option<String> {
+    ///
+    /// ИЗМЕНЕНО (рефакторинг — вынос скриптинга в engine/scripting.rs):
+    /// было `fn` (приватная в пределах mod.rs) — `pub(super)` вместо
+    /// `fn`/`pub`, потому что приватность в Rust действует по МОДУЛЯМ, а
+    /// не по типу: `impl AlkashEngine` в scripting.rs (отдельный
+    /// подмодуль `engine::scripting`) вызывает `Self::deps_fallback_path`
+    /// и без `pub(super)` не увидел бы приватный метод соседнего модуля,
+    /// даже у того же самого типа. `pub(super)` — “видно предку модуля
+    /// engine и его подмодулям”, не публичный API крейта наружу.
+    pub(super) fn deps_fallback_path(dll_path: &str) -> Option<String> {
         let path = std::path::Path::new(dll_path);
         let file_name = path.file_name()?;
         let parent = path.parent()?;
@@ -6738,6 +6847,8 @@ impl AlkashEngine {
             last_streaming_origin: Vec3::new(f32::MAX, f32::MAX, f32::MAX),
             frames_since_streaming_update: WORLD_STREAMING_INTERVAL_FRAMES,
             loaded_chunk_count: 0,
+            pending_load: Vec::new(),
+            pending_unload: Vec::new(),
         });
 
         Ok(())
@@ -7399,10 +7510,19 @@ impl AlkashEngine {
     /// стриминга (`last_streaming_origin`) и, если камера сдвинулась
     /// заметно ИЛИ прошло достаточно кадров (`WORLD_STREAMING_INTERVAL_FRAMES`
     /// — защита от "стоим на месте, но пересчитываем каждый кадр
-    /// впустую"), обходит ВСЕ чанки мира: загружает те, что оказались
-    /// ближе `load_distance`, и выгружает те, что оказались дальше
-    /// `unload_distance` (намеренно РАЗНЫЕ пороги — гистерезис, см.
-    /// подробное объяснение ниже, почему не один общий порог).
+    /// впустую"), обходит ВСЕ чанки мира и ОПРЕДЕЛЯЕТ, какие нужно
+    /// загрузить (ближе `load_distance`) или выгрузить (дальше
+    /// `unload_distance`, намеренно РАЗНЫЙ порог — гистерезис, см.
+    /// подробное объяснение ниже, почему не один общий порог с загрузкой).
+    ///
+    /// ИСПРАВЛЕНО (баг: "фризы как будто GC" — см. подробности у поля
+    /// `pending_load` в `WorldStreamingState`): эта функция теперь ТОЛЬКО
+    /// складывает решения в очередь `pending_load`/`pending_unload` —
+    /// реальный синхронный дисковый I/O (`load_chunk`/`unload_chunk`)
+    /// вынесен в `drain_pending_chunk_io`, которая тратит на него
+    /// ограниченный бюджет КАЖДЫЙ кадр (не только когда истёк интервал
+    /// пересчёта), размазывая потенциально большую пачку чанков по многим
+    /// кадрам вместо одного длинного застоя.
     fn update_world_streaming(&mut self, camera_pos: Vec3) {
         let world = match &self.world {
             Some(w) => w,
@@ -7439,31 +7559,29 @@ impl AlkashEngine {
         // классический паттерн "собрать индексы -> отпустить заём ->
         // применить", уже использованный в этом файле для shadow_jobs и
         // подобного.
-        let mut to_load = Vec::new();
-        let mut to_unload = Vec::new();
+        let mut newly_queued_load = 0;
+        let mut newly_queued_unload = 0;
         {
-            let world = self.world.as_ref().unwrap();
-            for (i, chunk) in world.world_file.chunks.iter().enumerate() {
+            let world = self.world.as_mut().unwrap();
+            for i in 0..world.world_file.chunks.len() {
+                let chunk = &world.world_file.chunks[i];
                 let center = world.world_file.chunk_center_world(chunk);
                 let center = Vec3::new(center[0], center[1], center[2]);
                 let dist_sq = (center - camera_pos).length_squared();
-                let is_loaded = world.chunk_states[i].loaded;
+                let state = &world.chunk_states[i];
 
-                if !is_loaded && dist_sq <= load_distance_sq {
-                    to_load.push(i);
-                } else if is_loaded && dist_sq > unload_distance_sq {
-                    to_unload.push(i);
+                // `queued` — уже в очереди с прошлого пересчёта, не
+                // добавляем повторно (см. комментарий у поля `queued`).
+                if !state.loaded && !state.queued && dist_sq <= load_distance_sq {
+                    world.pending_load.push(i);
+                    world.chunk_states[i].queued = true;
+                    newly_queued_load += 1;
+                } else if state.loaded && !state.queued && dist_sq > unload_distance_sq {
+                    world.pending_unload.push(i);
+                    world.chunk_states[i].queued = true;
+                    newly_queued_unload += 1;
                 }
             }
-        }
-
-        let loaded_now = to_load.len();
-        let unloaded_now = to_unload.len();
-        for i in to_load {
-            self.load_chunk(i);
-        }
-        for i in to_unload {
-            self.unload_chunk(i);
         }
 
         if let Some(world) = &mut self.world {
@@ -7471,20 +7589,63 @@ impl AlkashEngine {
             world.frames_since_streaming_update = 0;
         }
 
-        if loaded_now > 0 || unloaded_now > 0 {
-            let total_loaded = self.world.as_ref().map(|w| w.loaded_chunk_count).unwrap_or(0);
+        if newly_queued_load > 0 || newly_queued_unload > 0 {
             println!(
-                "[ENGINE] World streaming: +{} чанков загружено, -{} выгружено (всего загружено: {})",
-                loaded_now, unloaded_now, total_loaded
+                "[ENGINE] World streaming: +{} чанков поставлено в очередь загрузки, +{} в очередь выгрузки",
+                newly_queued_load, newly_queued_unload
             );
         }
     }
 
+    /// ДОБАВЛЕНО (фризы стриминга, см. `pending_load` у `WorldStreamingState`):
+    /// вызывается КАЖДЫЙ кадр из `update()` (в отличие от
+    /// `update_world_streaming`, которая пересчитывает окрестность лишь
+    /// изредка) — обрабатывает не более `CHUNK_LOAD_BUDGET_PER_FRAME`
+    /// чанков из накопленных очередей `pending_load`/`pending_unload`.
+    /// Выгрузка обрабатывается тем же бюджетом (хоть и дешевле загрузки —
+    /// без файлового I/O, только despawn), чтобы massed unload (например
+    /// после телепорта камеры далеко в сторону) не давал свой всплеск на
+    /// одном кадре.
+    fn drain_pending_chunk_io(&mut self) {
+        let mut budget = CHUNK_LOAD_BUDGET_PER_FRAME;
+
+        while budget > 0 {
+            let next = match &mut self.world {
+                Some(world) => world.pending_load.pop(),
+                None => None,
+            };
+            let Some(chunk_idx) = next else { break };
+            self.load_chunk(chunk_idx);
+            if let Some(world) = &mut self.world {
+                world.chunk_states[chunk_idx].queued = false;
+            }
+            budget -= 1;
+        }
+
+        while budget > 0 {
+            let next = match &mut self.world {
+                Some(world) => world.pending_unload.pop(),
+                None => None,
+            };
+            let Some(chunk_idx) = next else { break };
+            self.unload_chunk(chunk_idx);
+            if let Some(world) = &mut self.world {
+                world.chunk_states[chunk_idx].queued = false;
+            }
+            budget -= 1;
+        }
+    }
+
     pub fn add_street_light(&mut self, x: f32, y: f32, z: f32) -> Option<u32> {
+        // ИЗМЕНЕНО (по просьбе): дальность действия — с 25.0 до 100.0, тот
+        // же range, что и у уличных фонарей create_night_city() в
+        // alfar_format.rs, чтобы оба способа добавления уличных фонарей
+        // (через .alfar и напрямую через этот метод, см. main1.rs) вели
+        // себя одинаково.
         let light = GPULight {
             position: [x, y, z, 0.0],
             color: [1.0, 0.85, 0.6, 2.5],
-            direction: [0.0, -1.0, 0.0, 25.0],
+            direction: [0.0, -1.0, 0.0, 100.0],
             params: [std::f32::consts::PI, 2.0, 0.0, 0.0],
         };
         self.lights.as_mut().map(|l| l.add_light(&light))
@@ -7509,6 +7670,28 @@ impl AlkashEngine {
         // физики на видимую геометрию, ДО render_frame() этого же кадра.
         self.sync_physics_transforms();
 
+        // ДОБАВЛЕНО (скриптинг, этап 1 — нативные C++/Rust плагины): ПОСЛЕ
+        // sync_physics_transforms (чтобы скрипт видел уже свежую позицию
+        // из физики в этом же кадре, а не устаревшую с прошлого) и ДО
+        // update_day_night/cull — движение, которое задаёт скрипт, должно
+        // успеть попасть в тот же кадр рендера, а не только в следующий.
+        // Если скрипт сам двигает физическое тело — конфликт с
+        // sync_physics_transforms исключён: тот применяется РАНЬШЕ и
+        // только один раз за кадр, update_native_scripts может лишь
+        // перезаписать Transform уже ПОСЛЕ него — скрипт имеет право
+        // переопределить результат физики в тот же кадр.
+        self.update_native_scripts(dt);
+
+        // ДОБАВЛЕНО (скриптинг, вторая волна — Python как hot-reload): та
+        // же позиция в кадре, что и update_native_scripts выше (сразу
+        // после неё) — оба вида скриптов (Native/Lua через
+        // update_native_scripts, Python через update_python_scripts)
+        // равноправны и оба успевают попасть в этот же кадр рендера;
+        // порядок между ними самими не важен, т.к. они работают с РАЗНЫМИ
+        // прикреплениями (Native/Lua используют active_scripts, Python —
+        // python_scripts) и друг друга не перезаписывают.
+        self.update_python_scripts(dt);
+
         // ДОБАВЛЕНО (Фаза 7 плана по реализму/фонарям — день/ночь и
         // мерцание): ДО cull() — так свежий свет (обновлённый intensity от
         // мерцания/day-night) успевает попасть в FirstFires прежде, чем
@@ -7528,6 +7711,10 @@ impl AlkashEngine {
         // порядок "сначала обновили мир, потом посчитали, что из него
         // видно".
         self.update_world_streaming(Vec3::new(camera_pos[0], camera_pos[1], camera_pos[2]));
+        // ИСПРАВЛЕНО (фризы стриминга): фактический I/O — каждый кадр, с
+        // ограниченным бюджетом, а не одним махом внутри
+        // update_world_streaming (см. drain_pending_chunk_io).
+        self.drain_pending_chunk_io();
 
         if let Some(lights) = &mut self.lights {
             lights.cull(camera_pos, &view_proj, dt);

@@ -1,0 +1,19 @@
+[package]
+name = "alkash3d-examplescript"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# "Bobber" — эталонный пример нативного (Rust) .alscript-плагина
+# (скриптинг, этап 1 — см. plugin/scripting_api.rs в alkash3d-rust).
+# Только "cdylib": в отличие от alkash3d-inertial здесь нет
+# examples/*.rs, которому нужна была бы "rlib"-линковка crate'а как
+# обычной Rust-библиотеки — движок грузит исключительно .dll через
+# libloading, как и остальные плагины.
+name = "alkash3d_examplescript"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

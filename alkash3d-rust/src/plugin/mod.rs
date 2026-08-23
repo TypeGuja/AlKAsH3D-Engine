@@ -2,11 +2,13 @@
 mod abi;
 mod physics_api;
 mod light_api;
+mod scripting_api;
 mod manager;
 
 pub use abi::*;
 pub use physics_api::*;
 pub use light_api::*;
+pub use scripting_api::*;
 pub use manager::*;
 
 // Вспомогательные структуры для плагинов
@@ -176,5 +178,95 @@ impl LightPlugin {
 
     pub fn get_grid_params(&self) -> LightGridParams {
         (self.api.get_grid_params)(self.instance)
+    }
+}
+
+/// ДОБАВЛЕНО (скриптинг, этап 1 — нативные C++/Rust плагины): безопасная
+/// обёртка над одной загруженной скриптовой DLL — тот же паттерн, что и
+/// `PhysicsPlugin`/`LightPlugin` выше (собственный `PluginManager`,
+/// `api`/`instance`, кэшированные из первого `get_scripting_api`/
+/// `get_scripting_instance` после загрузки).
+///
+/// Отличие от Physics/Light: `AlkashEngine` держит НЕСКОЛЬКО
+/// `ScriptingPlugin` одновременно (по одному на каждую РАЗНУЮ загруженную
+/// DLL — см. `native_script_plugins: HashMap<String, ScriptingPlugin>` в
+/// engine/mod.rs), а не один статический экземпляр. Одна и та же
+/// `ScriptingPlugin` (одна DLL) может при этом обслуживать НЕСКОЛЬКО
+/// прикреплённых сущностей через `create_script`/`script_id`.
+pub struct ScriptingPlugin {
+    pub api: ScriptingAPI,
+    pub instance: *mut c_void,
+    manager: PluginManager,
+}
+
+impl ScriptingPlugin {
+    /// Грузит DLL по `path` и конфигурирует её через `config`. В отличие
+    /// от Physics/Light, `device_ptr` скриптам на этом этапе не передаётся
+    /// (`std::ptr::null_mut()`) — нативным скриптам первого этапа (движение
+    /// сущности + события) прямой доступ к D3D12-устройству не нужен;
+    /// расширить сигнатуру, если будущий скрипт всё же захочет рисовать
+    /// сам (например debug-визуализация) — тогда это будет ломающее
+    /// изменение ABI, требующее поднять PLUGIN_API_VERSION.
+    pub fn load(path: &str, config: ScriptConfig) -> Result<Self, String> {
+        let mut manager = PluginManager::new();
+        let config_ptr = &config as *const ScriptConfig as *const c_void;
+        manager.load_plugin(path, std::ptr::null_mut(), config_ptr)?;
+
+        let api = manager.get_scripting_api(path).ok_or("No scripting API")?;
+        let instance = manager.get_scripting_instance(path).ok_or("No scripting instance")?;
+
+        Ok(Self {
+            api: *api,
+            instance,
+            manager,
+        })
+    }
+
+    /// Прикрепляет логику этой DLL к сущности `entity_id` (уже
+    /// упакованный, см. `ScriptEvent` в scripting_api.rs) — возвращает
+    /// script_id для последующих `update_script`/`dispatch_event`/
+    /// `destroy_script`, либо `None`, если плагин отказал (например
+    /// `u32::MAX` — превышен `max_scripts` из `ScriptConfig`).
+    pub fn create_script(&mut self, entity_id: u64) -> Option<u32> {
+        let id = (self.api.create_script)(self.instance, entity_id);
+        if id == u32::MAX { None } else { Some(id) }
+    }
+
+    /// ДОБАВЛЕНО (скриптинг, вторая волна — Lua как универсальный
+    /// DLL-плагин): вариант `create_script` с указанием пути к конкретному
+    /// .lua-файлу (см. `ScriptingAPI::create_script_with_source` в
+    /// scripting_api.rs) — нужен, потому что одна alkash3d-luascript.dll
+    /// обслуживает МНОГО разных .lua-скриптов, в отличие от Native
+    /// (alkash3d-examplescript), где вся логика зашита в саму DLL и
+    /// обычного `create_script` достаточно. `source_path` конвертируется
+    /// в null-terminated C-строку здесь же — плагин не обязан удерживать
+    /// указатель дольше самого вызова.
+    pub fn create_script_with_source(&mut self, entity_id: u64, source_path: &str) -> Option<u32> {
+        let c_path = match std::ffi::CString::new(source_path) {
+            Ok(s) => s,
+            Err(_) => return None, // путь содержит NUL-байт — некорректные данные
+        };
+        let id = (self.api.create_script_with_source)(self.instance, entity_id, c_path.as_ptr());
+        if id == u32::MAX { None } else { Some(id) }
+    }
+
+    pub fn destroy_script(&mut self, script_id: u32) {
+        (self.api.destroy_script)(self.instance, script_id);
+    }
+
+    /// Заполненный движком `ctx` передаётся по `&mut` — плагин пишет
+    /// результат обратно в те же поля (`out_position`/`out_rotation`/
+    /// `position_changed`), вызывающая сторона (`AlkashEngine::update`)
+    /// сама решает, применять ли их к `Transform`.
+    pub fn update_script(&mut self, script_id: u32, ctx: &mut ScriptContext) {
+        (self.api.update_script)(self.instance, script_id, ctx as *mut ScriptContext);
+    }
+
+    pub fn dispatch_event(&mut self, script_id: u32, event: &ScriptEvent) {
+        (self.api.dispatch_event)(self.instance, script_id, event as *const ScriptEvent);
+    }
+
+    pub fn get_active_scripts_count(&self) -> u32 {
+        (self.api.get_active_scripts_count)(self.instance)
     }
 }

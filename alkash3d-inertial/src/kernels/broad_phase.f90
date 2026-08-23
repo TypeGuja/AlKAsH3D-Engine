@@ -71,11 +71,38 @@ contains
         ! cell_starts, и заполнение идёт ВПЕРЁД (запись, затем инкремент) —
         ! cell_starts при этом вообще не трогается и не требует "восстановления".
         integer, allocatable :: fill_cursor(:, :)
+        ! ИСПРАВЛЕНО (найдено по жалобе пользователя: тестовые физические
+        ! тела на x=-8..-2 и опорный "пол" на x=-52..52 бесконечно падали
+        ! и "исчезали под картой", хотя геометрически опора была ровно
+        ! под ними): grid раньше индексировался КАК ЕСЛИ БЫ мировые
+        ! координаты были только неотрицательными — `x = floor(pos_x /
+        ! cell_size) + 1` даёт x<1 (вне диапазона [1,grid_width]) для
+        ! ЛЮБОГО тела с отрицательной координатой. Условие `x >= 1` в
+        ! обоих проходах (1 и 3, см. ниже) молча ВЫКИДЫВАЛО такие тела из
+        ! grid — они никогда не попадали ни в одну ячейку и поэтому
+        ! никогда не участвовали в broad phase / коллизиях вообще, вне
+        ! зависимости от того, что реально стояло рядом с ними в мире.
+        ! Раз практически вся сцена движка (main.rs) расположена в
+        ! отрицательной/смешанной зоне X (улица от -52 до +52, камера
+        ! стартует на x=-8), это выбрасывало из физики большинство тел.
+        !
+        ! Фикс — центрируем grid: сдвигаем позицию на HALF_WORLD_OFFSET
+        ! (половина полного размера мира по каждой оси) ПЕРЕД делением на
+        ! cell_size, так что мировые координаты в диапазоне
+        ! [-half_world, +half_world) отображаются на ячейки [1,
+        ! grid_width] — там же, где раньше умещался только диапазон [0,
+        ! +world). Симметрично применяется в проходах 1 и 3 (подсчёт и
+        ! заполнение) — оба должны использовать ОДНУ И ТУ ЖЕ формулу
+        ! индексации, иначе тело попадёт в разные ячейки на разных
+        ! проходах.
+        real(c_float) :: half_world_x, half_world_z
 
         radius = 0.6
         pair_count = 0
         allocate(body_list(max(n, 1)))
         allocate(fill_cursor(grid_width, grid_height))
+        half_world_x = real(grid_width, c_float) * cell_size * 0.5
+        half_world_z = real(grid_height, c_float) * cell_size * 0.5
 
         ! Сброс счётчиков ячеек
         do y = 1, grid_height
@@ -89,8 +116,8 @@ contains
         do i = 1, n
             if (bodies(i)%is_asleep == 1) cycle
 
-            pos_x = bodies(i)%position(1)
-            pos_z = bodies(i)%position(3)
+            pos_x = bodies(i)%position(1) + half_world_x
+            pos_z = bodies(i)%position(3) + half_world_z
 
             x = floor(pos_x / cell_size) + 1
             y = floor(pos_z / cell_size) + 1
@@ -129,8 +156,8 @@ contains
         do i = 1, n
             if (bodies(i)%is_asleep == 1) cycle
 
-            pos_x = bodies(i)%position(1)
-            pos_z = bodies(i)%position(3)
+            pos_x = bodies(i)%position(1) + half_world_x
+            pos_z = bodies(i)%position(3) + half_world_z
 
             x = floor(pos_x / cell_size) + 1
             y = floor(pos_z / cell_size) + 1
@@ -146,6 +173,20 @@ contains
         ! body_list, пишем В cell_pairs — теперь это два разных массива,
         ! и запись жёстко ограничена max_pairs, чтобы никогда не выйти за
         ! пределы буфера, выделенного вызывающей стороной.
+        !
+        ! ДОБАВЛЕНО (оптимизация — жалоба пользователя на лаги/просадки
+        ! FPS ПОСЛЕ того, как физика заработала): раньше пара тел
+        ! "статика-статика" (например две соседние опорные сферы пола из
+        ! плотного ряда в main.rs — 116 штук с нахлёстом) исправно
+        ! попадала в cell_pairs здесь, потом Rust-обёртка (см. `update()`
+        ! в lib.rs) отдельно пропускала такие пары ПЕРЕД narrow phase —
+        ! но сам broad phase всё равно тратил циклы на запись пары в
+        ! буфер, а Rust — на итерацию по ней и проверку `is_static` уже
+        ! ПОСЛЕ того, как пара была найдена и скопирована через FFI.
+        ! Пропускаем пару здесь же, на месте её обнаружения — раньше и
+        ! дешевле, чем в Rust, и сокращает сам `cell_pairs`/`raw_pairs`
+        ! (значит меньше данных пересекает границу FFI и меньше итераций
+        ! в Rust-цикле `update()`).
         idx = 1
         pair_count = 0
 
@@ -156,6 +197,8 @@ contains
 
                 do i = start, start + count - 1
                     do j = i + 1, start + count - 1
+                        if (bodies(body_list(i)+1)%is_static == 1 .and. &
+                                bodies(body_list(j)+1)%is_static == 1) cycle
                         pair_count = pair_count + 1
                         if (pair_count <= max_pairs) then
                             cell_pairs(idx) = body_list(i)
@@ -177,6 +220,8 @@ contains
 
                         do i = cell_starts(x, y), cell_starts(x, y) + cell_counts(x, y) - 1
                             do j = start, start + count - 1
+                                if (bodies(body_list(i)+1)%is_static == 1 .and. &
+                                        bodies(body_list(j)+1)%is_static == 1) cycle
                                 pair_count = pair_count + 1
                                 if (pair_count <= max_pairs) then
                                     cell_pairs(idx) = body_list(i)
