@@ -35,12 +35,9 @@ fn make_body(x: f32, y: f32, z: f32, mass: f32) -> PhysicsBody {
     }
 }
 
-/// Сценарий: тела раскиданы по сетке РЕДКО (почти не сталкиваются).
-/// Показывает "чистую" стоимость broad-phase + интеграции без нагрузки
-/// на narrow-phase/солвер.
 fn spawn_sparse(count: usize) -> Vec<PhysicsBody> {
     let side = (count as f32).sqrt().ceil() as i32;
-    let spacing = 5.0; // достаточно, чтобы почти не пересекаться (радиус тел 0.5)
+    let spacing = 5.0;
     (0..count)
         .map(|i| {
             let gx = (i as i32) % side;
@@ -50,28 +47,19 @@ fn spawn_sparse(count: usize) -> Vec<PhysicsBody> {
         .collect()
 }
 
-/// Сценарий: плотная сетка вплотную друг к другу — как пол из кубов в
-/// демо движка. Много контактов сразу, но статично (не падают) —
-/// показывает стоимость narrow-phase/солвера на широком фронте контактов.
 fn spawn_dense_grid(count: usize) -> Vec<PhysicsBody> {
     let side = (count as f32).sqrt().ceil() as i32;
-    let spacing = 0.9; // тела радиуса 0.5 — соседи слегка пересекаются
+    let spacing = 0.9;
     (0..count)
         .map(|i| {
             let gx = (i as i32) % side;
             let gz = (i as i32) / side;
-            // Первый ряд — статичный "пол", остальное — динамические тела
-            // на нём, чтобы сразу были и контакты, и интеграция.
             let mass = if gz == 0 { 0.0 } else { 1.0 };
             make_body(gx as f32 * spacing, gz as f32 * spacing * 0.01, gz as f32 * spacing, mass)
         })
         .collect()
 }
 
-/// Сценарий: куча тел, падающая с высоты в одну точку — самый тяжёлый
-/// случай для солвера (много одновременных контактов на одних и тех же
-/// телах), и заодно проверка, что система сна реально снижает стоимость
-/// после того, как куча "уляжется" (см. update_sleep_state).
 fn spawn_falling_pile(count: usize) -> Vec<PhysicsBody> {
     let side = (count as f32).sqrt().ceil() as i32;
     (0..count)
@@ -129,8 +117,6 @@ fn run_scenario(name: &str, bodies: Vec<PhysicsBody>, frames: u32) {
         (physics_api.add_body)(instance, body as *const PhysicsBody);
     }
 
-    // Прогрев — первые кадры часто медленнее (аллокации внутренних
-    // буферов, холодный кэш), не должны искажать итоговое среднее.
     for _ in 0..10 {
         (physics_api.update)(instance, 1.0 / 60.0, -9.81);
     }
@@ -152,9 +138,6 @@ fn run_scenario(name: &str, bodies: Vec<PhysicsBody>, frames: u32) {
 
     let wall_elapsed = wall_start.elapsed();
 
-    // Разбиваем на первую и вторую половину кадров — чтобы увидеть, дают
-    // ли что-то засыпающие тела (падающая куча должна успокоиться и
-    // подешеветь; разрежённая сцена почти не изменится).
     let half = samples.len() / 2;
     let (first_half, second_half) = samples.split_at(half.max(1));
 
@@ -209,7 +192,7 @@ fn main() {
     println!("Доступно ядер (used by batch_integrate): {}\n", cores);
 
     let body_counts = [100usize, 1_000, 5_000, 10_000];
-    let frames = 300u32; // 5 секунд симуляции при 60 Гц
+    let frames = 300u32;
 
     for &count in &body_counts {
         run_scenario("Разрежённая сцена", spawn_sparse(count), frames);
@@ -219,8 +202,6 @@ fn main() {
         run_scenario("Плотная сетка (пол из кубов)", spawn_dense_grid(count), frames);
     }
 
-    // Падающая куча — тяжелее для солвера, поэтому на меньших размерах,
-    // иначе тест будет идти неоправданно долго.
     for &count in &[100usize, 500, 1_000] {
         run_scenario("Падающая куча", spawn_falling_pile(count), frames);
     }

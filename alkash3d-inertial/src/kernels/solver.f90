@@ -7,9 +7,12 @@ module solver_mod
 contains
     subroutine solve_constraints(bodies, constraints, n_constraints, iterations) &
             bind(c, name="solve_constraints")
-        type(rigid_body_c), intent(inout) :: bodies(:)
-        type(constraint_c), intent(inout) :: constraints(:)
-        integer(c_int), intent(in) :: n_constraints, iterations
+        ! См. подробный комментарий в rigid_body.f90/solve_contacts про
+        ! assumed-shape (:) и про `value` на скалярах — те же два фикса
+        ! здесь.
+        type(rigid_body_c), intent(inout) :: bodies(*)
+        type(constraint_c), intent(inout) :: constraints(n_constraints)
+        integer(c_int), intent(in), value :: n_constraints, iterations
         integer :: iter, i
 
         do iter = 1, iterations

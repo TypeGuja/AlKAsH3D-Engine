@@ -4,33 +4,23 @@
 //! ТРЕБОВАНИЯ ДЛЯ СБОРКИ:
 //!  - Установленный gfortran (GCC Fortran) в PATH.
 //!  - На Windows: НУЖЕН MinGW-w64 тулчейн (например, через MSYS2 —
-//!    `pacman -S mingw-w64-x86_64-gcc-fortran`). Стандартный MSVC-тулчейн
-//!    Fortran не собирает — gfortran тянет свои libgcc/libgfortran/libgomp
-//!    рантаймы, которые понимает только связка GNU-компилятор + GNU-линкер.
-//!    Поэтому сам Rust-крейт "inertial" тоже нужно собирать под GNU-таргет:
-//!        rustup target add x86_64-pc-windows-gnu
-//!        cargo build --release --target x86_64-pc-windows-gnu
-//!    Основной движок (.exe на MSVC/windows-rs) при этом трогать не нужно —
-//!    plugin.dll грузится в рантайме через LoadLibrary/GetProcAddress
-//!    (см. PluginManager в движке), а не линкуется статически, так что
-//!    GNU-собранная DLL и MSVC-собранный .exe прекрасно взаимодействуют
-//!    через extern "C" (стандартный Win32 ABI одинаков для обоих
-//!    тулчейнов на уровне экспортируемых C-функций).
+//!    `pacman -S mingw-w64-x86_64-gcc-fortran mingw-w64-x86_64-toolchain`).
+//!    Стандартный MSVC-тулчейн Fortran не собирает — gfortran тянет свои
+//!    libgcc/libgfortran/libgomp рантаймы, которые понимает только связка
+//!    GNU-компилятор + GNU-линкер. Поэтому сам Rust-крейт "inertial" тоже
+//!    нужно собирать под GNU-таргет — см. .cargo/config.toml в этом же
+//!    крейте, он уже фиксирует x86_64-pc-windows-gnu по умолчанию.
 //!  - На Linux/macOS gfortran из системного пакетного менеджера подходит
 //!    без всяких оговорок (apt install gfortran / brew install gcc).
 //!
 //! ЧТО ДЕЛАЕТ:
 //!  1. Компилирует каждый .f90 в .o с флагами -O3 -fopenmp -fPIC.
 //!     ПОРЯДОК ВАЖЕН: rigid_body.f90 объявляет модуль (rigid_body_mod),
-//!     который импортируют все остальные файлы (`use rigid_body_mod,
-//!     only: ...`) — он должен быть скомпилирован ПЕРВЫМ, иначе gfortran
-//!     не найдёт файл интерфейса модуля (.mod).
-//!  2. Собирает все .o в статическую библиотеку libinertial_kernels.a
-//!     через `ar`.
-//!  3. Говорит cargo слинковать эту библиотеку + рантаймы libgfortran/
-//!     libgomp (без них компоновщик не найдёт символы вроде
-//!     _gfortran_* / GOMP_*, которые генерирует gfortran для операций
-//!     ввода-вывода, интринсиков и параллельных циклов OpenMP).
+//!     который импортируют все остальные файлы — он должен быть
+//!     скомпилирован ПЕРВЫМ, иначе gfortran не найдёт файл интерфейса
+//!     модуля (.mod).
+//!  2. Собирает все .o в статическую библиотеку libinertial_kernels.a.
+//!  3. Говорит cargo слинковать эту библиотеку + рантаймы libgfortran/libgomp.
 
 use std::env;
 use std::path::PathBuf;
@@ -41,13 +31,16 @@ fn main() {
     let kernels_dir = PathBuf::from("src/kernels");
 
     // Порядок важен для модульных зависимостей Fortran — см. комментарий выше.
+    // ПРИМЕЧАНИЕ: reference.f90 больше не существует — integrate_bodies/
+    // solve_contacts/update_aabb УЖЕ реализованы в rigid_body.f90, отдельный
+    // файл с теми же bind(c)-именами только создавал бы риск конфликта
+    // символов при линковке.
     let sources = [
         "rigid_body.f90",
         "broad_phase.f90",
         "narrow_phase.f90",
         "solver.f90",
         "kernels_optimized.f90",
-        "reference.f90",
     ];
 
     let mut object_files = Vec::new();
@@ -72,8 +65,8 @@ fn main() {
             .arg("-O3")
             .arg("-fopenmp")
             .arg("-fPIC")
-            .arg("-J").arg(&out_dir) // куда класть сгенерированные .mod
-            .arg("-I").arg(&out_dir) // откуда читать .mod предыдущих файлов
+            .arg("-J").arg(&out_dir)
+            .arg("-I").arg(&out_dir)
             .arg(&src_path)
             .arg("-o").arg(&obj_path)
             .status()
@@ -94,7 +87,6 @@ fn main() {
         object_files.push(obj_path);
     }
 
-    // Собираем все .o в одну статическую библиотеку.
     let lib_path = out_dir.join("libinertial_kernels.a");
     let mut ar_cmd = Command::new("ar");
     ar_cmd.arg("crs").arg(&lib_path);
@@ -115,7 +107,6 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=inertial_kernels");
 
-    // Fortran-рантайм и OpenMP.
     println!("cargo:rustc-link-lib=dylib=gfortran");
     println!("cargo:rustc-link-lib=dylib=gomp");
 }

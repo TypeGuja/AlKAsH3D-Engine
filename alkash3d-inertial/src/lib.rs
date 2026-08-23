@@ -24,14 +24,15 @@
 //! текущей позицией в солвере, так что удаление тел больше не портит
 //! чужие ID.
 
-mod kernels;
+mod ffi;
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::Mutex;
 
-use crate::kernels::*;
+use ffi::{FortranContact, FortranRigidBody, FortranPhysics};
+
 // =====================================================================
 // ABI СТРУКТУРЫ
 //
@@ -134,16 +135,6 @@ static PLUGIN_NAME: &[u8] = b"inertial\0";
 // Мостик PhysicsBody(ABI, без формы) <-> FortranRigidBody(с тензором инерции)
 // =====================================================================
 
-/// ПРИМЕЧАНИЕ: ABI PhysicsBody не несёт НИКАКОЙ информации о форме тела
-/// (нет radius/half-extents/mesh-ссылки) — и `narrow_phase_gjk` (см.
-/// narrow_phase.f90) теперь честно и явно считает все тела сферами
-/// радиуса IMPLICIT_RADIUS (раньше это было скрыто внутри фиктивного
-/// "GJK для любых форм", который на деле тоже был захардкожен на сферы
-/// того же радиуса — так что видимое поведение не меняется, просто
-/// теперь это явно и осознанно). Тензор инерции по умолчанию считается
-/// как для однородного шара такого же радиуса: I = (2/5) * m * r².
-/// Когда/если ABI научится передавать реальную форму тела — это первое
-/// место, которое нужно будет обновить.
 const IMPLICIT_RADIUS: f32 = 0.5;
 
 fn to_fortran_body(b: &PhysicsBody) -> FortranRigidBody {
@@ -226,22 +217,9 @@ fn default_abi_body() -> PhysicsBody {
 pub struct PhysicsState {
     config: PhysicsConfig,
     solver: FortranPhysics,
-
-    // ИСПРАВЛЕНО (баг с remove_body): раньше ID тела совпадал с позицией
-    // в Vec, и remove_body делал Vec::remove(idx), СДВИГАЯ все индексы
-    // после удалённого — любой сохранённый где-то ID мгновенно начинал
-    // указывать не на то тело (тот же класс бага, что мы правили в ECS
-    // движка через generational-индексы). Теперь ID — стабильный
-    // "handle", никогда не переиспользуемый и не совпадающий напрямую с
-    // текущей позицией в солвере; позиция всегда находится через
-    // handle_to_index, а при удалении (swap_remove) обновляется индекс
-    // тела, занявшего освободившееся место.
     next_handle: i32,
     handle_to_index: HashMap<i32, usize>,
     index_to_handle: Vec<i32>,
-
-    // Буферы для отдачи наружу через ABI — используют handle, а НЕ
-    // внутренние индексы солвера (которые сдвигаются при swap_remove).
     contacts_abi: Vec<PhysicsContact>,
     pairs_abi: Vec<i32>,
     stats: PhysicsStats,
@@ -278,7 +256,7 @@ impl PhysicsState {
 
     fn remove_body(&mut self, handle: i32) {
         let Some(idx) = self.handle_to_index.remove(&handle) else {
-            return; // уже удалён либо никогда не существовал — не паникуем
+            return;
         };
         if self.solver.bodies.is_empty() {
             return;
@@ -289,8 +267,6 @@ impl PhysicsState {
         self.solver.sleep_timers.swap_remove(idx);
 
         if idx != last {
-            // Тело, которое было последним, теперь заняло место idx —
-            // обновляем ЕГО handle -> index, не трогая handle удалённого.
             let moved_handle = self.index_to_handle[last];
             self.index_to_handle[idx] = moved_handle;
             self.handle_to_index.insert(moved_handle, idx);
@@ -315,16 +291,10 @@ impl PhysicsState {
             return;
         }
 
-        // 1. BROAD PHASE — реальный Fortran uniform-grid солвер, O(N),
-        //    однопоточный внутри (без гонок — см. broad_phase.f90).
         let t0 = std::time::Instant::now();
         let raw_pairs: Vec<i32> = self.solver.find_pairs_grid().to_vec();
         let broad_phase_time_ms = t0.elapsed().as_secs_f32() * 1000.0;
 
-        // 2. NARROW PHASE — честный sphere-sphere тест с реальной
-        //    глубиной проникновения и нормированной нормалью (раньше —
-        //    фиктивный "GJK", всегда возвращавший penetration=0.5 и
-        //    ненормализованную нормаль).
         let t1 = std::time::Instant::now();
         self.solver.clear_contacts();
         let mut internal_contacts: Vec<(usize, usize, FortranContact)> = Vec::new();
@@ -336,7 +306,7 @@ impl PhysicsState {
             }
             let mut contact = FortranContact::default();
             let hit = unsafe {
-                kernels::narrow_phase_gjk(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact)
+                ffi::narrow_phase_gjk(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact)
             };
             if hit != 0 {
                 contact.body_a = ia as i32;
@@ -347,34 +317,20 @@ impl PhysicsState {
         }
         let narrow_phase_time_ms = t1.elapsed().as_secs_f32() * 1000.0;
 
-        // 3. РЕШЕНИЕ КОНТАКТОВ — безопасно-параллельная (atomic update)
-        //    Fortran-версия. Раньше это был Rust-код с багом: коррекция
-        //    проникновения брала только normal[0] и применяла ЕГО ЖЕ ко
-        //    всем трём осям позиции — толкало тела не вдоль нормали, а
-        //    в произвольном направлении.
         let t2 = std::time::Instant::now();
         if !self.solver.contacts.is_empty() {
             self.solver.solve_contacts_vectorized(self.config.solver_iterations.max(1), dt);
         }
 
-        // 4. ИНТЕГРАЦИЯ — по-настоящему многопоточная (непересекающиеся
-        //    срезы через split_at_mut + std::thread::scope, см. ffi/mod.rs).
-        //    Раньше "batch_integrate" с параметром num_threads был
-        //    полностью последовательным несмотря на название.
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
             .min(8);
         self.solver.batch_integrate(dt, gravity, num_threads);
 
-        // 5. СОН — с настоящим таймером-гистерезисом (раньше is_asleep
-        //    не выставлялся вообще ни для одного динамического тела).
         self.solver.update_sleep_state(dt, 0.01, 0.5);
         let solver_time_ms = t2.elapsed().as_secs_f32() * 1000.0;
 
-        // 6. Конвертируем во внешний ABI: HANDLE вместо внутренних
-        //    индексов солвера — иначе после следующего swap_remove
-        //    старые индексы контактов начали бы указывать не на те тела.
         self.contacts_abi.clear();
         for (ia, ib, c) in &internal_contacts {
             self.contacts_abi.push(PhysicsContact {
@@ -417,14 +373,6 @@ impl PhysicsState {
 // C ABI — экспортируемые функции плагина
 // =====================================================================
 
-/// ДОБАВЛЕНО (защита на будущее): раньше состояние было доступно через
-/// голый `&mut *(instance as *mut PhysicsState)` без какой-либо
-/// синхронизации. Сейчас движок вызывает физику строго последовательно
-/// из одного потока, но `EngineScheduler`/`WorkerPool` в движке явно
-/// рассчитан на то, чтобы когда-нибудь распараллелить именно такие
-/// вызовы (`TaskPriority::High` — "физика, каллинг" в одной категории
-/// приоритета). Оборачиваем в Mutex сразу, не дожидаясь, пока это
-/// реально кому-то аукнется.
 struct PhysicsInstance {
     state: Mutex<PhysicsState>,
 }
@@ -459,11 +407,6 @@ extern "C" fn physics_shutdown(instance: *mut c_void) {
 }
 
 extern "C" fn physics_plugin_update(instance: *mut c_void, dt: f32) {
-    // Общий "generic" ABI-хук PluginAPI::update — движок вызывает
-    // специфичный PhysicsAPI::update(instance, dt, gravity) НАПРЯМУЮ
-    // (см. PhysicsPlugin::update в plugin/mod.rs движка), так что этот
-    // хук существует только для единообразия ABI между типами плагинов.
-    // Гравитацию тут берём дефолтной, раз в этой сигнатуре её взять неоткуда.
     if instance.is_null() {
         return;
     }
@@ -537,17 +480,6 @@ extern "C" fn api_get_contacts(instance: *mut c_void) -> *const PhysicsContact {
         return std::ptr::null();
     }
     let inst = unsafe { &*(instance as *const PhysicsInstance) };
-    // ПРИМЕЧАНИЕ (ограничение ABI, не чинится только с физической
-    // стороны): движок читает указатель и count ДВУМЯ ОТДЕЛЬНЫМИ вызовами
-    // (см. PhysicsPlugin::get_contacts в plugin/mod.rs) — при СТРОГО
-    // последовательном вызове (как сейчас в AlkashEngine::update())
-    // это безопасно, но если когда-нибудь get_contacts()/update() станут
-    // вызываться из разных потоков без внешней синхронизации, между
-    // этими двумя вызовами возможна рассинхронизация указателя и длины.
-    // Настоящее решение — сделать в ABI один вызов, возвращающий и
-    // указатель, и длину атомарно (это уже требует правки abi.rs/
-    // physics_api.rs на стороне движка, вне зоны ответственности этого
-    // плагина).
     match inst.state.lock() {
         Ok(state) => state.contacts_abi.as_ptr(),
         Err(_) => std::ptr::null(),

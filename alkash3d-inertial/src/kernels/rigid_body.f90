@@ -49,8 +49,8 @@ contains
         use, intrinsic :: iso_c_binding
         implicit none
         type(rigid_body_c), intent(inout) :: bodies(n)
-        integer(c_int), intent(in) :: n
-        real(c_float), intent(in) :: dt
+        integer(c_int), intent(in), value :: n
+        real(c_float), intent(in), value :: dt
         integer :: i
 
         do i = 1, n
@@ -74,9 +74,14 @@ contains
             bind(c, name="solve_contacts")
         use, intrinsic :: iso_c_binding
         implicit none
-        type(rigid_body_c), intent(inout) :: bodies(:)
-        type(contact_c), intent(inout) :: contacts(:)
-        integer(c_int), intent(in) :: n_contacts, iterations
+        ! ИСПРАВЛЕНО: assumed-shape (`bodies(:)`/`contacts(:)`) не гарантированно
+        ! C-совместимы для bind(c)-процедур (компилятор может ожидать дескриптор
+        ! массива вместо простого указателя, который передаёт Rust) —
+        ! assumed-size (`bodies(*)`) и explicit-shape (`contacts(n_contacts)`)
+        ! однозначно соответствуют "сырому указателю", как их и передаёт Rust.
+        type(rigid_body_c), intent(inout) :: bodies(*)
+        type(contact_c), intent(inout) :: contacts(n_contacts)
+        integer(c_int), intent(in), value :: n_contacts, iterations
         integer :: iter, i
 
         do iter = 1, iterations
@@ -126,10 +131,10 @@ contains
         use, intrinsic :: iso_c_binding
         implicit none
         type(rigid_body_c), intent(in) :: bodies(n)
-        integer(c_int), intent(in) :: n
+        integer(c_int), intent(in), value :: n
         real(c_float), intent(out) :: min_bounds(n, 3)
         real(c_float), intent(out) :: max_bounds(n, 3)
-        real(c_float), intent(in) :: radius
+        real(c_float), intent(in), value :: radius
         integer :: i
 
         do i = 1, n

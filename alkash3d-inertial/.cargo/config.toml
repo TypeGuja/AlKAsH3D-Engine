@@ -1,2 +1,22 @@
+# alkash3d-inertial/.cargo/config.toml
+#
+# Сборка через MSVC-линкер (link.exe) не может слинковать статическую
+# библиотеку libinertial_kernels.a, собранную gfortran'ом (формат GNU
+# ar-архива) — отсюда LNK1181 "не удается открыть входной файл
+# gfortran.lib". gfortran на Windows — это MinGW-w64 тулчейн, и линковать
+# его вывод нужно GNU-линкером (ld), а не link.exe.
+#
+# Этот файл фиксирует GNU-таргет по умолчанию ДЛЯ ЭТОГО КРЕЙТА — и
+# терминал (`cargo build`), и IDE (RustRover/CLion со своими Run
+# Configuration) будут использовать x86_64-pc-windows-gnu автоматически,
+# без необходимости каждый раз дописывать --target вручную.
+#
+# Требования (см. README.md):
+#   rustup toolchain install stable-x86_64-pc-windows-gnu
+#   rustup target add x86_64-pc-windows-gnu
+#   MSYS2 -> pacman -S mingw-w64-x86_64-gcc-fortran mingw-w64-x86_64-toolchain
+#   C:\msys64\mingw64\bin добавлен в PATH (и терминал/IDE перезапущены
+#   после этого, иначе PATH не обновится в уже открытой сессии)
+
 [build]
 target = "x86_64-pc-windows-gnu"

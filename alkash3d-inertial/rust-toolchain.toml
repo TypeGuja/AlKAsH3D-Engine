@@ -1,0 +1,7 @@
+# Пин toolchain'а ТОЛЬКО для этого крейта: не зависит от глобального
+# rustup-дефолта (у вас это кастомный "esp" из espup, который не умеет
+# `rustup target add`). Cargo/rustup при работе внутри этой папки
+# автоматически подставят stable вместо esp, включая IDE-конфигурации.
+[toolchain]
+channel = "stable"
+targets = ["x86_64-pc-windows-gnu"]
