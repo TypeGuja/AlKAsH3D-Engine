@@ -4,17 +4,13 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
-# ПРИМЕЧАНИЕ: оригинального Cargo.toml мне не присылали — этот файл
-# восстановлен по структуре исходников (src/lib.rs, src/ffi/mod.rs,
-# build.rs) и требованиям build.rs. Если у тебя уже есть свой Cargo.toml
-# с дополнительными зависимостями/фичами — просто перенеси секцию
-# [lib]/[profile.release] и build.rs-специфичные настройки, не затирая
-# остальное.
-
 [lib]
 name = "inertial"
-# cdylib — обязательно: это то, что становится inertial.dll и грузится
-# движком через libloading (PluginManager::load_plugin).
+# "cdylib" — для движка (LoadLibrary/libloading). "rlib" — чтобы
+# examples/perf_test.rs мог линковаться с крейтом как с обычной Rust-
+# библиотекой (use inertial::{...}). Оба собираются одновременно из
+# одного и того же кода — движок как грузил, так и продолжает грузить
+# именно .dll/.so, ничего в этом плане не меняется.
 crate-type = ["cdylib", "rlib"]
 
 [profile.release]
