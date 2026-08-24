@@ -31,7 +31,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::*;
-use crate::plugin::{PhysicsPlugin, LightPlugin, PhysicsConfig, LightConfig, GPULight, PhysicsBody, PhysicsContact, LightGridCell, LightGridEntry, LightGridParams};
+use crate::plugin::{PhysicsPlugin, LightPlugin, PhysicsConfig, LightConfig, GPULight, PhysicsBody, PhysicsContact, PhysicsStats, LightGridCell, LightGridEntry, LightGridParams};
 use crate::math::{Mat4, Vec3, identity, translation, rotation_x, rotation_y, rotation_z, scaling};
 use crate::camera::Camera;
 use crate::constant_buffer::TransformConstants;
@@ -270,6 +270,17 @@ pub struct Mesh {
     /// берёт `add_material`.
     pub material_metallic: f32,
     pub material_roughness: f32,
+    /// ДОБАВЛЕНО (оптимизация рендера — CPU-side frustum culling, см.
+    /// `crate::math::Frustum`): ограничивающая сфера меша В ЛОКАЛЬНЫХ
+    /// (model-space, ДО умножения на world-матрицу) координатах —
+    /// `bounding_center` = центр AABB меша, `bounding_radius` =
+    /// максимальное расстояние от этого центра до любой вершины.
+    /// Считается ОДИН РАЗ при создании меша (см. `from_vertices` ниже), не
+    /// каждый кадр — рендер-цикл просто трансформирует готовый центр в
+    /// мировые координаты через текущую model-матрицу объекта и сравнивает
+    /// с фрустумом камеры.
+    pub bounding_center: [f32; 3],
+    pub bounding_radius: f32,
 }
 
 impl Mesh {
@@ -308,6 +319,40 @@ impl Mesh {
 
         let buffer = Buffer::create_vertex_buffer(&vertex_data, Vertex::STRIDE)?;
 
+        // ДОБАВЛЕНО (оптимизация рендера — CPU-side frustum culling):
+        // ограничивающая сфера меша в локальных координатах — считается
+        // ОДИН РАЗ здесь (при создании меша), а не каждый кадр. AABB по
+        // всем вершинам -> центр = середина AABB, радиус = максимальное
+        // расстояние от центра до любой вершины (гарантированно содержит
+        // ВСЕ вершины меша — консервативная, но корректная граница).
+        let (bounding_center, bounding_radius) = if vertices.is_empty() {
+            ([0.0, 0.0, 0.0], 0.0)
+        } else {
+            let mut min = [f32::MAX; 3];
+            let mut max = [f32::MIN; 3];
+            for v in vertices {
+                for axis in 0..3 {
+                    let p = v.position[axis];
+                    if p < min[axis] { min[axis] = p; }
+                    if p > max[axis] { max[axis] = p; }
+                }
+            }
+            let center = [
+                (min[0] + max[0]) * 0.5,
+                (min[1] + max[1]) * 0.5,
+                (min[2] + max[2]) * 0.5,
+            ];
+            let mut radius_sq = 0.0f32;
+            for v in vertices {
+                let dx = v.position[0] - center[0];
+                let dy = v.position[1] - center[1];
+                let dz = v.position[2] - center[2];
+                let d_sq = dx * dx + dy * dy + dz * dz;
+                if d_sq > radius_sq { radius_sq = d_sq; }
+            }
+            (center, radius_sq.sqrt())
+        };
+
         Ok(Self {
             vertex_buffer: buffer,
             vertex_count: vertices.len() as u32,
@@ -324,6 +369,8 @@ impl Mesh {
             mr_srv_index: None,
             material_metallic: 0.0,
             material_roughness: 0.8,
+            bounding_center,
+            bounding_radius,
         })
     }
 
@@ -557,6 +604,29 @@ impl MeshInstance {
     }
 }
 
+/// ДОБАВЛЕНО (диагностика — жалоба "ФПС скачет, пока камера стоит на
+/// месте" ПОСЛЕ фиксов стриминга/hot-reload/culling/физики): разбивка
+/// времени `AlkashEngine::update()` по под-фазам — каждое поле хранит
+/// ХУДШИЙ случай этой конкретной под-фазы за текущее 1-секундное окно
+/// измерения (тот же принцип, что уже `max_update_ms`/`max_render_ms` в
+/// bin/main.rs, но детальнее). `[PHYS-STATS]` уже показал, что сам
+/// физический солвер спокоен во время спайков — то есть общий
+/// `physics_ms` здесь тоже должен остаться низким, а виновная под-фаза
+/// (скрипты/день-ночь/стриминг/каллинг света/аудио) станет видна прямым
+/// сравнением чисел в логе, без дальнейших догадок по коду.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UpdateBreakdownMs {
+    pub physics_ms: f32,
+    pub sync_physics_ms: f32,
+    pub native_scripts_ms: f32,
+    pub python_scripts_ms: f32,
+    pub day_night_ms: f32,
+    pub world_streaming_ms: f32,
+    pub chunk_io_ms: f32,
+    pub light_cull_ms: f32,
+    pub audio_ms: f32,
+}
+
 // ===================================================================
 // Main Engine - С ВСТРОЕННЫМ ОКНОМ
 // ===================================================================
@@ -583,6 +653,13 @@ pub struct AlkashEngine {
 
     // Планировщик
     pub scheduler: Arc<EngineScheduler>,
+
+    /// ДОБАВЛЕНО (диагностика — жалоба "ФПС скачет, пока камера стоит на
+    /// месте"): худшее время каждой под-фазы `update()` за текущее
+    /// 1-секундное окно измерения — см. макрос `timed!` внутри `update()`
+    /// и `AlkashEngine::take_update_breakdown` (публичный геттер+сброс
+    /// для bin/main.rs).
+    update_breakdown_ms: UpdateBreakdownMs,
 
     // Плагины
     pub physics: Option<PhysicsPlugin>,
@@ -1320,6 +1397,7 @@ impl AlkashEngine {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             scheduler: Arc::new(EngineScheduler::new()),
+            update_breakdown_ms: UpdateBreakdownMs::default(),
             renderer: None,
             meshes: Vec::new(),
             mesh_instances: Vec::new(),
@@ -5607,11 +5685,55 @@ impl AlkashEngine {
                 }
             }
 
-            self.ensure_constant_buffer_capacity(jobs.len())?;
-
             let view = self.camera.view_matrix();
             let proj = self.camera.projection_matrix();
             let id_matrix = identity();
+
+            // ДОБАВЛЕНО (оптимизация рендера — CPU-side frustum culling,
+            // жалоба пользователя на лаги, третье выбранное направление):
+            // раньше здесь рисовались АБСОЛЮТНО ВСЕ объекты сцены (965+
+            // ECS-сущностей — тайлы пола, столбы фонарей и т.д.) каждый
+            // кадр, независимо от того, видны ли они в текущем кадре камеры
+            // — отдельный `IASetVertexBuffers`/`IASetIndexBuffer`/
+            // `SetGraphicsRootConstantBufferView`/`DrawIndexedInstanced` на
+            // КАЖДЫЙ, даже если объект давно за спиной камеры или далеко за
+            // пределами FOV. Теперь перед основным циклом отрисовки
+            // (`jobs.iter()` ниже) объекты с `DrawTransform::Camera`
+            // (реальная world-позиция — то есть подавляющее большинство
+            // сцены) фильтруются тестом сферы-в-фрустуме
+            // (`crate::math::Frustum::test_sphere`, метод Gribb/Hartmann) —
+            // мировой центр/радиус ограничивающей сферы меша (см.
+            // `Mesh::bounding_center`/`bounding_radius`, посчитанные ОДИН
+            // РАЗ при создании меша) трансформируются текущей model-
+            // матрицей объекта и сравниваются с фрустумом камеры этого
+            // кадра. `DrawTransform::RawIdentity` (старый 2D-fallback без
+            // камеры, main1.rs) НЕ фильтруется — у таких объектов нет
+            // осмысленной мировой позиции для теста, и их обычно единицы.
+            //
+            // Тест по сфере — консервативный (может изредка оставить
+            // объект чуть дальше от границы, чем требуется), но НИКОГДА не
+            // отбрасывает то, что реально попадает в кадр — сфера строго
+            // содержит всю геометрию меша (см. комментарий у
+            // `bounding_center`/`bounding_radius`).
+            let frustum = crate::math::Frustum::from_view_proj(&(proj * view));
+            jobs.retain(|job| match &job.transform {
+                DrawTransform::Camera(model) => {
+                    let mesh = &self.meshes[job.mesh_index];
+                    let (scale, _rotation, _translation) = model.to_scale_rotation_translation();
+                    let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+                    let local_center = Vec3::new(
+                        mesh.bounding_center[0],
+                        mesh.bounding_center[1],
+                        mesh.bounding_center[2],
+                    );
+                    let world_center = model.transform_point3(local_center);
+                    let world_radius = mesh.bounding_radius * max_scale;
+                    frustum.test_sphere(world_center, world_radius)
+                }
+                DrawTransform::RawIdentity => true,
+            });
+
+            self.ensure_constant_buffer_capacity(jobs.len())?;
 
             for (i, job) in jobs.iter().enumerate() {
                 let mesh = &self.meshes[job.mesh_index];
@@ -6477,6 +6599,30 @@ impl AlkashEngine {
                 Err(Error::from_hresult(HRESULT(1)))
             }
         }
+    }
+
+    /// ДОБАВЛЕНО (диагностика — жалоба пользователя "всё равно ФПС не
+    /// радует" ПОСЛЕ фиксов стриминга/hot-reload/culling): публичный
+    /// доступ к статистике физики этого кадра (см. `PhysicsPlugin::get_stats`)
+    /// — `None`, если физика не инициализирована. Позволяет вызывающему
+    /// коду (см. `run_loop` в bin/main.rs) реально ИЗМЕРИТЬ время
+    /// broad/narrow phase и солвера, число тел/активных тел/контактов/пар,
+    /// вместо того чтобы гадать по одной лишь позиции тестовых сфер.
+    pub fn physics_stats(&self) -> Option<PhysicsStats> {
+        self.physics.as_ref().map(|p| p.get_stats())
+    }
+
+    /// ДОБАВЛЕНО (диагностика — жалоба "ФПС скачет, пока камера стоит на
+    /// месте" ПОСЛЕ фиксов стриминга/hot-reload/culling/физики): отдаёт
+    /// накопленную за текущее окно разбивку `update()` по под-фазам (см.
+    /// `UpdateBreakdownMs`/макрос `timed!` внутри `update()`) и СРАЗУ
+    /// сбрасывает её в нули — тот же паттерн, что уже `max_update_ms`/
+    /// `max_render_ms` в bin/main.rs (там ручной сброс раз в секунду
+    /// снаружи; здесь сброс происходит прямо тут, чтобы вызывающий код в
+    /// bin/main.rs не мог забыть его сделать и не удвоил логику двух
+    /// разных мест сброса).
+    pub fn take_update_breakdown(&mut self) -> UpdateBreakdownMs {
+        std::mem::take(&mut self.update_breakdown_ms)
     }
 
     /// ИСПРАВЛЕНО (обновление bin/*.rs под текущий движок): раньше путь к
@@ -7662,13 +7808,38 @@ impl AlkashEngine {
     pub fn update(&mut self, dt: f32, gravity: f32, camera_pos: [f32; 3], view_proj: [f32; 16]) {
         self.scheduler.reset_budget();
 
-        if let Some(physics) = &mut self.physics {
-            physics.update(dt, gravity);
+        // ДОБАВЛЕНО (диагностика — жалоба "ФПС скачет, пока камера стоит
+        // на месте" ПОСЛЕ фиксов стриминга/hot-reload/culling/физики):
+        // `[TIMING] worst update()=...` в bin/main.rs показывал общее
+        // время update() целиком, но не показывал, какая именно под-фаза
+        // внутри него периодически спайкает — а лог с [PHYS-STATS]
+        // показал, что solver физики при этом остаётся спокойным (то
+        // есть спайк НЕ в физике). Разбиваем update() на измеряемые
+        // под-фазы, копим худший случай каждой в self.update_breakdown_ms
+        // (сбрасывается в bin/main.rs раз в секунду вместе с остальными
+        // счётчиками) — следующий лог покажет ТОЧНО виновную под-фазу
+        // вместо очередной догадки.
+        macro_rules! timed {
+            ($field:ident, $body:expr) => {{
+                let __start = std::time::Instant::now();
+                let __result = $body;
+                let __ms = __start.elapsed().as_secs_f32() * 1000.0;
+                if __ms > self.update_breakdown_ms.$field {
+                    self.update_breakdown_ms.$field = __ms;
+                }
+                __result
+            }};
         }
+
+        timed!(physics_ms, {
+            if let Some(physics) = &mut self.physics {
+                physics.update(dt, gravity);
+            }
+        });
         // ДОБАВЛЕНО (Задача #16 плана — физика и коллизии): см. подробный
         // комментарий у самого метода — проецирует результат этого шага
         // физики на видимую геометрию, ДО render_frame() этого же кадра.
-        self.sync_physics_transforms();
+        timed!(sync_physics_ms, self.sync_physics_transforms());
 
         // ДОБАВЛЕНО (скриптинг, этап 1 — нативные C++/Rust плагины): ПОСЛЕ
         // sync_physics_transforms (чтобы скрипт видел уже свежую позицию
@@ -7680,7 +7851,7 @@ impl AlkashEngine {
         // только один раз за кадр, update_native_scripts может лишь
         // перезаписать Transform уже ПОСЛЕ него — скрипт имеет право
         // переопределить результат физики в тот же кадр.
-        self.update_native_scripts(dt);
+        timed!(native_scripts_ms, self.update_native_scripts(dt));
 
         // ДОБАВЛЕНО (скриптинг, вторая волна — Python как hot-reload): та
         // же позиция в кадре, что и update_native_scripts выше (сразу
@@ -7690,14 +7861,14 @@ impl AlkashEngine {
         // порядок между ними самими не важен, т.к. они работают с РАЗНЫМИ
         // прикреплениями (Native/Lua используют active_scripts, Python —
         // python_scripts) и друг друга не перезаписывают.
-        self.update_python_scripts(dt);
+        timed!(python_scripts_ms, self.update_python_scripts(dt));
 
         // ДОБАВЛЕНО (Фаза 7 плана по реализму/фонарям — день/ночь и
         // мерцание): ДО cull() — так свежий свет (обновлённый intensity от
         // мерцания/day-night) успевает попасть в FirstFires прежде, чем
         // тот в этом же кадре посчитает culling/LOD по текущему списку
         // источников.
-        self.update_day_night(dt);
+        timed!(day_night_ms, self.update_day_night(dt));
 
         // ДОБАВЛЕНО (World Streaming): загрузка/выгрузка чанков мира по
         // дистанции от камеры — см. `update_world_streaming` выше. Место
@@ -7710,15 +7881,17 @@ impl AlkashEngine {
         // влияет на видимость новых объектов, но сохраняет естественный
         // порядок "сначала обновили мир, потом посчитали, что из него
         // видно".
-        self.update_world_streaming(Vec3::new(camera_pos[0], camera_pos[1], camera_pos[2]));
+        timed!(world_streaming_ms, self.update_world_streaming(Vec3::new(camera_pos[0], camera_pos[1], camera_pos[2])));
         // ИСПРАВЛЕНО (фризы стриминга): фактический I/O — каждый кадр, с
         // ограниченным бюджетом, а не одним махом внутри
         // update_world_streaming (см. drain_pending_chunk_io).
-        self.drain_pending_chunk_io();
+        timed!(chunk_io_ms, self.drain_pending_chunk_io());
 
-        if let Some(lights) = &mut self.lights {
-            lights.cull(camera_pos, &view_proj, dt);
-        }
+        timed!(light_cull_ms, {
+            if let Some(lights) = &mut self.lights {
+                lights.cull(camera_pos, &view_proj, dt);
+            }
+        });
 
         // ДОБАВЛЕНО (звуковая подсистема — Фаза "Sound" плана): слушатель
         // синхронизируется с текущей позицией/направлением камеры КАЖДЫЙ
@@ -7730,16 +7903,18 @@ impl AlkashEngine {
         // здесь (у `update()` нет прямого доступа к `self.camera` как
         // параметру — но `self.camera` то же самое поле, что используется
         // для рендера, читаем его напрямую).
-        if let Some(audio) = &mut self.audio {
-            let forward = self.camera.target - self.camera.position;
-            audio.set_listener(crate::audio::Listener {
-                position: Vec3::new(camera_pos[0], camera_pos[1], camera_pos[2]),
-                forward: if forward.length_squared() > 1e-6 { forward.normalize() } else { Vec3::new(0.0, 0.0, 1.0) },
-                up: self.camera.up,
-                velocity: Vec3::ZERO,
-            });
-            audio.update(dt);
-        }
+        timed!(audio_ms, {
+            if let Some(audio) = &mut self.audio {
+                let forward = self.camera.target - self.camera.position;
+                audio.set_listener(crate::audio::Listener {
+                    position: Vec3::new(camera_pos[0], camera_pos[1], camera_pos[2]),
+                    forward: if forward.length_squared() > 1e-6 { forward.normalize() } else { Vec3::new(0.0, 0.0, 1.0) },
+                    up: self.camera.up,
+                    velocity: Vec3::ZERO,
+                });
+                audio.update(dt);
+            }
+        });
     }
 
     /// ДОБАВЛЕНО (Фаза 7 плана по реализму/фонарям — день/ночь и

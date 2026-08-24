@@ -815,6 +815,22 @@ fn run_loop(engine: &mut AlkashEngine, scripting_handles: ScriptingHandles, phys
     let mut fps_window_start = Instant::now();
     let mut fps_window_frames: u32 = 0;
 
+    // ДОБАВЛЕНО (диагностика — жалоба пользователя "всё равно ФПС не
+    // радует" ПОСЛЕ фиксов стриминга/hot-reload/culling): вместо
+    // дальнейших догадок по коду измеряем РЕАЛЬНОЕ время двух главных фаз
+    // кадра — `engine.update()` (физика + скрипты + world streaming +
+    // day/night + culling фонарей + аудио) и `engine.render_frame()` (весь
+    // D3D12: shadow pass + main pass + bloom/tonemap + Present) — отдельно
+    // друг от друга. Фиксируем ХУДШИЙ (не средний) кадр за последнее
+    // 1-секундное окно каждой фазы — усреднённый FPS размазывает один
+    // дорогой кадр на весь вывод (см. подробный комментарий у
+    // `fps_window_start` выше), а нас интересуют именно СПАЙКИ, а не
+    // средняя стоимость. Печатается вместе с FPS раз в секунду ниже —
+    // сразу видно, физика ли стоит дорого, рендер, или что-то третье
+    // (например Present/wait_for_fence, попадающее в render_frame).
+    let mut max_update_ms: f32 = 0.0;
+    let mut max_render_ms: f32 = 0.0;
+
     // ДОБАВЛЕНО (скриптинг — демонстрация on_event/dispatch_script_event
     // для ВСЕХ 3 языков сразу, не только update): раз в
     // BOBBER_EVENT_PERIOD_SECS секунд каждому из трёх bobber-кубов шлём
@@ -910,12 +926,15 @@ fn run_loop(engine: &mut AlkashEngine, scripting_handles: ScriptingHandles, phys
         // не обновится после первого кадра (LightPlugin::cull принимает
         // camera_pos явным параметром, см. AlkashEngine::update).
         let view_proj = engine.camera.projection_matrix() * engine.camera.view_matrix();
+        let update_start = Instant::now();
         engine.update(
             dt,
             -9.8,
             [engine.camera.position.x, engine.camera.position.y, engine.camera.position.z],
             view_proj.to_cols_array(),
         );
+        let update_ms = update_start.elapsed().as_secs_f32() * 1000.0;
+        if update_ms > max_update_ms { max_update_ms = update_ms; }
 
         // ===== СКРИПТИНГ: периодическое событие ВСЕМ 3 bobber'ам =====
         {
@@ -952,10 +971,13 @@ fn run_loop(engine: &mut AlkashEngine, scripting_handles: ScriptingHandles, phys
         }
 
         // ===== РЕНДЕР =====
+        let render_start = Instant::now();
         if let Err(e) = engine.render_frame() {
             eprintln!("[MAIN] Render error, stopping: {:?}", e);
             break;
         }
+        let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
+        if render_ms > max_render_ms { max_render_ms = render_ms; }
 
         frame_count += 1;
         fps_window_frames += 1;
@@ -984,6 +1006,47 @@ fn run_loop(engine: &mut AlkashEngine, scripting_handles: ScriptingHandles, phys
                 frame_count, fps, engine.scene.len(),
                 engine.camera.position.x, engine.camera.position.y, engine.camera.position.z
             );
+            // ДОБАВЛЕНО (диагностика — см. подробный комментарий у
+            // `max_update_ms`/`max_render_ms` выше): худший кадр за это же
+            // окно по каждой из двух главных фаз — сразу видно, физика ли
+            // (`update`) или рендер (`render_frame`, включая Present/
+            // ожидание fence) даёт конкретный спайк.
+            println!(
+                "[TIMING] worst update()={:.1}ms | worst render_frame()={:.1}ms",
+                max_update_ms, max_render_ms
+            );
+            // ДОБАВЛЕНО (диагностика — та же жалоба): реальная статистика
+            // физики этого кадра из плагина Inertial (см.
+            // `AlkashEngine::physics_stats`) — тела/активные тела (не
+            // спящие и не статичные)/контакты/пары + время каждой фазы
+            // солвера ВНУТРИ update(). Если active_bodies НЕ падает до 0
+            // (падающие тестовые сферы должны заснуть после стабилизации),
+            // значит физика продолжает нагружать CPU каждый кадр даже
+            // когда на экране всё выглядит неподвижным.
+            if let Some(stats) = engine.physics_stats() {
+                println!(
+                    "[PHYS-STATS] bodies={} active={} contacts={} pairs={} | broad={:.2}ms narrow={:.2}ms solver={:.2}ms",
+                    stats.bodies_count, stats.active_bodies, stats.contacts_count, stats.pairs_count,
+                    stats.broad_phase_time_ms, stats.narrow_phase_time_ms, stats.solver_time_ms
+                );
+            }
+            // ДОБАВЛЕНО (диагностика, следующий шаг после [PHYS-STATS]
+            // подтвердил, что физика во время спайков спокойна): разбивка
+            // ХУДШЕГО случая каждой под-фазы update() за это же окно (см.
+            // `AlkashEngine::take_update_breakdown`/`UpdateBreakdownMs`) —
+            // теперь видно НЕ только "update() иногда занимает 160мс", а
+            // ТОЧНО какая под-фаза внутри него виновата (скрипты/каллинг
+            // света/день-ночь/стриминг/аудио), без дальнейших догадок.
+            // `take_update_breakdown` сама сбрасывает счётчики в 0 — здесь
+            // отдельный ручной сброс не нужен (в отличие от
+            // max_update_ms/max_render_ms ниже).
+            let breakdown = engine.take_update_breakdown();
+            println!(
+                "[UPDATE-BREAKDOWN] physics={:.1}ms sync_physics={:.1}ms native_scripts={:.1}ms python_scripts={:.1}ms day_night={:.1}ms world_streaming={:.1}ms chunk_io={:.1}ms light_cull={:.1}ms audio={:.1}ms",
+                breakdown.physics_ms, breakdown.sync_physics_ms, breakdown.native_scripts_ms,
+                breakdown.python_scripts_ms, breakdown.day_night_ms, breakdown.world_streaming_ms,
+                breakdown.chunk_io_ms, breakdown.light_cull_ms, breakdown.audio_ms
+            );
             // ДОБАВЛЕНО (диагностика бага "падают и пропадают под картой"):
             // печатаем РЕАЛЬНУЮ Transform.position каждой тестовой
             // физической сферы раз в секунду — та же позиция, которую
@@ -1003,6 +1066,8 @@ fn run_loop(engine: &mut AlkashEngine, scripting_handles: ScriptingHandles, phys
             }
             fps_window_frames = 0;
             fps_window_start = Instant::now();
+            max_update_ms = 0.0;
+            max_render_ms = 0.0;
         }
     }
 
