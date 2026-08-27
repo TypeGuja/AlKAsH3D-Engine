@@ -26,7 +26,15 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Direct3D::D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Dxgi::{DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_UNKNOWN};
-use windows::Win32::Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH};
+use windows::Win32::Graphics::Gdi::{
+    UpdateWindow, COLOR_WINDOW, HBRUSH,
+    // ДОБАВЛЕНО (F11 — полноэкранный режим): нужны, чтобы узнать реальные
+    // границы монитора, на котором сейчас находится окно (см.
+    // `toggle_fullscreen`) — без этого пришлось бы гадать разрешение
+    // монитора константами, что ломается на любой не-основной конфигурации
+    // (второй монитор с другим разрешением, разный DPI и т.п.).
+    MonitorFromWindow, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -737,6 +745,15 @@ pub struct AlkashEngine {
     hwnd: Option<HWND>,
     running: bool,
 
+    /// ДОБАВЛЕНО (F11 — переключение полноэкранного режима):
+    /// `is_fullscreen` — текущее состояние; `saved_window_rect`/
+    /// `saved_window_style` — позиция/размер и стиль окна ДО входа в
+    /// полноэкранный режим, чтобы корректно восстановить их при выходе
+    /// (см. `toggle_fullscreen`).
+    is_fullscreen: bool,
+    saved_window_rect: Option<RECT>,
+    saved_window_style: Option<WINDOW_STYLE>,
+
     // Настройки
     width: u32,
     height: u32,
@@ -1419,6 +1436,9 @@ impl AlkashEngine {
             physics_links: Vec::new(),
             hwnd: None,
             running: false,
+            is_fullscreen: false,
+            saved_window_rect: None,
+            saved_window_style: None,
             width,
             height,
             clear_color: [0.05, 0.05, 0.1, 1.0],
@@ -1791,6 +1811,41 @@ impl AlkashEngine {
                     self.input.on_key_up(wparam.0 as u32);
                     LRESULT(0)
                 }
+                // ДОБАВЛЕНО (F11 — переключение полноэкранного режима):
+                // Windows шлёт функциональные клавиши (F10, F11) и
+                // сочетания с ALT как WM_SYSKEYDOWN/WM_SYSKEYUP, а НЕ как
+                // обычные WM_KEYDOWN/WM_KEYUP — без этой ветки нажатие F11
+                // просто никогда не долетало до `InputState`, движок его
+                // молча игнорировал. Пересылаем в тот же `InputState`, что
+                // и обычные клавиши (`keys::F11` в input.rs — тот же код
+                // 0x7A, который Windows кладёт в wparam что для
+                // WM_KEYDOWN, что для WM_SYSKEYDOWN) — игровой код (и
+                // toggle_fullscreen ниже) не должен знать про это
+                // системное различие.
+                //
+                // ВАЖНО: WM_SYSKEYDOWN/UP должны быть переданы в
+                // DefWindowProcA (см. `_ => DefWindowProcA(...)` внизу) —
+                // иначе Windows не сможет обработать системные сочетания
+                // вроде ALT+F4 через штатный путь. Поэтому здесь мы НЕ
+                // возвращаем LRESULT(0) безусловно, а пропускаем сообщение
+                // дальше после записи состояния клавиши.
+                WM_SYSKEYDOWN => {
+                    let vk = wparam.0 as u32;
+                    self.input.on_key_down(vk);
+                    if vk == crate::input::keys::F11 {
+                        self.toggle_fullscreen();
+                        return LRESULT(0);
+                    }
+                    DefWindowProcA(hwnd, msg, wparam, lparam)
+                }
+                WM_SYSKEYUP => {
+                    let vk = wparam.0 as u32;
+                    self.input.on_key_up(vk);
+                    if vk == crate::input::keys::F11 {
+                        return LRESULT(0);
+                    }
+                    DefWindowProcA(hwnd, msg, wparam, lparam)
+                }
                 WM_SIZE => {
                     let width = (lparam.0 & 0xFFFF) as u32;
                     let height = ((lparam.0 >> 16) & 0xFFFF) as u32;
@@ -1879,6 +1934,103 @@ impl AlkashEngine {
                     LRESULT(0)
                 }
                 _ => DefWindowProcA(hwnd, msg, wparam, lparam),
+            }
+        }
+    }
+
+    /// ДОБАВЛЕНО (F11 — переключение полноэкранного режима): классический
+    /// Win32-паттерн "borderless fullscreen" — НЕ эксклюзивный DXGI-
+    /// fullscreen (тот требует отдельного `IDXGISwapChain::SetFullscreenState`
+    /// и пересоздания swap chain под EXCLUSIVE-режим, конфликтует с Alt+Tab
+    /// и оверлеями), а обычное окно без рамки/заголовка, растянутое на весь
+    /// монитор. Перед входом сохраняем текущие позицию/размер (`GetWindowRect`)
+    /// и стиль (`GetWindowLongPtrA(GWL_STYLE)`) окна, чтобы точно вернуть их
+    /// при выходе — а не гадать разрешение константами.
+    ///
+    /// Границы монитора берём через `MonitorFromWindow` + `GetMonitorInfoW`
+    /// (монитор, на котором СЕЙЧАС физически находится окно), а не хардкодим
+    /// разрешение — иначе на второй видеокарте/мониторе с другим
+    /// разрешением или DPI окно растянулось бы неверно (чёрные полосы или
+    /// уехало бы за пределы экрана).
+    ///
+    /// Отдельно вызывать `handle_resize()` отсюда НЕ нужно: `SetWindowPos`
+    /// ниже сам пришлёт окну WM_SIZE с новым размером, а обработчик WM_SIZE
+    /// (см. выше) сам вызовет `handle_resize()`, т.к. `self.resizing_live`
+    /// в этот момент `false` — это не перетаскивание рамки мышью, а
+    /// программная смена размера, для которой WM_SIZE применяет ресайз
+    /// немедленно, одним вызовом.
+    fn toggle_fullscreen(&mut self) {
+        let Some(hwnd) = self.hwnd else {
+            return;
+        };
+
+        unsafe {
+            if !self.is_fullscreen {
+                // --- Входим в полноэкранный режим ---
+                let mut rect = RECT::default();
+                if GetWindowRect(hwnd, &mut rect).is_err() {
+                    println!("[ENGINE] toggle_fullscreen: GetWindowRect не удался, отмена");
+                    return;
+                }
+                let style = WINDOW_STYLE(GetWindowLongPtrA(hwnd, GWL_STYLE) as u32);
+
+                self.saved_window_rect = Some(rect);
+                self.saved_window_style = Some(style);
+
+                let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                let mut mi = MONITORINFO {
+                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                    ..Default::default()
+                };
+                if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+                    println!("[ENGINE] toggle_fullscreen: GetMonitorInfoW не удался, отмена");
+                    return;
+                }
+                let mr = mi.rcMonitor;
+
+                // Снимаем рамку/заголовок/системное меню (WS_OVERLAPPEDWINDOW
+                // объединяет WS_CAPTION|WS_THICKFRAME|WS_SYSMENU|
+                // WS_MINIMIZEBOX|WS_MAXIMIZEBOX) и делаем окно WS_POPUP —
+                // остаётся голая клиентская область без декораций.
+                let new_style = WINDOW_STYLE((style.0 & !WS_OVERLAPPEDWINDOW.0) | WS_POPUP.0);
+                SetWindowLongPtrA(hwnd, GWL_STYLE, new_style.0 as isize);
+
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    mr.left,
+                    mr.top,
+                    mr.right - mr.left,
+                    mr.bottom - mr.top,
+                    SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+
+                self.is_fullscreen = true;
+                println!(
+                    "[ENGINE] Fullscreen: ON ({}x{})",
+                    mr.right - mr.left,
+                    mr.bottom - mr.top
+                );
+            } else {
+                // --- Возвращаемся в оконный режим ---
+                if let Some(style) = self.saved_window_style.take() {
+                    SetWindowLongPtrA(hwnd, GWL_STYLE, style.0 as isize);
+                }
+
+                if let Some(rect) = self.saved_window_rect.take() {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+
+                self.is_fullscreen = false;
+                println!("[ENGINE] Fullscreen: OFF");
             }
         }
     }
