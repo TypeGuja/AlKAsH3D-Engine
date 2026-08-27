@@ -90,4 +90,13 @@ pub mod keys {
     pub const ARROW_UP: u32 = 0x26;
     pub const ARROW_RIGHT: u32 = 0x27;
     pub const ARROW_DOWN: u32 = 0x28;
+
+    /// ДОБАВЛЕНО (F11 — переключение полноэкранного режима): Win32
+    /// виртуальный код клавиши F11. Windows шлёт функциональные клавиши
+    /// (F10, F11, ALT+что угодно) как WM_SYSKEYDOWN/WM_SYSKEYUP, а НЕ как
+    /// обычные WM_KEYDOWN/WM_KEYUP — см. обработку в `wndproc`
+    /// (engine/mod.rs), которая теперь пересылает оба вида сообщений сюда
+    /// через одни и те же `on_key_down`/`on_key_up`, чтобы игровому коду
+    /// не нужно было знать про это различие.
+    pub const F11: u32 = 0x7A;
 }
