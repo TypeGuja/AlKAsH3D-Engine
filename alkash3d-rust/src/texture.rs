@@ -105,13 +105,27 @@ impl Texture {
         // пути (`eprintln!`) оставлены.
         let device = crate::get_device()?;
 
+        // ДОБАВЛЕНО (мипмапы — фикс алиасинга текстур материалов на
+        // удалении, см. подробный комментарий у `generate_mip_chain`
+        // ниже): полная цепочка мипов нужна ТОЛЬКО когда реально есть
+        // исходные пиксели, которые можно продаунсемплить (загруженная
+        // текстура материала). Ветка `data.is_none()` — это render-target-
+        // текстуры (см. комментарий выше про "будущие render-target-
+        // текстуры") — для них поведение НЕ меняется, остаётся ровно
+        // `MipLevels: 1`, как было всегда.
+        let mip_levels = if data.is_some() {
+            Self::compute_mip_levels(width, height)
+        } else {
+            1
+        };
+
         let resource_desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
             Alignment: 0,
             Width: width as u64,
             Height: height as u32,
             DepthOrArraySize: 1,
-            MipLevels: 1,
+            MipLevels: mip_levels as u16,
             Format: format,
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
@@ -165,7 +179,8 @@ impl Texture {
                     return Err(Error::from_hresult(HRESULT(1)));
                 }
 
-                Self::upload_and_copy(&device, &resource, width, height, format, bytes, row_pitch)?;
+                let mip_chain = Self::generate_mip_chain(width, height, bytes);
+                Self::upload_and_copy_mips(&device, &resource, format, &mip_chain)?;
             }
 
             Ok(Self {
@@ -173,9 +188,243 @@ impl Texture {
                 width,
                 height,
                 format,
-                mip_levels: 1,
+                mip_levels,
             })
         }
+    }
+
+    /// ДОБАВЛЕНО (мипмапы — фикс алиасинга/мерцания текстур материалов на
+    /// удалении от камеры): раньше ВСЕ текстуры создавались с
+    /// `MipLevels: 1` — то есть материалов-сэмплер (`material_sampler` в
+    /// engine/mod.rs, `D3D12_FILTER_MIN_MAG_MIP_LINEAR` — УЖЕ настроен на
+    /// трилинейную фильтрацию с мипами) физически нечего было выбирать
+    /// между уровнями, всегда сэмплировался только mip 0 в полном
+    /// разрешении — классическая причина муара/мерцания текстур на
+    /// удалении. Стандартная формула количества уровней: 1 +
+    /// floor(log2(max(width, height))), т.е. цепочка идёт до 1×1
+    /// включительно.
+    fn compute_mip_levels(width: u32, height: u32) -> u32 {
+        let max_dim = width.max(height).max(1);
+        32 - max_dim.leading_zeros()
+    }
+
+    /// Генерирует полную цепочку мипов из исходного RGBA8-изображения
+    /// простым box-фильтром 2×2 (усреднение 4 соседних текселей
+    /// предыдущего уровня — стандартный, самый распространённый способ).
+    /// Каждый следующий уровень вдвое меньше по стороне (округление вниз,
+    /// не меньше 1), пока не дойдёт до 1×1. Уровень 0 — копия исходных
+    /// данных без изменений. Индексы результата совпадают с индексами
+    /// subresource в D3D12 (mip 0 — элемент 0, и т.д.).
+    ///
+    /// Считается на CPU, а не GPU-проходом (в отличие от bloom/tonemap в
+    /// движке) — сознательно: текстуры материалов подгружаются постепенно,
+    /// по мере стриминга чанков мира, а не каждый кадр, поэтому здесь не
+    /// нужны ни новый шейдер, ни новая root signature/PSO, ни
+    /// динамическое выделение RTV/SRV на каждую загружаемую текстуру —
+    /// заметно меньше нового кода для одной и той же цели. Стоимость на
+    /// CPU для одной текстуры материала пренебрежимо мала (полная
+    /// цепочка добавляет всего ~33% данных сверх одного mip 0).
+    fn generate_mip_chain(width: u32, height: u32, base: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
+        let mut levels: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+        levels.push((width.max(1), height.max(1), base.to_vec()));
+
+        loop {
+            let (prev_w, prev_h, prev_data) = levels.last().unwrap();
+            let (prev_w, prev_h) = (*prev_w, *prev_h);
+            if prev_w == 1 && prev_h == 1 {
+                break;
+            }
+            let next_w = (prev_w / 2).max(1);
+            let next_h = (prev_h / 2).max(1);
+
+            let mut next_data = vec![0u8; (next_w * next_h * 4) as usize];
+            for y in 0..next_h {
+                for x in 0..next_w {
+                    // Клэмп к границам предыдущего уровня — корректно
+                    // обрабатывает НЕ-степени-двойки (например 5×3), где
+                    // последний ряд/столбец 2×2-блока может выходить за
+                    // пределы исходного изображения.
+                    let sx0 = (x * 2).min(prev_w - 1);
+                    let sy0 = (y * 2).min(prev_h - 1);
+                    let sx1 = (x * 2 + 1).min(prev_w - 1);
+                    let sy1 = (y * 2 + 1).min(prev_h - 1);
+
+                    let mut sum = [0u32; 4];
+                    for (sx, sy) in [(sx0, sy0), (sx1, sy0), (sx0, sy1), (sx1, sy1)] {
+                        let idx = ((sy * prev_w + sx) * 4) as usize;
+                        for c in 0..4 {
+                            sum[c] += prev_data[idx + c] as u32;
+                        }
+                    }
+                    let out_idx = ((y * next_w + x) * 4) as usize;
+                    for c in 0..4 {
+                        next_data[out_idx + c] = (sum[c] / 4) as u8;
+                    }
+                }
+            }
+
+            levels.push((next_w, next_h, next_data));
+        }
+
+        levels
+    }
+
+    /// Обобщение `upload_and_copy` на ПОЛНУЮ цепочку мипов вместо одного
+    /// уровня — тот же проверенный паттерн (upload heap на каждый уровень
+    /// → `CopyTextureRegion` в соответствующий subresource → один барьер
+    /// COPY_DEST->PIXEL_SHADER_RESOURCE на ВСЕ subresource сразу → одно
+    /// исполнение command list → один fence-wait), просто в цикле по
+    /// уровням внутри ОДНОГО command list вместо одного вызова на
+    /// уровень — так GPU выполняет все копирования одним batch'ем, а не
+    /// N отдельными synchronous round-trip'ами.
+    unsafe fn upload_and_copy_mips(
+        device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+        dst_resource: &ID3D12Resource,
+        format: DXGI_FORMAT,
+        mips: &[(u32, u32, Vec<u8>)],
+    ) -> Result<()> {
+        const D3D12_TEXTURE_DATA_PITCH_ALIGNMENT: usize = 256;
+
+        let command_allocator: ID3D12CommandAllocator =
+            device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let command_list: ID3D12GraphicsCommandList =
+            device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &command_allocator, None)?;
+
+        // ВАЖНО: держим все upload-буферы живыми до самого fence-wait —
+        // `CopyTextureRegion`, записанный в command list, ссылается на них
+        // по GPU-адресу; если буфер освободится раньше, чем GPU реально
+        // выполнит копирование, это use-after-free видеопамяти.
+        let mut upload_resources: Vec<ID3D12Resource> = Vec::with_capacity(mips.len());
+
+        for (mip_index, (mip_w, mip_h, pixels)) in mips.iter().enumerate() {
+            let row_pitch = (*mip_w * 4) as usize;
+            let aligned_row_pitch = (row_pitch + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1)
+                & !(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+            let upload_size = aligned_row_pitch * (*mip_h as usize);
+
+            let upload_heap_properties = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_UPLOAD, ..Default::default() };
+            let upload_desc = D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                Alignment: 0,
+                Width: upload_size as u64,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                Format: DXGI_FORMAT(0), // DXGI_FORMAT_UNKNOWN — буфер, не текстура
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                Flags: D3D12_RESOURCE_FLAG_NONE,
+            };
+
+            let mut upload_resource: Option<ID3D12Resource> = None;
+            device.CreateCommittedResource(
+                &upload_heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &upload_desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
+                &mut upload_resource,
+            )?;
+            let upload_resource = upload_resource.ok_or_else(|| {
+                eprintln!("[TEXTURE] ERROR: upload staging resource is None (mip {})!", mip_index);
+                Error::from_hresult(HRESULT(1))
+            })?;
+
+            let mut mapped = std::ptr::null_mut();
+            upload_resource.Map(0, None, Some(&mut mapped))?;
+            if mapped.is_null() {
+                eprintln!("[TEXTURE] ERROR: staging buffer mapped pointer is null (mip {})!", mip_index);
+                return Err(Error::from_hresult(HRESULT(1)));
+            }
+            for y in 0..*mip_h as usize {
+                let src = &pixels[(y * row_pitch)..(y * row_pitch + row_pitch)];
+                let dst = (mapped as *mut u8).add(y * aligned_row_pitch);
+                std::ptr::copy_nonoverlapping(src.as_ptr(), dst, row_pitch);
+            }
+            upload_resource.Unmap(0, None);
+
+            let footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                Offset: 0,
+                Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                    Format: format,
+                    Width: *mip_w,
+                    Height: *mip_h,
+                    Depth: 1,
+                    RowPitch: aligned_row_pitch as u32,
+                },
+            };
+
+            let src_location = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: std::mem::ManuallyDrop::new(Some(upload_resource.clone())),
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { PlacedFootprint: footprint },
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+            };
+            let dst_location = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: std::mem::ManuallyDrop::new(Some(dst_resource.clone())),
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: mip_index as u32 },
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            };
+
+            command_list.CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, None);
+
+            {
+                let mut src_location = src_location;
+                let mut dst_location = dst_location;
+                std::mem::ManuallyDrop::drop(&mut src_location.pResource);
+                std::mem::ManuallyDrop::drop(&mut dst_location.pResource);
+            }
+
+            upload_resources.push(upload_resource);
+        }
+
+        // Один барьер на ВСЕ subresource сразу (D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES) —
+        // после того, как все CopyTextureRegion для всех уровней уже
+        // записаны в command list выше.
+        let barrier = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                    pResource: std::mem::ManuallyDrop::new(Some(dst_resource.clone())),
+                    Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                    StateBefore: D3D12_RESOURCE_STATE_COPY_DEST,
+                    StateAfter: D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                }),
+            },
+        };
+        let mut barrier = barrier;
+        command_list.ResourceBarrier(&[barrier.clone()]);
+        std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition);
+
+        command_list.Close()?;
+
+        let command_queue = crate::get_command_queue()?;
+        let cmd_lists: [Option<ID3D12CommandList>; 1] = [Some(command_list.into())];
+        command_queue.ExecuteCommandLists(&cmd_lists);
+
+        let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
+        let fence_value = 1u64;
+        command_queue.Signal(&fence, fence_value)?;
+        if fence.GetCompletedValue() < fence_value {
+            let wait_result = UPLOAD_WAIT_EVENT.with(|&event| -> Result<u32> {
+                fence.SetEventOnCompletion(fence_value, event)?;
+                Ok(WaitForSingleObject(event, WAIT_TIMEOUT_MS).0)
+            })?;
+            if wait_result == WAIT_TIMEOUT.0 {
+                eprintln!("[TEXTURE] ERROR: timeout ({} ms) waiting for mip-chain GPU copy to complete", WAIT_TIMEOUT_MS);
+                if let Some(reason) = crate::device_removed_reason() {
+                    eprintln!("[TEXTURE] Device removed, reason: {}", reason);
+                }
+                return Err(Error::from_hresult(HRESULT(1)));
+            }
+        }
+
+        // upload_resources держались живыми до этой точки — GPU уже
+        // подтвердил (fence) завершение всех копирований, дальше их можно
+        // безопасно уронить.
+        drop(upload_resources);
+
+        Ok(())
     }
 
     /// ДОБАВЛЕНО (см. подробное объяснение бага у `create_texture2d`
