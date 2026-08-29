@@ -118,6 +118,32 @@ pub struct GlobalState {
     /// успешно). `None`, если debug layer недоступен на машине — в этом
     /// случае dump_d3d12_debug_messages() ниже просто ничего не печатает.
     pub info_queue: Option<ID3D12InfoQueue>,
+
+    /// ДОБАВЛЕНО (обнаружение второй видеокарты): если в системе больше
+    /// одного пригодного аппаратного GPU (например основная карта + слабая
+    /// вторая вроде GT710), сюда попадает информация о второй по мощности
+    /// (по объёму выделенной видеопамяти — см. `device.rs`). Основной
+    /// рендер ВСЕГДА идёт на самой мощной карте (`state.device` выше) —
+    /// это поле только диагностическое/информационное на данный момент,
+    /// реального параллельного использования второй карты пока нет (это
+    /// отдельная большая задача — explicit multi-adapter D3D12).
+    pub secondary_gpu_available: bool,
+    pub secondary_gpu_name: Option<String>,
+    pub secondary_gpu_vram_mb: u64,
+
+    /// ДОБАВЛЕНО (тени на второй видеокарте — фаза 1, отдельное D3D12-
+    /// устройство): `secondary_gpu_available` выше означает только "Windows
+    /// видит вторую карту". Реально СОЗДАТЬ на ней `ID3D12Device` — отдельный
+    /// шаг, который может провалиться (старый/отсутствующий драйвер,
+    /// недостаточный feature level и т.п.). `secondary_gpu_usable` — true,
+    /// только если устройство И очередь команд на второй карте реально
+    /// создались. ВСЯ последующая логика (перенос теней на вторую карту)
+    /// обязана проверять именно этот флаг, а не `secondary_gpu_available` —
+    /// и при `false` работать ТОЧНО так же, как если бы второй карты не
+    /// было вообще (однокарточный путь, без единого изменения поведения).
+    pub secondary_gpu_usable: bool,
+    pub secondary_device: Option<ID3D12Device>,
+    pub secondary_command_queue: Option<ID3D12CommandQueue>,
 }
 
 impl GlobalState {
@@ -142,6 +168,12 @@ impl GlobalState {
             bound_index_buffer: None,
             scheduler: None,
             info_queue: None,
+            secondary_gpu_available: false,
+            secondary_gpu_name: None,
+            secondary_gpu_vram_mb: 0,
+            secondary_gpu_usable: false,
+            secondary_device: None,
+            secondary_command_queue: None,
         }
     }
 }
@@ -211,6 +243,23 @@ pub fn get_fence() -> windows::core::Result<ID3D12Fence> {
             Err(Error::from_hresult(HRESULT(1)))
         }
     }
+}
+
+/// ДОБАВЛЕНО (тени на второй видеокарте — фаза 1): устройство второй
+/// карты, ЕСЛИ оно реально было создано (`secondary_gpu_usable == true`).
+/// В отличие от `get_device()` — здесь `None` НЕ является ошибкой, это
+/// абсолютно нормальный и ожидаемый случай (второй карты нет, или её не
+/// удалось инициализировать), поэтому возвращается `Option`, а не `Result`
+/// — вызывающий код обязан сам решить, что делать при `None` (в случае
+/// теней — просто продолжить рендерить их на основной карте, как раньше).
+pub fn get_secondary_device() -> Option<ID3D12Device> {
+    STATE.lock().unwrap().secondary_device.clone()
+}
+
+/// ДОБАВЛЕНО (тени на второй видеокарте — фаза 1): очередь команд второй
+/// карты — см. `get_secondary_device()` выше про семантику `None`.
+pub fn get_secondary_command_queue() -> Option<ID3D12CommandQueue> {
+    STATE.lock().unwrap().secondary_command_queue.clone()
 }
 
 /// Проверяет, не потеряно ли устройство (TDR, обновление драйвера, GPU
