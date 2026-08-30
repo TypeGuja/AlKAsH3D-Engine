@@ -1,5 +1,32 @@
 // shaders/light_culling.hlsl
 // Compute shader для GPU light culling
+//
+// ВНИМАНИЕ (найдено при аудите кодовой базы): этот файл НИГДЕ не
+// загружается и не компилируется движком (alkash3d-rust) — весь
+// культинг света реально выполняется на CPU в LightState::cull()
+// (alkash3d-FirstFires/src/lib.rs), который использует другую,
+// корректную схему: сначала собирает все pending-записи, сортирует по
+// cell_idx и только потом одним линейным проходом проставляет
+// offset/count (alloc-then-fill). Проверено: во всём alkash3d-rust нет
+// ни одного D3DCompile/CreateComputePipelineState, ссылающегося на этот
+// файл или на "shaders/light_culling.hlsl" — единственное упоминание
+// имени файла во всём движке было в комментарии-справке про layout
+// GPULight, не в реальном коде загрузки шейдера.
+//
+// ЕСЛИ этот shader когда-нибудь будет подключён к реальному
+// GPU-culling пайплайну — ПЕРЕД ЭТИМ нужно исправить баг ниже:
+// LightGridCells[cellIdx].offset нигде не инициализируется ни в этом
+// шейдере, ни (насколько можно судить) в вызывающем Rust-коде — нет
+// prefix-sum прохода, который вычислял бы offset каждой ячейки ДО
+// диспетча CullLightsCS. Без него все offset читаются как 0 (или как
+// что попало в буфере из прошлого кадра), и InterlockedAdd(...count...)
+// + запись по (offset + listIdx) может писать за пределы
+// LightGridIndices или затирать чужие записи — классический
+// out-of-bounds/race на GPU. Нужен отдельный compute-pass (или
+// CPU-подготовка буфера), который считает count по всем светам ПЕРВЫМ
+// проходом, строит offset через префиксную сумму, и только ВТОРЫМ
+// проходом (этот шейдер) заполняет LightGridIndices — по аналогии с
+// тем, как это уже сделано на CPU в LightState::cull().
 
 struct GPULight {
     float4 position;  // xyz, type (0=point,1=spot,2=directional)
