@@ -145,6 +145,24 @@ contains
         real(c_float) :: restitution, inv_mass_sum
         real(c_float) :: correction(3)
         real(c_float) :: delta_a(3), delta_b(3)
+        ! ДОБАВЛЕНО (баг, найденный при аудите по жалобе пользователя):
+        ! позиционная коррекция ниже раньше ВСЕГДА делилась фиксированно
+        ! 50/50 между `a` и `b` (через `penetration * 0.5` для каждого),
+        ! не глядя на реальное соотношение масс — то есть точно та же
+        ! ошибка, что уже была найдена и исправлена в
+        ! rigid_body.f90/resolve_contact_simple, но осталась неисправленной
+        ! ЗДЕСЬ — а именно эта функция (solve_contacts_vectorized), а не
+        ! rigid_body.f90/solve_contacts, реально вызывается каждый кадр из
+        ! Rust (см. PhysicsState::update в lib.rs). Для контакта со
+        ! статикой это маскировалось отдельной проверкой `is_static == 0`
+        ! (коррекция для статичного тела просто не применялась вообще), но
+        ! для ДВУХ динамических тел разной массы 50/50-коррекция физически
+        ! неверна — лёгкое тело должно сдвигаться больше тяжёлого,
+        ! пропорционально их inv_mass. Теперь общая доля считается один раз
+        ! на контакт (total_inv_mass_pos) и используется в обеих ветках
+        ! ниже — то же самое соотношение, что уже применяется к скоростному
+        ! импульсу выше (через inv_mass_sum).
+        real(c_float) :: total_inv_mass_pos, share_a_pos, share_b_pos
 
         ! ИСПРАВЛЕНО: раньше `!$omp parallel do` тут распараллеливал цикл
         ! ПО КОНТАКТАМ и напрямую писал в `bodies(idx_a)%velocity/position`
@@ -160,7 +178,8 @@ contains
         ! Gauss-Seidel, но корректная и безопасная).
         do iter = 1, iterations
             !$omp parallel do private(i, idx_a, idx_b, rel_vel, vel_normal, &
-            !$omp                      restitution, impulse, inv_mass_sum, correction)
+            !$omp                      restitution, impulse, inv_mass_sum, correction, &
+            !$omp                      total_inv_mass_pos, share_a_pos, share_b_pos)
             do i = 1, n_contacts
                 idx_a = contacts(i)%body_a + 1
                 idx_b = contacts(i)%body_b + 1
@@ -207,8 +226,25 @@ contains
                     end if
                 end if
 
+                ! ИСПРАВЛЕНО (см. комментарий у total_inv_mass_pos выше):
+                ! доля коррекции пропорциональна inv_mass, а не жёстко
+                ! 50/50. Если оба тела статичны — сюда вообще не попадаем
+                ! (ранний `cycle` в начале цикла), поэтому
+                ! total_inv_mass_pos > 0 гарантированно, кроме вырожденного
+                ! случая inv_mass=0 у обоих (не должно происходить при
+                ! нормальной настройке сцены) — на этот случай доли явно
+                ! обнуляются, вместо деления на 0.
+                total_inv_mass_pos = bodies(idx_a)%inv_mass + bodies(idx_b)%inv_mass
+                if (total_inv_mass_pos > 0.0) then
+                    share_a_pos = bodies(idx_a)%inv_mass / total_inv_mass_pos
+                    share_b_pos = bodies(idx_b)%inv_mass / total_inv_mass_pos
+                else
+                    share_a_pos = 0.0
+                    share_b_pos = 0.0
+                end if
+
                 if (bodies(idx_a)%is_static == 0) then
-                    correction = contacts(i)%normal * (contacts(i)%penetration * 0.5)
+                    correction = contacts(i)%normal * (contacts(i)%penetration * share_a_pos)
                     !$omp atomic update
                     bodies(idx_a)%position(1) = bodies(idx_a)%position(1) - correction(1)
                     !$omp atomic update
@@ -217,7 +253,7 @@ contains
                     bodies(idx_a)%position(3) = bodies(idx_a)%position(3) - correction(3)
                 end if
                 if (bodies(idx_b)%is_static == 0) then
-                    correction = contacts(i)%normal * (contacts(i)%penetration * 0.5)
+                    correction = contacts(i)%normal * (contacts(i)%penetration * share_b_pos)
                     !$omp atomic update
                     bodies(idx_b)%position(1) = bodies(idx_b)%position(1) + correction(1)
                     !$omp atomic update
