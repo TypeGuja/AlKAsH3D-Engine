@@ -272,7 +272,16 @@ extern "C" fn api_create_script(instance: *mut c_void, entity_id: u64) -> u32 {
         return u32::MAX;
     }
     let inst = unsafe { &*(instance as *mut Instance) };
-    let mut state = inst.state.lock().unwrap();
+    // ИСПРАВЛЕНО (найдено при аудите): раньше был `.lock().unwrap()` —
+    // если код внутри лока когда-либо запаникует, Mutex "отравляется",
+    // и .unwrap() на КАЖДОМ следующем кадре тоже паникует — уже
+    // безусловно, для этого instance навсегда. Паника, долетевшая до
+    // границы `extern "C"`, — undefined behavior (unwind не
+    // гарантированно проходит через FFI-границу). Фикс — восстанавли-
+    // ваемся после отравления вместо повторной паники: данные всё ещё
+    // доступны (Mutex просто помечает их как потенциально неконсистент-
+    // ными), берём их и продолжаем работу.
+    let mut state = inst.state.lock().unwrap_or_else(|e| e.into_inner());
     state.create(entity_id)
 }
 
@@ -281,7 +290,7 @@ extern "C" fn api_destroy_script(instance: *mut c_void, script_id: u32) {
         return;
     }
     let inst = unsafe { &*(instance as *mut Instance) };
-    let mut state = inst.state.lock().unwrap();
+    let mut state = inst.state.lock().unwrap_or_else(|e| e.into_inner());
     state.destroy(script_id);
 }
 
@@ -291,7 +300,7 @@ extern "C" fn api_update_script(instance: *mut c_void, script_id: u32, ctx: *mut
     }
     let inst = unsafe { &*(instance as *mut Instance) };
     let ctx_ref = unsafe { &mut *ctx };
-    let mut state = inst.state.lock().unwrap();
+    let mut state = inst.state.lock().unwrap_or_else(|e| e.into_inner());
     state.update(script_id, ctx_ref);
 }
 
@@ -301,7 +310,7 @@ extern "C" fn api_dispatch_event(instance: *mut c_void, script_id: u32, event: *
     }
     let inst = unsafe { &*(instance as *mut Instance) };
     let event_ref = unsafe { &*event };
-    let mut state = inst.state.lock().unwrap();
+    let mut state = inst.state.lock().unwrap_or_else(|e| e.into_inner());
     state.dispatch(script_id, event_ref);
 }
 
@@ -310,7 +319,7 @@ extern "C" fn api_get_active_scripts_count(instance: *mut c_void) -> u32 {
         return 0;
     }
     let inst = unsafe { &*(instance as *mut Instance) };
-    let state = inst.state.lock().unwrap();
+    let state = inst.state.lock().unwrap_or_else(|e| e.into_inner());
     state.active_count()
 }
 
