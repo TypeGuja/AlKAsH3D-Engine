@@ -981,6 +981,84 @@ pub struct AlkashEngine {
     shadow_vs: Option<ShaderBlob>,
     shadow_root_signature: Option<ID3D12RootSignature>,
     shadow_pipeline_state: Option<ID3D12PipelineState>,
+
+    // =====================================================================
+    // ДОБАВЛЕНО (occlusion culling на второй карте, Part 2a — только
+    // сбор/чтение depth-буфера окклюдеров, БЕЗ отбрасывания draw call'ов):
+    // грубые box-occluder'ы для крупных объектов сцены рендерятся
+    // depth-only проходом на ВТОРОЙ карте (GT710), результат читается
+    // асинхронно (без блокировки основного цикла рендера) и сохраняется
+    // как CPU-side depth-буфер для последующего (Part 2b, отдельный шаг)
+    // использования при отбрасывании отрисовки полностью скрытых объектов.
+    // Все ресурсы здесь СТРОГО на secondary device (crate::get_secondary_device())
+    // — PSO/root signature/буферы конкретного ID3D12Device НЕЛЬЗЯ
+    // использовать с другим устройством. Если вторая карта не пригодна
+    // (secondary_gpu_usable == false) — вся эта подсистема просто
+    // остаётся полностью неактивной (все Option в None), НИКАК не влияя
+    // на рендер, который работает ровно как без неё.
+    /// VS occluder-прохода — см. `compile_occluder_shaders`.
+    occluder_vs: Option<ShaderBlob>,
+    /// Root signature occluder-прохода (второе устройство) — один CBV
+    /// (view-proj), см. `create_occluder_root_signature`.
+    occluder_root_signature: Option<ID3D12RootSignature>,
+    /// PSO occluder-прохода (второе устройство), depth-only, инстансинг.
+    occluder_pipeline_state: Option<ID3D12PipelineState>,
+    /// Depth-таргет occluder-прохода на ВТОРОЙ карте (НЕ `crate::render::
+    /// RenderTexture` — тот жёстко использует `crate::get_device()`
+    /// (первая карта), поэтому под второе устройство отдельный
+    /// минимальный тип `SecondaryDepthTarget`, см. ниже).
+    occluder_depth_target: Option<SecondaryDepthTarget>,
+    /// DSV-heap occluder depth-таргета (второе устройство, свой отдельный
+    /// heap — heap'ы, как и всё остальное в D3D12, привязаны к device).
+    occluder_dsv_heap: Option<ID3D12DescriptorHeap>,
+    occluder_dsv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    /// Статический unit-cube (8 вершин, только позиция — occluder VS сам
+    /// разворачивает куб через instance min/max, см. `compile_occluder_shaders`)
+    /// на второй карте. Создаётся ОДИН раз, никогда не меняется.
+    occluder_cube_vertex_buffer: Option<SecondaryBuffer>,
+    occluder_cube_index_buffer: Option<SecondaryBuffer>,
+    /// Per-frame перезаписываемый instance-буфер (world-space AABB min/max
+    /// на occluder) на второй карте — растёт степенями двойки, тот же
+    /// паттерн, что `ensure_light_buffer_capacity` (см. там подробности).
+    occluder_instance_buffer: Option<SecondaryBuffer>,
+    occluder_instance_capacity: usize,
+    /// CBV view-proj occluder-прохода (второе устройство), перезаписывается
+    /// каждый раз, когда отправляется новый occluder-проход.
+    occluder_viewproj_buffer: Option<SecondaryBuffer>,
+    /// Постоянные (НЕ пересоздаваемые каждый кадр) command allocator/list
+    /// второй карты для occluder-прохода — в отличие от `audio.rs`
+    /// (разовые операции загрузки клипа), здесь проход отправляется
+    /// потенциально каждый кадр, так что переиспользуем один и тот же
+    /// allocator/list, точно как основной рендер-цикл переиспользует
+    /// `self.command_allocator`/`self.command_list` (Reset вместо
+    /// пересоздания).
+    occluder_command_allocator: Option<ID3D12CommandAllocator>,
+    occluder_command_list: Option<ID3D12GraphicsCommandList>,
+    /// Fence второй карты для occluder-прохода — ОПРАШИВАЕТСЯ
+    /// (`GetCompletedValue()`), НИКОГДА не ждётся блокирующе
+    /// (`WaitForSingleObject`) в per-frame пути, см. `poll_occluder_readback`.
+    occluder_fence: Option<ID3D12Fence>,
+    occluder_fence_value: u64,
+    /// true, когда occluder-проход отправлен на GPU второй карты, но
+    /// readback ещё не подтверждён завершённым — предотвращает повторную
+    /// отправку нового прохода поверх ещё не прочитанного предыдущего
+    /// (буферы переиспользуются, перезапись до readback испортила бы
+    /// данные, которые GPU второй карты может как раз читать).
+    occluder_pass_in_flight: bool,
+    /// READBACK-буфер (CPU-читаемый) для копирования occluder depth
+    /// обратно с второй карты — переиспользуется каждый раз (пересоздаётся
+    /// только при росте разрешения, которого здесь не бывает — разрешение
+    /// occluder depth-буфера фиксировано, см. `OCCLUDER_DEPTH_RESOLUTION`).
+    occluder_readback_buffer: Option<SecondaryBuffer>,
+    /// Итоговый CPU-side depth-буфер окклюдеров последнего УСПЕШНО
+    /// прочитанного прохода — построчно упакованный (с учётом
+    /// `RowPitch`, см. `poll_occluder_readback`) буфер `f32` глубины
+    /// размером `OCCLUDER_DEPTH_RESOLUTION x OCCLUDER_DEPTH_RESOLUTION`.
+    /// `None`, пока ни один проход ещё не завершился (или подсистема
+    /// неактивна) — Part 2b (следующий шаг) обязан считать "не знаю,
+    /// не отбрасывать" при `None`, ровно как этот код уже делает для
+    /// диагностики.
+    occluder_depth_cpu: Option<Vec<f32>>,
     /// ВАЖНО (как и bloom_a_is_srv/bloom_b_is_srv выше): явный трекер
     /// текущего состояния КАЖДОГО каскада по отдельности — избегаем no-op
     /// ResourceBarrier на первом кадре (создаются уже в DEPTH_WRITE, см.
@@ -1126,6 +1204,33 @@ pub struct AlkashEngine {
     /// `AltexFile::meshes`) — здание может состоять из нескольких
     /// отдельных частей с разными материалами.
     altex_mesh_cache: std::collections::HashMap<String, Vec<usize>>,
+
+    // ДОБАВЛЕНО (фоновая загрузка чанков — см. подробное обоснование у
+    // `spawn_chunk_loader_thread` перед `impl AlkashEngine`): канал
+    // запросов к фоновому потоку-загрузчику и канал его готовых
+    // результатов. Живут на самом `AlkashEngine` (не внутри
+    // `WorldStreamingState`), т.к. поток создаётся ОДИН раз в `new()` и
+    // должен пережить `load_world`/`unload_world` — пересоздавать поток
+    // на каждую загрузку мира было бы лишней сложностью (запуск потока —
+    // syscall, а `WorldStreamingState` может пересоздаваться при смене
+    // уровня много раз за сессию).
+    chunk_loader_tx: std::sync::mpsc::Sender<ChunkLoadRequest>,
+    chunk_loader_rx: std::sync::mpsc::Receiver<ChunkLoadResult>,
+    /// Счётчик "поколений" мира — увеличивается на 1 при КАЖДОМ вызове
+    /// `load_world` (см. её реализацию). Нужен, потому что фоновая
+    /// загрузка теперь может занимать НЕСКОЛЬКО кадров: если игрок (или
+    /// код игры) вызовет `unload_world`/`load_world` заново, ПОКА в фоне
+    /// ещё обрабатывается запрос от СТАРОГО мира, результат придёт уже
+    /// ПОСЛЕ того, как `self.world` указывает на совершенно другой мир —
+    /// `chunk_idx` из старого результата в лучшем случае бессмысленен, в
+    /// худшем указывает на чанк НОВОГО мира с другим содержимым
+    /// (индексы `Vec<ChunkDescriptor>` начинаются с 0 в любом мире).
+    /// `drain_pending_chunk_io` сравнивает `result.generation` с текущим
+    /// `world_generation` и молча отбрасывает результат при несовпадении
+    /// — та же идея, что `queued`-флаг чанка защищает от повторной
+    /// постановки в очередь, только на уровне целого мира, а не одного
+    /// чанка.
+    world_generation: u64,
 
     // ДОБАВЛЕНО (Задача #15: текстуры и PBR-материалы). albedo-текстуры
     // хранятся В ТОМ ЖЕ дескрипторном хипе, что и shadow map каскады
@@ -1410,8 +1515,373 @@ const WORLD_STREAMING_INTERVAL_FRAMES: u32 = 15;
 /// резкий скачок позиции камеры, телепорт).
 const CHUNK_LOAD_BUDGET_PER_FRAME: usize = 2;
 
+// ДОБАВЛЕНО (фоновая загрузка чанков — устраняет остаточные микрофризы
+// стриминга): `CHUNK_LOAD_BUDGET_PER_FRAME` выше уже размазывает I/O по
+// нескольким кадрам, но каждый обработанный чанк ВСЁ РАВНО читает файл с
+// диска (`ChunkContent::load_from_file`) и парсит `.altex` каждого
+// НОВОГО объекта (`AltexFile::load`) СИНХРОННО, прямо в кадре рендера —
+// на "минимальном железе 10-летней давности" из ТЗ (медленный HDD/eMMC)
+// один такой файл может занять единицы-десятки миллисекунд, что всё ещё
+// заметно на кадре при 60 FPS (бюджет 16.6 мс). Ниже — фоновый поток,
+// который берёт на себя ВЕСЬ дисковый I/O и разбор файлов (чистый CPU,
+// без единого D3D12/Win32-вызова — см. подробное обоснование
+// потокобезопасности у `ChunkLoadRequest`), оставляя главному потоку
+// только создание GPU-ресурсов (буферы мешей, текстуры материалов) —
+// то немногое, что физически обязано остаться на главном потоке (движок
+// нигде не использует D3D12 из произвольного потока, см. `crate::STATE`
+// и весь остальной рендер-код).
+
+/// Запрос фоновому потоку-загрузчику: прочитать и распарсить содержимое
+/// ОДНОГО чанка мира (.alwchunk) и ВСЕ `.altex`-файлы, на которые
+/// ссылаются его объекты. `generation` — см. `AlkashEngine::world_generation`:
+/// защита от "чужого" результата, если `load_world`/`unload_world` были
+/// вызваны, пока этот запрос ещё обрабатывался в фоне (см. подробный
+/// комментарий у `world_generation`).
+struct ChunkLoadRequest {
+    chunk_idx: usize,
+    chunk_path: std::path::PathBuf,
+    generation: u64,
+}
+
+/// Результат фоновой загрузки — ПОЛНОСТЬЮ CPU-данные. `ChunkContent`
+/// (alworld_format.rs) и `AltexFile` (altex_format.rs) — оба обычные Rust-
+/// структуры (Vec/String/POD-поля, без Rc/RefCell/сырых GPU-хендлов), а
+/// их методы `load`/`load_from_file` — это только `std::fs::File` +
+/// побайтовый парсинг (проверено построчно, ни один вызов не трогает
+/// windows/Direct3D12 API), поэтому оба типа безопасно передаются между
+/// потоками (`Send`), и весь этот путь физически не может случайно
+/// затронуть D3D12 из фонового потока.
+struct ChunkLoadResult {
+    chunk_idx: usize,
+    generation: u64,
+    content: crate::alworld_format::ChunkContent,
+    /// Распарсенные `.altex` каждого УНИКАЛЬНОГО пути среди объектов
+    /// ЭТОГО чанка (`Arc`, чтобы несколько объектов одного чанка —
+    /// например, фонарь + его же плафон одним файлом — не копировали
+    /// геометрию, а разделяли один и тот же разбор). `Err(String)` — та
+    /// же отказоустойчивость, что была в старом синхронном
+    /// `load_object_mesh`: файл не найден/повреждён, главный поток
+    /// заменит объект placeholder-кубом, а не уронит весь чанк или тем
+    /// более фоновый поток целиком.
+    // ИСПРАВЛЕНО (E0107 "Wrong number of type arguments: expected 1,
+    // found 2"): этот файл делает `use windows::core::*;` (см. шапку
+    // mod.rs) — оттуда в область видимости попадает `windows::core::Result<T>`,
+    // ОДНОПАРАМЕТРИЧЕСКИЙ алиас (`Result<T> = std::result::Result<T, windows::core::Error>`),
+    // который здесь СКРЫВАЕТ имя `Result` из std. `Result<Arc<AltexFile>, String>`
+    // (два параметра типа) поэтому и не компилировался — компилятор
+    // резолвил `Result` в windows-алиас, ожидающий ровно один параметр.
+    // Везде, где явно нужен ДВУХПАРАМЕТРИЧЕСКИЙ Result (свой Ok/Err, а не
+    // windows::core::Error) — пишем полный путь `std::result::Result`.
+    parsed_altex: std::collections::HashMap<String, std::result::Result<Arc<crate::altex_format::AltexFile>, String>>,
+}
+
+/// Запускает ЕДИНСТВЕННЫЙ фоновый поток-загрузчик чанков, живущий ровно
+/// столько же, сколько сам `AlkashEngine` (создаётся один раз в
+/// `AlkashEngine::new()`, а не при каждом `load_world` — переживает
+/// `load_world`/`unload_world`, см. `world_generation` для того, как
+/// результаты по СТАРОМУ, уже выгруженному миру безопасно
+/// распознаются и отбрасываются). Завершается сам, естественно, когда
+/// `AlkashEngine` (а с ним и `chunk_loader_tx`) уничтожается — `recv()`
+/// в цикле ниже возвращает `Err`, и поток выходит из функции, никакого
+/// явного shutdown-протокола не требуется.
+fn spawn_chunk_loader_thread() -> (std::sync::mpsc::Sender<ChunkLoadRequest>, std::sync::mpsc::Receiver<ChunkLoadResult>) {
+    let (req_tx, req_rx) = std::sync::mpsc::channel::<ChunkLoadRequest>();
+    let (res_tx, res_rx) = std::sync::mpsc::channel::<ChunkLoadResult>();
+
+    let spawn_result = std::thread::Builder::new()
+        .name("alkash3d-chunk-loader".to_string())
+        .spawn(move || {
+            // Локальный кэш РАСПАРСЕННЫХ .altex — живёт ТОЛЬКО в этом
+            // потоке (никакой Mutex не нужен, к нему обращается только
+            // сам этот поток). Зеркалит ту же дедупликацию, что раньше
+            // делал `AlkashEngine::altex_mesh_cache` на главном потоке:
+            // один и тот же .altex (фонарный столб, типовое здание)
+            // обычно используется тысячами объектов открытого мира —
+            // без кэша каждое такое появление заново читало бы файл с
+            // диска даже здесь, в фоне.
+            let mut altex_cache: std::collections::HashMap<String, Arc<crate::altex_format::AltexFile>> = std::collections::HashMap::new();
+
+            while let Ok(request) = req_rx.recv() {
+                let content = match crate::alworld_format::ChunkContent::load_from_file(request.chunk_path.to_string_lossy().as_ref()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            eprintln!(
+                                "[CHUNK-LOADER] WARNING: не удалось прочитать чанк {:?}: {:?}",
+                                request.chunk_path, e
+                            );
+                        }
+                        // Файла нет/повреждён — считаем чанк пустым, та же
+                        // отказоустойчивость, что была в старом синхронном
+                        // `load_chunk` (см. `integrate_loaded_chunk`).
+                        crate::alworld_format::ChunkContent::new()
+                    }
+                };
+
+                let mut parsed_altex = std::collections::HashMap::new();
+                for obj in &content.objects {
+                    let altex_path = content.get_string(obj.altex_path_string_id).to_string();
+                    if altex_path.is_empty() || altex_path == "placeholder" || parsed_altex.contains_key(&altex_path) {
+                        // Плейсхолдер не требует файла; путь, уже
+                        // встреченный у ДРУГОГО объекта этого же чанка, —
+                        // не парсим повторно (см. комментарий у altex_cache).
+                        continue;
+                    }
+                    let parsed = if let Some(cached) = altex_cache.get(&altex_path) {
+                        Ok(Arc::clone(cached))
+                    } else {
+                        match crate::altex_format::AltexFile::load(&altex_path) {
+                            Ok(file) => {
+                                let arc = Arc::new(file);
+                                altex_cache.insert(altex_path.clone(), Arc::clone(&arc));
+                                Ok(arc)
+                            }
+                            Err(e) => Err(format!("{:?}", e)),
+                        }
+                    };
+                    parsed_altex.insert(altex_path, parsed);
+                }
+
+                let result = ChunkLoadResult {
+                    chunk_idx: request.chunk_idx,
+                    generation: request.generation,
+                    content,
+                    parsed_altex,
+                };
+                // Главный поток мог уже начать shutdown (Receiver
+                // уничтожен) — `send` в этом случае вернёт `Err`, просто
+                // тихо завершаем поток вместо паники, тот же принцип
+                // отказоустойчивости, что и везде в этом движке.
+                if res_tx.send(result).is_err() {
+                    break;
+                }
+            }
+        });
+
+    if let Err(e) = spawn_result {
+        // Не должно происходить на практике (`std::thread::Builder::spawn`
+        // проваливается практически только при исчерпании ресурсов ОС) —
+        // но, раз уж это возможно в принципе, не паникуем: движок просто
+        // останется без фонового загрузчика, и `request_chunk_load`
+        // задействует синхронный fallback на каждый чанк (см. его
+        // комментарий) — стриминг продолжит работать, просто без выигрыша
+        // от фоновой загрузки, вместо падения всего процесса на старте.
+        eprintln!("[ENGINE] WARNING: не удалось создать фоновый поток загрузки чанков: {:?} — стриминг будет работать в синхронном fallback-режиме", e);
+    }
+
+    (req_tx, res_rx)
+}
+
+// =============================================================================
+// ДОБАВЛЕНО: occlusion culling на второй карте (GT710), Part 2a — грубые
+// box-occluder'ы, depth-only рендер на secondary device, асинхронный
+// (неблокирующий per-frame) readback. См. подробное обоснование архитектуры
+// у полей `occluder_*` в структуре `AlkashEngine` выше.
+// =============================================================================
+
+/// Разрешение occluder depth-буфера на второй карте. Сознательно НИЗКОЕ —
+/// это не картинка для показа пользователю, а грубая маска "что примерно
+/// закрыто" для CPU-теста видимости; чем меньше разрешение, тем дешевле
+/// рендер, readback и Map/копирование каждый кадр. 256x256 достаточно для
+/// консервативной оценки на уровне отдельных крупных объектов.
+const OCCLUDER_DEPTH_RESOLUTION: u32 = 256;
+
+/// Минимальный world-space радиус ограничивающей сферы объекта, чтобы он
+/// рассматривался как КАНДИДАТ-окклюдер (не как то, что может быть скрыто
+/// другими, а как то, что само может закрывать другие объекты). Мелкие
+/// объекты (столбы, мелкий реквизит) не стоят отдельного instance-слота —
+/// их вклад в реальное перекрытие кадра пренебрежимо мал, а количество
+/// таких объектов в сцене обычно велико (раздувало бы instance-буфер).
+const OCCLUDER_MIN_WORLD_RADIUS: f32 = 2.0;
+
+/// Инскрайб-коэффициент: половина стороны куба, ВПИСАННОГО в сферу
+/// радиуса `r`, равна `r / sqrt(3)`. Это гарантирует, что box-occluder
+/// НИКОГДА не выходит за пределы реальной ограничивающей сферы объекта —
+/// то есть никогда не может ошибочно "закрыть" то, что на самом деле
+/// видно (главное требование корректности для occlusion culling: ложно-
+/// отрицательные результаты culling'а недопустимы, ложно-положительные —
+/// то есть "не отбросили то, что на самом деле скрыто" — это просто
+/// упущенная оптимизация, не баг рендера).
+const OCCLUDER_INSCRIBE_FACTOR: f32 = 0.57735026; // 1/sqrt(3)
+
+/// Выравнивает `value` вверх до ближайшего кратного 256 — требование
+/// D3D12 к `RowPitch` при `CopyTextureRegion` в буфер
+/// (`D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`), используется в
+/// `create_occluder_resources`/`submit_occluder_pass`/`poll_occluder_readback`.
+fn align_to_256(value: u64) -> u64 {
+    (value + 255) & !255
+}
+
+/// Минимальный (persistent) depth-таргет на ВТОРОЙ карте — в отличие от
+/// `crate::render::RenderTexture`, которая жёстко использует
+/// `crate::get_device()` (первая карта, см. её методы `create_shadow_map`/
+/// `create_dsv`), эти два метода — единственное, что реально нужно
+/// occluder-проходу (SRV не нужен вообще — читаем depth только через
+/// READBACK-копию, не через шейдер).
+struct SecondaryDepthTarget {
+    resource: ID3D12Resource,
+    width: u32,
+    height: u32,
+}
+
+impl SecondaryDepthTarget {
+    /// ТОЧНАЯ копия паттерна `RenderTexture::create_shadow_map` (см.
+    /// render.rs) — тот же TYPELESS-ресурс/DEPTH_WRITE/clear value, но
+    /// созданный через `device`, переданный явно (а не всегда
+    /// `crate::get_device()`), чтобы работать со ВТОРЫМ устройством.
+    fn create(device: &ID3D12Device, resolution: u32) -> Result<Self> {
+        use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_D32_FLOAT, DXGI_SAMPLE_DESC};
+        let heap_properties = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+        };
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Alignment: 0,
+            Width: resolution as u64,
+            Height: resolution,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_R32_TYPELESS,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+        };
+        let clear_value = D3D12_CLEAR_VALUE {
+            Format: DXGI_FORMAT_D32_FLOAT,
+            Anonymous: D3D12_CLEAR_VALUE_0 { DepthStencil: D3D12_DEPTH_STENCIL_VALUE { Depth: 1.0, Stencil: 0 } },
+        };
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                Some(&clear_value),
+                &mut resource,
+            )?;
+            let resource = resource.ok_or_else(|| {
+                eprintln!("[ENGINE] ERROR: occluder depth target (secondary GPU) resource is None!");
+                Error::from_hresult(HRESULT(1))
+            })?;
+            Ok(Self { resource, width: resolution, height: resolution })
+        }
+    }
+
+    fn create_dsv(&self, device: &ID3D12Device, handle: D3D12_CPU_DESCRIPTOR_HANDLE) {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT;
+        let desc = D3D12_DEPTH_STENCIL_VIEW_DESC {
+            Format: DXGI_FORMAT_D32_FLOAT,
+            ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+            Flags: D3D12_DSV_FLAG_NONE,
+            Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_DSV { MipSlice: 0 },
+            },
+        };
+        unsafe {
+            device.CreateDepthStencilView(&self.resource, Some(&desc), handle);
+        }
+    }
+}
+
+/// Минимальный переиспользуемый GPU-буфер на ВТОРОЙ карте — аналог
+/// `crate::buffer::Buffer`, но с явно переданным `device` вместо жёстко
+/// зашитого `crate::get_device()`. Поддерживает только то, что реально
+/// нужно occluder-проходу: UPLOAD-буфер (CPU пишет каждый кадр/один раз)
+/// и READBACK-буфер (CPU читает после GPU-копирования).
+struct SecondaryBuffer {
+    resource: ID3D12Resource,
+    size: u64,
+}
+
+impl SecondaryBuffer {
+    fn create_upload(device: &ID3D12Device, size_bytes: u64) -> Result<Self> {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+        let size = size_bytes.max(4);
+        let heap_properties = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_UPLOAD, ..Default::default() };
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                None,
+                &mut resource,
+            )?;
+            let resource = resource.ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
+            Ok(Self { resource, size })
+        }
+    }
+
+    fn create_readback(device: &ID3D12Device, size_bytes: u64) -> Result<Self> {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+        let size = size_bytes.max(4);
+        let heap_properties = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_READBACK, ..Default::default() };
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+        unsafe {
+            let mut resource: Option<ID3D12Resource> = None;
+            device.CreateCommittedResource(
+                &heap_properties,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                None,
+                &mut resource,
+            )?;
+            let resource = resource.ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
+            Ok(Self { resource, size })
+        }
+    }
+
+    fn update(&self, data: &[u8]) -> Result<()> {
+        unsafe {
+            let mut mapped = std::ptr::null_mut();
+            self.resource.Map(0, None, Some(&mut mapped))?;
+            if !mapped.is_null() {
+                let len = data.len().min(self.size as usize);
+                std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, len);
+            }
+            self.resource.Unmap(0, None);
+        }
+        Ok(())
+    }
+}
+
 impl AlkashEngine {
     pub fn new(width: u32, height: u32) -> Self {
+        // ДОБАВЛЕНО (фоновая загрузка чанков): создаётся здесь, а не в
+        // `load_world`, — см. подробное обоснование у поля
+        // `chunk_loader_tx`/`world_generation` и у `spawn_chunk_loader_thread`.
+        let (chunk_loader_tx, chunk_loader_rx) = spawn_chunk_loader_thread();
+
         Self {
             scheduler: Arc::new(EngineScheduler::new()),
             update_breakdown_ms: UpdateBreakdownMs::default(),
@@ -1494,6 +1964,24 @@ impl AlkashEngine {
             shadow_vs: None,
             shadow_root_signature: None,
             shadow_pipeline_state: None,
+            occluder_vs: None,
+            occluder_root_signature: None,
+            occluder_pipeline_state: None,
+            occluder_depth_target: None,
+            occluder_dsv_heap: None,
+            occluder_dsv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+            occluder_cube_vertex_buffer: None,
+            occluder_cube_index_buffer: None,
+            occluder_instance_buffer: None,
+            occluder_instance_capacity: 0,
+            occluder_viewproj_buffer: None,
+            occluder_command_allocator: None,
+            occluder_command_list: None,
+            occluder_fence: None,
+            occluder_fence_value: 0,
+            occluder_pass_in_flight: false,
+            occluder_readback_buffer: None,
+            occluder_depth_cpu: None,
             // Каждый каскад создаётся уже в DEPTH_WRITE (см.
             // create_shadow_map) — is_srv = false для всех до самого
             // первого shadow-прохода.
@@ -1539,6 +2027,9 @@ impl AlkashEngine {
             world: None,
             world_chunk_placeholder_mesh: None,
             altex_mesh_cache: std::collections::HashMap::new(),
+            chunk_loader_tx,
+            chunk_loader_rx,
+            world_generation: 0,
 
             material_srv_capacity: 0,
             material_texture_count: 0,
@@ -1678,6 +2169,16 @@ impl AlkashEngine {
         self.create_shadow_root_signature()?;
         self.create_shadow_pipeline_state()?;
         self.create_shadow_resources()?;
+
+        // ДОБАВЛЕНО: occlusion culling на второй карте (GT710), Part 2a.
+        // Каждая из этих функций — no-op (Ok(())), если вторая карта не
+        // пригодна, поэтому безопасно вызывать безусловно здесь же, сразу
+        // после теней (концептуально соседняя фича — тоже depth-only
+        // проход, тоже про то, что реально видно в кадре).
+        self.compile_occluder_shaders()?;
+        self.create_occluder_root_signature()?;
+        self.create_occluder_pipeline_state()?;
+        self.create_occluder_resources()?;
 
         // ДОБАВЛЕНО (Фаза 8 плана по реализму/фонарям — volumetric-
         // подсветка): шейдеры, root signature, PSO и ресурсы volumetric
@@ -3945,6 +4446,698 @@ impl AlkashEngine {
     }
 
     // =========================================================================
+    // ДОБАВЛЕНО: occlusion culling на второй карте (GT710), Part 2a — см.
+    // подробное обоснование архитектуры у полей `occluder_*` выше и у
+    // модульных типов `SecondaryDepthTarget`/`SecondaryBuffer`. Все функции
+    // ниже — no-op (просто ранний `Ok(())`), если вторая карта не пригодна
+    // (`crate::get_secondary_device()` вернул `None`) — подсистема тогда
+    // полностью неактивна, ни на что не влияет.
+    // =========================================================================
+
+    /// VS occluder-прохода — рисует ЕДИНСТВЕННЫЙ unit-cube instanced на
+    /// произвольное число occluder'ов за один DrawIndexedInstanced. Слот 0
+    /// (per-vertex) — угол unit-куба в диапазоне [-1;1] по каждой оси;
+    /// слот 1 (per-instance) — world-space AABB min/max этого occluder'а.
+    /// `worldPos = lerp(instanceMin, instanceMax, unitCube*0.5+0.5)`
+    /// разворачивает единичный куб в конкретный мировой AABB БЕЗ отдельной
+    /// per-instance world-матрицы — дешевле и проще, чем константный буфер
+    /// на каждый occluder (как у shadow/основного прохода), и не нужен:
+    /// AABB occluder'а осесимметричен по построению (см. `OCCLUDER_INSCRIBE_FACTOR`),
+    /// поворот геометрии не имеет смысла для грубого прямоугольного occluder'а.
+    fn compile_occluder_shaders(&mut self) -> Result<()> {
+        if crate::get_secondary_device().is_none() {
+            return Ok(());
+        }
+        let vs_source = r#"
+        cbuffer OccluderConstants : register(b0) {
+            float4x4 viewProj;
+        };
+
+        struct VS_INPUT {
+            float3 unitCubePos : POSITION;
+            float3 instanceMin : INSTANCE_MIN;
+            float3 instanceMax : INSTANCE_MAX;
+        };
+        struct VS_OUTPUT {
+            float4 pos : SV_POSITION;
+        };
+        VS_OUTPUT main(VS_INPUT input) {
+            VS_OUTPUT output;
+            float3 t = input.unitCubePos * 0.5 + 0.5;
+            float3 worldPos = lerp(input.instanceMin, input.instanceMax, t);
+            output.pos = mul(viewProj, float4(worldPos, 1.0));
+            return output;
+        }
+        "#;
+        self.occluder_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
+        println!("[ENGINE] ✓ Occluder shaders compiled (вторая карта, depth-only, instanced boxes)");
+        Ok(())
+    }
+
+    /// Root signature occluder-прохода (СЕКОНДАРНОЕ устройство!) — один
+    /// CBV (b0), точная структурная копия `create_shadow_root_signature`,
+    /// но `CreateRootSignature` вызывается через `crate::get_secondary_device()`,
+    /// т.к. root signature — объект, привязанный к конкретному device.
+    fn create_occluder_root_signature(&mut self) -> Result<()> {
+        let Some(device) = crate::get_secondary_device() else { return Ok(()); };
+
+        let root_params = [
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR { ShaderRegister: 0, RegisterSpace: 0 },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+            },
+        ];
+        let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
+            NumParameters: root_params.len() as u32,
+            pParameters: root_params.as_ptr(),
+            NumStaticSamplers: 0,
+            pStaticSamplers: std::ptr::null(),
+            Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        };
+
+        let mut signature_serialized = None;
+        let mut error_blob = None;
+        unsafe {
+            let hr = D3D12SerializeRootSignature(
+                &root_signature_desc,
+                D3D_ROOT_SIGNATURE_VERSION_1,
+                &mut signature_serialized,
+                Some(&mut error_blob),
+            );
+            if hr.is_err() {
+                if let Some(err) = error_blob {
+                    let err_data = std::slice::from_raw_parts(err.GetBufferPointer() as *const u8, err.GetBufferSize());
+                    eprintln!("Occluder root signature error: {}", String::from_utf8_lossy(err_data));
+                }
+                // Ошибка здесь означает "подсистема не работает" — не
+                // проваливаем весь init(), как и другие occluder_* функции.
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder root signature — occlusion culling на второй карте будет неактивен");
+                return Ok(());
+            }
+            let blob = signature_serialized.unwrap();
+            let blob_data = std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize());
+            match device.CreateRootSignature(0, blob_data) {
+                Ok(root_sig) => {
+                    self.occluder_root_signature = Some(root_sig);
+                    println!("[ENGINE] ✓ Occluder root signature created (вторая карта, CBV b0)");
+                }
+                Err(e) => {
+                    eprintln!("[ENGINE] WARNING: CreateRootSignature (occluder, вторая карта) failed: {:?} — occlusion culling будет неактивен", e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// PSO occluder-прохода (СЕКОНДАРНОЕ устройство) — depth-only, БЕЗ PS,
+    /// два input-слота (per-vertex unit cube corner + per-instance AABB
+    /// min/max), см. `compile_occluder_shaders` про семантику полей.
+    fn create_occluder_pipeline_state(&mut self) -> Result<()> {
+        use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_D32_FLOAT, DXGI_SAMPLE_DESC};
+        let (Some(device), Some(vs), Some(root_sig)) = (
+            crate::get_secondary_device(),
+            self.occluder_vs.as_ref(),
+            self.occluder_root_signature.as_ref(),
+        ) else {
+            return Ok(());
+        };
+
+        let input_elements = [
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: s!("POSITION"),
+                SemanticIndex: 0,
+                Format: DXGI_FORMAT_R32G32B32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 0,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: s!("INSTANCE_MIN"),
+                SemanticIndex: 0,
+                Format: DXGI_FORMAT_R32G32B32_FLOAT,
+                InputSlot: 1,
+                AlignedByteOffset: 0,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+                InstanceDataStepRate: 1,
+            },
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: s!("INSTANCE_MAX"),
+                SemanticIndex: 0,
+                Format: DXGI_FORMAT_R32G32B32_FLOAT,
+                InputSlot: 1,
+                AlignedByteOffset: 12,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+                InstanceDataStepRate: 1,
+            },
+        ];
+        let input_layout = D3D12_INPUT_LAYOUT_DESC {
+            pInputElementDescs: input_elements.as_ptr(),
+            NumElements: input_elements.len() as u32,
+        };
+
+        let rasterizer = D3D12_RASTERIZER_DESC {
+            FillMode: D3D12_FILL_MODE_SOLID,
+            // Полные (не полые) box-occluder'ы — заливка обеих сторон не
+            // нужна (кубы всегда обращены наружу к камере occluder-прохода
+            // так же, как основная камера), но CULL_NONE безопаснее и
+            // дешевле, чем разбираться с winding order инстансированных
+            // кубов, чей "перёд" зависит от направления lerp на каждой оси.
+            CullMode: D3D12_CULL_MODE_NONE,
+            FrontCounterClockwise: FALSE,
+            DepthBias: 0,
+            DepthBiasClamp: 0.0,
+            SlopeScaledDepthBias: 0.0,
+            DepthClipEnable: TRUE,
+            MultisampleEnable: FALSE,
+            AntialiasedLineEnable: FALSE,
+            ForcedSampleCount: 0,
+            ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+        };
+        let blend_desc = D3D12_BLEND_DESC {
+            AlphaToCoverageEnable: FALSE,
+            IndependentBlendEnable: FALSE,
+            RenderTarget: [D3D12_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: FALSE,
+                LogicOpEnable: FALSE,
+                SrcBlend: D3D12_BLEND_ONE,
+                DestBlend: D3D12_BLEND_ZERO,
+                BlendOp: D3D12_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D12_BLEND_ONE,
+                DestBlendAlpha: D3D12_BLEND_ZERO,
+                BlendOpAlpha: D3D12_BLEND_OP_ADD,
+                LogicOp: D3D12_LOGIC_OP_NOOP,
+                RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
+            }; 8],
+        };
+        let depth_stencil = D3D12_DEPTH_STENCIL_DESC {
+            DepthEnable: TRUE,
+            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+            DepthFunc: D3D12_COMPARISON_FUNC_LESS,
+            StencilEnable: FALSE,
+            StencilReadMask: D3D12_DEFAULT_STENCIL_READ_MASK as u8,
+            StencilWriteMask: D3D12_DEFAULT_STENCIL_WRITE_MASK as u8,
+            FrontFace: D3D12_DEPTH_STENCILOP_DESC {
+                StencilFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilPassOp: D3D12_STENCIL_OP_KEEP,
+                StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            },
+            BackFace: D3D12_DEPTH_STENCILOP_DESC {
+                StencilFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+                StencilPassOp: D3D12_STENCIL_OP_KEEP,
+                StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            },
+        };
+
+        let mut pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: std::mem::ManuallyDrop::new(Some(root_sig.clone())),
+            VS: D3D12_SHADER_BYTECODE { pShaderBytecode: vs.as_ptr(), BytecodeLength: vs.size() },
+            PS: D3D12_SHADER_BYTECODE::default(),
+            DS: D3D12_SHADER_BYTECODE::default(),
+            HS: D3D12_SHADER_BYTECODE::default(),
+            GS: D3D12_SHADER_BYTECODE::default(),
+            StreamOutput: D3D12_STREAM_OUTPUT_DESC::default(),
+            BlendState: blend_desc,
+            SampleMask: u32::MAX,
+            RasterizerState: rasterizer,
+            DepthStencilState: depth_stencil,
+            InputLayout: input_layout,
+            IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            NumRenderTargets: 0,
+            RTVFormats: [DXGI_FORMAT_UNKNOWN; 8],
+            DSVFormat: DXGI_FORMAT_D32_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            NodeMask: 0,
+            CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
+            Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
+            CS: D3D12_SHADER_BYTECODE::default(),
+        };
+
+        let result = unsafe { device.CreateGraphicsPipelineState(&pso_desc) };
+        unsafe { std::mem::ManuallyDrop::drop(&mut pso_desc.pRootSignature); }
+
+        match result {
+            Ok(pso) => {
+                self.occluder_pipeline_state = Some(pso);
+                println!("[ENGINE] ✓ Occluder pipeline state created (вторая карта, depth-only, instanced)");
+            }
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: CreateGraphicsPipelineState (occluder, вторая карта) failed: {:?} — occlusion culling будет неактивен", e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Depth-таргет + DSV heap + статический unit-cube VB/IB + постоянные
+    /// command allocator/list + fence occluder-прохода — всё на ВТОРОЙ
+    /// карте. Вызывается один раз в init(), симметрично `create_shadow_resources`.
+    fn create_occluder_resources(&mut self) -> Result<()> {
+        let Some(device) = crate::get_secondary_device() else { return Ok(()); };
+
+        let depth_target = match SecondaryDepthTarget::create(&device, OCCLUDER_DEPTH_RESOLUTION) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder depth target на второй карте: {:?} — occlusion culling будет неактивен", e);
+                return Ok(());
+            }
+        };
+
+        let dsv_heap = match crate::heap::DescriptorHeap::create_dsv_heap_on_device(&device, 1) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать DSV heap второй карты для occlusion culling: {:?}", e);
+                return Ok(());
+            }
+        };
+        let dsv_size = unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV) };
+        let dsv_handle = crate::heap::DescriptorHeap::get_cpu_handle(&dsv_heap, 0, dsv_size);
+        depth_target.create_dsv(&device, dsv_handle);
+
+        // Unit-cube: 8 углов в диапазоне [-1;1], 12 треугольников (36
+        // индексов) — стандартная топология куба, только позиция (см.
+        // VS_INPUT.unitCubePos в compile_occluder_shaders — нормали/UV
+        // здесь не нужны вообще, depth-only проход без освещения).
+        #[rustfmt::skip]
+        let cube_vertices: [f32; 24] = [
+            -1.0, -1.0, -1.0,   1.0, -1.0, -1.0,   1.0,  1.0, -1.0,  -1.0,  1.0, -1.0,
+            -1.0, -1.0,  1.0,   1.0, -1.0,  1.0,   1.0,  1.0,  1.0,  -1.0,  1.0,  1.0,
+        ];
+        #[rustfmt::skip]
+        let cube_indices: [u32; 36] = [
+            0,1,2, 0,2,3,       // back  (-Z)
+            4,6,5, 4,7,6,       // front (+Z)
+            0,4,5, 0,5,1,       // bottom (-Y)
+            3,2,6, 3,6,7,       // top (+Y)
+            0,3,7, 0,7,4,       // left (-X)
+            1,5,6, 1,6,2,       // right (+X)
+        ];
+        let vertex_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(cube_vertices.as_ptr() as *const u8, std::mem::size_of_val(&cube_vertices))
+        };
+        let index_bytes: Vec<u8> = cube_indices.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+        let cube_vb = match SecondaryBuffer::create_upload(&device, vertex_bytes.len() as u64) {
+            Ok(b) => { let _ = b.update(vertex_bytes); b }
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder cube vertex buffer: {:?}", e);
+                return Ok(());
+            }
+        };
+        let cube_ib = match SecondaryBuffer::create_upload(&device, index_bytes.len() as u64) {
+            Ok(b) => { let _ = b.update(&index_bytes); b }
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder cube index buffer: {:?}", e);
+                return Ok(());
+            }
+        };
+
+        let viewproj_cb = match SecondaryBuffer::create_upload(&device, 256) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder view-proj CBV: {:?}", e);
+                return Ok(());
+            }
+        };
+
+        let command_allocator: ID3D12CommandAllocator = match unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) } {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder command allocator (вторая карта): {:?}", e);
+                return Ok(());
+            }
+        };
+        // Список создаётся сразу закрытым (симметрично основному циклу
+        // рендера — Reset() перед КАЖДОЙ отправкой, см. `submit_occluder_pass`),
+        // избегаем незакрытого списка, болтающегося между init() и первым кадром.
+        let command_list: ID3D12GraphicsCommandList = match unsafe { device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &command_allocator, None) } {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder command list (вторая карта): {:?}", e);
+                return Ok(());
+            }
+        };
+        if let Err(e) = unsafe { command_list.Close() } {
+            eprintln!("[ENGINE] WARNING: не удалось закрыть occluder command list после создания: {:?}", e);
+            return Ok(());
+        }
+
+        let fence: ID3D12Fence = match unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE) } {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder fence (вторая карта): {:?}", e);
+                return Ok(());
+            }
+        };
+
+        // READBACK-буфер под весь occluder depth-буфер: RowPitch
+        // выровнен до D3D12_TEXTURE_DATA_PITCH_ALIGNMENT (256 байт) — см.
+        // подробности у `submit_occluder_pass`/`poll_occluder_readback`,
+        // где именно этот выровненный размер и вычисляется.
+        let row_pitch = align_to_256(OCCLUDER_DEPTH_RESOLUTION as u64 * 4);
+        let readback_size = row_pitch * OCCLUDER_DEPTH_RESOLUTION as u64;
+        let readback_buffer = match SecondaryBuffer::create_readback(&device, readback_size) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: не удалось создать occluder readback buffer: {:?}", e);
+                return Ok(());
+            }
+        };
+
+        self.occluder_depth_target = Some(depth_target);
+        self.occluder_dsv_heap = Some(dsv_heap);
+        self.occluder_dsv = dsv_handle;
+        self.occluder_cube_vertex_buffer = Some(cube_vb);
+        self.occluder_cube_index_buffer = Some(cube_ib);
+        self.occluder_viewproj_buffer = Some(viewproj_cb);
+        self.occluder_command_allocator = Some(command_allocator);
+        self.occluder_command_list = Some(command_list);
+        self.occluder_fence = Some(fence);
+        self.occluder_readback_buffer = Some(readback_buffer);
+
+        println!(
+            "[ENGINE] ✓ Occluder resources created (вторая карта, {}x{} depth target)",
+            OCCLUDER_DEPTH_RESOLUTION, OCCLUDER_DEPTH_RESOLUTION
+        );
+        Ok(())
+    }
+
+    /// Растит `occluder_instance_buffer` (вторая карта) до вмещения как
+    /// минимум `needed` инстансов — ТОЧНО тот же паттерн степени двойки,
+    /// что `ensure_light_buffer_capacity` (см. подробности там), только
+    /// на secondary device и с размером слота = 2 x float3 (min+max).
+    fn ensure_occluder_instance_buffer_capacity(&mut self, needed: usize) -> Result<()> {
+        let Some(device) = crate::get_secondary_device() else { return Ok(()); };
+        if self.occluder_instance_buffer.is_some() && needed <= self.occluder_instance_capacity {
+            return Ok(());
+        }
+        let new_capacity = needed.max(64).next_power_of_two();
+        let size_bytes = new_capacity as u64 * (6 * std::mem::size_of::<f32>() as u64);
+        let buffer = SecondaryBuffer::create_upload(&device, size_bytes)?;
+        println!(
+            "[ENGINE] Occluder instance buffer (вторая карта) (re)allocated: {} слотов ({} байт)",
+            new_capacity, size_bytes
+        );
+        self.occluder_instance_buffer = Some(buffer);
+        self.occluder_instance_capacity = new_capacity;
+        Ok(())
+    }
+
+    /// Отправляет depth-only occluder-проход на ВТОРУЮ карту — БЕЗ
+    /// ожидания результата (никакого `WaitForSingleObject` здесь). Список
+    /// AABB окклюдеров (`instance_data`) собирается ВЫЗЫВАЮЩИМ кодом
+    /// (`render_frame`, сразу после `jobs.retain(...)` frustum-теста) —
+    /// см. doc-комментарий у сигнатуры чуть ниже про то, почему сбор не
+    /// сделан прямо здесь. Если предыдущий проход ещё не прочитан (`occluder_pass_in_flight`)
+    /// — пропускает отправку целиком в этом кадре, переиспользуя старый
+    /// CPU depth-буфер ещё один кадр (одно-двух-кадровая задержка
+    /// свежести occluder-данных совершенно не критична — сцена не меняет
+    /// крупную геометрию настолько резко от кадра к кадру).
+    /// `instance_data` — уже готовый плоский список `[minX,minY,minZ,maxX,maxY,maxZ, ...]`
+    /// по одному occluder'у (6 float на инстанс). Собирается ВЫЗЫВАЮЩИМ
+    /// кодом (`render_frame`) из уже отфильтрованного фрустумом списка
+    /// задач отрисовки — сам `submit_occluder_pass` намеренно не знает
+    /// про `DrawJob`/`DrawTransform` (те — локальные типы `render_frame`,
+    /// невидимые на уровне impl-метода), поэтому принимает уже
+    /// посчитанные AABB как самодостаточные данные.
+    fn submit_occluder_pass(&mut self, instance_data: &[f32], view: Mat4, proj: Mat4) {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT;
+        if self.occluder_pass_in_flight {
+            return;
+        }
+        let instance_count = instance_data.len() / 6;
+        if instance_count == 0 {
+            // Нечего рендерить — старый CPU-буфер (если был) оставляем
+            // как есть, ничего нового не отправляем на GPU.
+            return;
+        }
+        // ИСПРАВЛЕНО ("Cannot borrow `*self` as mutable because it is also
+        // borrowed as immutable"): раньше `pso`/`root_sig`/`depth_target`/
+        // `cube_vb`/`cube_ib`/`viewproj_cb`/`command_allocator`/
+        // `command_list`/`fence` заимствовались как `&self.occluder_*` и
+        // жили ДО КОНЦА функции (использовались вплоть до `queue.Signal`
+        // ближе к концу) — а между их получением и последним
+        // использованием стояли `self.ensure_occluder_instance_buffer_capacity(...)`
+        // (`&mut self`) и `self.occluder_fence_value += 1`/`self.occluder_pass_in_flight = true`
+        // (мутация полей `self`), что конфликтовало с ещё живыми
+        // immutable-заимствованиями. Исправлено клонированием — все эти
+        // типы (COM-обёртки D3D12 + наш `SecondaryBuffer`/`SecondaryDepthTarget`,
+        // оба `#[derive(Clone)]`-подобные по духу буферов в этом файле)
+        // дёшево клонируются (инкремент refcount у COM, копия двух полей
+        // у наших типов) — заимствование `self` заканчивается сразу после
+        // этого блока, дальше используются уже независимые от `self` копии.
+        // `device` сам по себе здесь не нужен (все нужные объекты уже
+        // существуют и просто клонируются из self.occluder_* ниже) — эта
+        // проверка нужна ТОЛЬКО как барьер "вторая карта вообще пригодна",
+        // симметрично остальным occluder_* функциям.
+        if crate::get_secondary_device().is_none() { return; }
+        let Some(queue) = crate::get_secondary_command_queue() else { return };
+        let (
+            Some(pso),
+            Some(root_sig),
+            Some(depth_target_resource),
+            Some(cube_vb_resource),
+            Some(cube_vb_size),
+            Some(cube_ib_resource),
+            Some(cube_ib_size),
+            Some(viewproj_cb_resource),
+            Some(command_allocator),
+            Some(command_list),
+            Some(fence),
+        ) = (
+            self.occluder_pipeline_state.clone(),
+            self.occluder_root_signature.clone(),
+            self.occluder_depth_target.as_ref().map(|t| t.resource.clone()),
+            self.occluder_cube_vertex_buffer.as_ref().map(|b| b.resource.clone()),
+            self.occluder_cube_vertex_buffer.as_ref().map(|b| b.size),
+            self.occluder_cube_index_buffer.as_ref().map(|b| b.resource.clone()),
+            self.occluder_cube_index_buffer.as_ref().map(|b| b.size),
+            self.occluder_viewproj_buffer.as_ref().map(|b| b.resource.clone()),
+            self.occluder_command_allocator.clone(),
+            self.occluder_command_list.clone(),
+            self.occluder_fence.clone(),
+        )
+        else {
+            return;
+        };
+
+        if let Err(e) = self.ensure_occluder_instance_buffer_capacity(instance_count) {
+            eprintln!("[ENGINE] WARNING: не удалось вырастить occluder instance buffer: {:?}", e);
+            return;
+        }
+        let Some(instance_buffer_resource) = self.occluder_instance_buffer.as_ref().map(|b| b.resource.clone()) else { return };
+        let Some(instance_buffer) = self.occluder_instance_buffer.as_ref() else { return };
+        let instance_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(instance_data.as_ptr() as *const u8, instance_data.len() * 4)
+        };
+        if instance_buffer.update(instance_bytes).is_err() {
+            return;
+        }
+
+        let Some(viewproj_cb) = self.occluder_viewproj_buffer.as_ref() else { return };
+        let view_proj = proj * view;
+        let vp_bytes: [f32; 16] = view_proj.to_cols_array();
+        let vp_u8: &[u8] = unsafe { std::slice::from_raw_parts(vp_bytes.as_ptr() as *const u8, 64) };
+        if viewproj_cb.update(vp_u8).is_err() {
+            return;
+        }
+
+        // Ещё одна копия ДО unsafe-блока по той же причине (см. комментарий
+        // выше про disjoint-borrow) — `self.occluder_dsv` (Copy-тип) и
+        // `self.occluder_readback_buffer` нужны внутри блока, который
+        // заканчивается уже ПОСЛЕ мутации `self.occluder_fence_value`/
+        // `self.occluder_pass_in_flight`.
+        let occluder_dsv = self.occluder_dsv;
+        let Some(readback_buffer_resource) = self.occluder_readback_buffer.as_ref().map(|b| b.resource.clone()) else { return };
+
+        unsafe {
+            if command_allocator.Reset().is_err() { return; }
+            if command_list.Reset(&command_allocator, None).is_err() { return; }
+
+            let viewport = D3D12_VIEWPORT {
+                TopLeftX: 0.0, TopLeftY: 0.0,
+                Width: OCCLUDER_DEPTH_RESOLUTION as f32, Height: OCCLUDER_DEPTH_RESOLUTION as f32,
+                MinDepth: 0.0, MaxDepth: 1.0,
+            };
+            let scissor = RECT { left: 0, top: 0, right: OCCLUDER_DEPTH_RESOLUTION as i32, bottom: OCCLUDER_DEPTH_RESOLUTION as i32 };
+            command_list.RSSetViewports(&[viewport]);
+            command_list.RSSetScissorRects(&[scissor]);
+            command_list.OMSetRenderTargets(0, None, false, Some(&occluder_dsv));
+            command_list.ClearDepthStencilView(occluder_dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+
+            command_list.SetPipelineState(&pso);
+            command_list.SetGraphicsRootSignature(&root_sig);
+            command_list.SetGraphicsRootConstantBufferView(0, viewproj_cb_resource.GetGPUVirtualAddress());
+            command_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+            let cube_vbv = D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: cube_vb_resource.GetGPUVirtualAddress(),
+                SizeInBytes: cube_vb_size as u32,
+                StrideInBytes: 12, // float3
+            };
+            let instance_vbv = D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: instance_buffer_resource.GetGPUVirtualAddress(),
+                SizeInBytes: (instance_count * 24) as u32,
+                StrideInBytes: 24, // 2 x float3
+            };
+            command_list.IASetVertexBuffers(0, Some(&[cube_vbv, instance_vbv]));
+            let index_view = D3D12_INDEX_BUFFER_VIEW {
+                BufferLocation: cube_ib_resource.GetGPUVirtualAddress(),
+                SizeInBytes: cube_ib_size as u32,
+                Format: DXGI_FORMAT_R32_UINT,
+            };
+            command_list.IASetIndexBuffer(Some(&index_view));
+            command_list.DrawIndexedInstanced(36, instance_count as u32, 0, 0, 0);
+
+            // Переводим depth-таргет в COPY_SOURCE и копируем в readback —
+            // тот же приём, что и в `audio.rs::upload_bytes_to_secondary_vram`,
+            // но здесь читаем ТЕКСТУРУ (нужен footprint, не просто offset,
+            // см. `CopyTextureRegion` ниже — RowPitch должен быть выровнен
+            // на 256 байт, что и обеспечивает `align_to_256` в `create_occluder_resources`).
+            let mut barrier = D3D12_RESOURCE_BARRIER {
+                Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                    Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                        pResource: std::mem::ManuallyDrop::new(Some(depth_target_resource.clone())),
+                        Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                        StateBefore: D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                        StateAfter: D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    }),
+                },
+            };
+            command_list.ResourceBarrier(&[barrier.clone()]);
+            std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition);
+
+            let row_pitch = align_to_256(OCCLUDER_DEPTH_RESOLUTION as u64 * 4);
+            let src_location = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: std::mem::ManuallyDrop::new(Some(depth_target_resource.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+            };
+            let dst_location = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: std::mem::ManuallyDrop::new(Some(readback_buffer_resource.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                        Offset: 0,
+                        Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                            Format: DXGI_FORMAT_R32_FLOAT,
+                            Width: OCCLUDER_DEPTH_RESOLUTION,
+                            Height: OCCLUDER_DEPTH_RESOLUTION,
+                            Depth: 1,
+                            RowPitch: row_pitch as u32,
+                        },
+                    },
+                },
+            };
+            command_list.CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, None);
+
+            let mut barrier_back = D3D12_RESOURCE_BARRIER {
+                Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                    Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                        pResource: std::mem::ManuallyDrop::new(Some(depth_target_resource.clone())),
+                        Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                        StateBefore: D3D12_RESOURCE_STATE_COPY_SOURCE,
+                        StateAfter: D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    }),
+                },
+            };
+            command_list.ResourceBarrier(&[barrier_back.clone()]);
+            std::mem::ManuallyDrop::drop(&mut barrier_back.Anonymous.Transition);
+
+            if command_list.Close().is_err() { return; }
+            let cmd_lists: [Option<ID3D12CommandList>; 1] = [Some(command_list.clone().into())];
+            queue.ExecuteCommandLists(&cmd_lists);
+
+            self.occluder_fence_value += 1;
+            if queue.Signal(&fence, self.occluder_fence_value).is_err() { return; }
+            self.occluder_pass_in_flight = true;
+            // `device` явно не используется дальше своей роли в
+            // Reset/CreateCommandList и т.п. выше (все нужные COM-объекты
+            // уже склонированы в независимые переменные) — `crate::get_secondary_device()`
+            // возвращает `Option<ID3D12Device>` уже владеющим значением
+            // (не заимствованием `self`), так что drop здесь не влияет на borrow-checker,
+            // явный `let _ = device;` не нужен, компилятор просто уронит его в конце функции.
+        }
+    }
+
+    /// Опрашивает (НЕ ждёт) fence occluder-прохода в начале кадра — если
+    /// GPU второй карты уже закончил (Part 2a проход отправляется не
+    /// каждый кадр, так что обычно готово задолго до опроса), читает
+    /// READBACK-буфер и обновляет `self.occluder_depth_cpu`. Если ещё не
+    /// готово — просто выходит, оставляя `occluder_pass_in_flight = true`
+    /// и старый (если был) `occluder_depth_cpu` как есть: НИКОГДА не
+    /// блокирует основной кадр ожиданием второй карты.
+    fn poll_occluder_readback(&mut self) {
+        if !self.occluder_pass_in_flight {
+            return;
+        }
+        let Some(fence) = self.occluder_fence.as_ref() else {
+            self.occluder_pass_in_flight = false;
+            return;
+        };
+        // ИСПРАВЛЕНО (E0133 "Calling an unsafe function is only allowed
+        // inside unsafe blocks"): `ID3D12Fence::GetCompletedValue` — FFI
+        // (COM) вызов, как и весь остальной D3D12 API в этом файле, и
+        // поэтому требует unsafe-блока, ровно как везде в `wait_for_fence`.
+        let completed = unsafe { fence.GetCompletedValue() };
+        if completed < self.occluder_fence_value {
+            // Ещё не готово в этом кадре — ждём следующего опроса, БЕЗ
+            // WaitForSingleObject здесь, ровно по плану.
+            return;
+        }
+        self.occluder_pass_in_flight = false;
+
+        let Some(readback_buffer) = self.occluder_readback_buffer.as_ref() else { return };
+        let row_pitch = align_to_256(OCCLUDER_DEPTH_RESOLUTION as u64 * 4) as usize;
+        let total_size = row_pitch * OCCLUDER_DEPTH_RESOLUTION as usize;
+        unsafe {
+            let mut mapped = std::ptr::null_mut();
+            let read_range = D3D12_RANGE { Begin: 0, End: total_size as u64 as usize };
+            if readback_buffer.resource.Map(0, Some(&read_range), Some(&mut mapped)).is_err() {
+                return;
+            }
+            if mapped.is_null() {
+                readback_buffer.resource.Unmap(0, None);
+                return;
+            }
+            // RowPitch может быть больше, чем "живые" данные строки
+            // (256-байтное выравнивание) — распаковываем построчно в
+            // плотный (без padding) буфер f32 для удобства последующего
+            // (Part 2b) чтения по (x,y) без пересчёта пиччи каждый раз.
+            let mut dense = vec![0.0f32; (OCCLUDER_DEPTH_RESOLUTION * OCCLUDER_DEPTH_RESOLUTION) as usize];
+            let row_floats = OCCLUDER_DEPTH_RESOLUTION as usize;
+            for y in 0..OCCLUDER_DEPTH_RESOLUTION as usize {
+                let row_src = (mapped as *const u8).add(y * row_pitch) as *const f32;
+                let row_slice = std::slice::from_raw_parts(row_src, row_floats);
+                dense[y * row_floats..(y + 1) * row_floats].copy_from_slice(row_slice);
+            }
+            let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+            readback_buffer.resource.Unmap(0, Some(&written_range));
+
+            // Диагностика (Part 2a — вывод только для проверки, что
+            // подсистема реально работает; не влияет на рендер). Считаем
+            // долю тексел с depth < 1.0 (что-то реально отрисовалось).
+            let covered = dense.iter().filter(|&&d| d < 1.0).count();
+            let total = dense.len();
+            println!(
+                "[ENGINE] [OCCLUSION] Occluder depth readback готов: {}/{} texel'ей с геометрией ({:.1}%)",
+                covered, total, 100.0 * covered as f32 / total.max(1) as f32
+            );
+
+            self.occluder_depth_cpu = Some(dense);
+        }
+    }
+
+    // =========================================================================
     // ДОБАВЛЕНО (Фаза 8 плана по реализму/фонарям — volumetric-подсветка)
     // =========================================================================
 
@@ -5885,6 +7078,43 @@ impl AlkashEngine {
                 DrawTransform::RawIdentity => true,
             });
 
+            // ДОБАВЛЕНО: occlusion culling на второй карте (GT710),
+            // Part 2a — опрос готовности предыдущего occluder-прохода
+            // (неблокирующий, см. `poll_occluder_readback`) и отправка
+            // нового прохода по уже отфильтрованным фрустумом `jobs` (см.
+            // `submit_occluder_pass`). ЧИСТО АДДИТИВНО в Part 2a: ни
+            // `jobs`, ни что-либо ещё в основном рендере этим НЕ
+            // затрагивается — только заполняется/обновляется
+            // `self.occluder_depth_cpu` и лог диагностики, никакие draw
+            // call'ы здесь не пропускаются (это будет Part 2b).
+            //
+            // Сбор occluder-кандидатов делается ЗДЕСЬ (а не внутри
+            // `submit_occluder_pass`), потому что `DrawJob`/`DrawTransform`
+            // — локальные типы этой функции (`render_frame`), невидимые
+            // вне её тела — `submit_occluder_pass` получает уже готовый
+            // плоский список AABB min/max, не зная про эти типы вообще.
+            self.poll_occluder_readback();
+            let mut occluder_instance_data: Vec<f32> = Vec::new();
+            for job in &jobs {
+                let DrawTransform::Camera(model) = &job.transform else { continue };
+                if job.mesh_index >= self.meshes.len() { continue; }
+                let mesh = &self.meshes[job.mesh_index];
+                let (scale, _rotation, _translation) = model.to_scale_rotation_translation();
+                let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+                let world_radius = mesh.bounding_radius * max_scale;
+                if world_radius < OCCLUDER_MIN_WORLD_RADIUS {
+                    continue;
+                }
+                let local_center = Vec3::new(mesh.bounding_center[0], mesh.bounding_center[1], mesh.bounding_center[2]);
+                let world_center = model.transform_point3(local_center);
+                let half_extent = world_radius * OCCLUDER_INSCRIBE_FACTOR;
+                occluder_instance_data.extend_from_slice(&[
+                    world_center.x - half_extent, world_center.y - half_extent, world_center.z - half_extent,
+                    world_center.x + half_extent, world_center.y + half_extent, world_center.z + half_extent,
+                ]);
+            }
+            self.submit_occluder_pass(&occluder_instance_data, view, proj);
+
             self.ensure_constant_buffer_capacity(jobs.len())?;
 
             for (i, job) in jobs.iter().enumerate() {
@@ -7133,6 +8363,14 @@ impl AlkashEngine {
             world_file.streaming_config.load_distance, world_file.streaming_config.unload_distance,
         );
 
+        // ДОБАВЛЕНО (фоновая загрузка чанков): новое "поколение" мира —
+        // см. подробный комментарий у поля `world_generation`. Любой
+        // результат фоновой загрузки, всё ещё летящий по каналу от
+        // ПРЕДЫДУЩЕГО мира (если `load_world` вызван повторно, не
+        // дождавшись завершения всех фоновых запросов), будет отброшен
+        // в `drain_pending_chunk_io` из-за несовпадения generation.
+        self.world_generation = self.world_generation.wrapping_add(1);
+
         self.world = Some(WorldStreamingState {
             world_file,
             chunks_dir,
@@ -7167,7 +8405,24 @@ impl AlkashEngine {
     /// Scene) и сбрасывает состояние стриминга — используется, например,
     /// при переходе на другой уровень/мир, чтобы не оставлять "осиротевшие"
     /// сущности предыдущего мира в Scene.
+    ///
+    /// ИЗМЕНЕНО (фоновая загрузка чанков): раньше `self.world.take()` сам
+    /// по себе гарантированно уничтожал ЛЮБОЕ незавершённое состояние
+    /// загрузки — `pending_load`/`pending_unload` жили ВНУТРИ
+    /// `WorldStreamingState`, забираемой здесь. Теперь фоновый
+    /// поток-загрузчик (см. `spawn_chunk_loader_thread`) может в этот
+    /// самый момент ещё обрабатывать запрос на чтение чанка ЭТОГО мира —
+    /// его результат придёт в канал уже ПОСЛЕ того, как `self.world`
+    /// станет `None` (или будет заменён совсем другим миром через
+    /// повторный `load_world`). Без явного bump'а `world_generation` этот
+    /// "осиротевший" результат прошёл бы проверку в
+    /// `drain_pending_chunk_io` (её generation ещё совпадала бы) и
+    /// заспавнил бы сущности ВЫГРУЖЕННОГО мира — утечка сущностей/
+    /// физических тел, которые никто и никогда не отследит и не удалит.
+    /// Тот же bump, что и в `load_world`, закрывает эту дыру.
     pub fn unload_world(&mut self) {
+        self.world_generation = self.world_generation.wrapping_add(1);
+
         if let Some(mut world) = self.world.take() {
             // ДОБАВЛЕНО (объединённая сцена — физика из .alworld): та же
             // причина, что и в `unload_chunk` — тела, созданные для
@@ -7214,13 +8469,24 @@ impl AlkashEngine {
     /// чанк, например открытое поле/вода без построек, вполне легитимен).
     ///
     /// ДОБАВЛЕНО (Задача #14): геометрия объектов чанка теперь загружается
-    /// из реального `.altex` файла по пути объекта (см. `load_object_mesh`)
+    /// из реального `.altex` файла по пути объекта (см. `load_object_mesh_sync`)
     /// вместо всегда-плейсхолдера. Fallback на единичный куб
     /// (`load_placeholder_mesh`) остаётся ТОЛЬКО для случаев отсутствующего/
     /// повреждённого файла или служебного пути "placeholder" (см.
     /// `AlworldFile::create_and_save_demo_world`) — не блокирует стриминг
     /// целиком из-за одного плохого ассета.
-    fn load_chunk(&mut self, chunk_idx: usize) {
+    ///
+    /// ПЕРЕИМЕНОВАНО (фоновая загрузка чанков): это ПОЛНОСТЬЮ синхронный
+    /// путь (сама читает файл чанка И парсит .altex каждого объекта прямо
+    /// здесь, в кадре рендера) — раньше был единственным способом загрузки
+    /// чанка (`load_chunk`), теперь используется ТОЛЬКО как fallback на
+    /// случай, если фоновый поток-загрузчик недоступен (см.
+    /// `request_chunk_load`/`spawn_chunk_loader_thread`) — штатный путь
+    /// теперь асинхронный (`request_chunk_load` -> фоновый поток ->
+    /// `integrate_loaded_chunk`). Тело функции НЕ менялось, только имя и
+    /// единственный внутренний вызов `load_object_mesh` ->
+    /// `load_object_mesh_sync` (переименован туда же, см. его комментарий).
+    fn load_chunk_sync_fallback(&mut self, chunk_idx: usize) {
         let (chunk_path, chunk_desc) = {
             let world = match &self.world {
                 Some(w) => w,
@@ -7275,7 +8541,7 @@ impl AlkashEngine {
             // меш с несколькими материалами/подобъектами одной модели,
             // например фонарный столб = "столб" + "плафон" в одном файле).
             let altex_path = content.get_string(obj.altex_path_string_id).to_string();
-            let mesh_indices = self.load_object_mesh(&altex_path);
+            let mesh_indices = self.load_object_mesh_sync(&altex_path);
 
             // ДОБАВЛЕНО (объединённая сцена — физика из .alworld): ОДНО
             // физическое тело на объект чанка (не на под-меш) — создаётся
@@ -7330,6 +8596,106 @@ impl AlkashEngine {
         }
     }
 
+    /// ДОБАВЛЕНО (фоновая загрузка чанков): отправляет запрос на чтение+
+    /// разбор чанка `chunk_idx` фоновому потоку-загрузчику (см.
+    /// `spawn_chunk_loader_thread`). НЕ блокирует главный поток —
+    /// `mpsc::Sender::send` лишь кладёт значение в очередь канала, сам
+    /// дисковый I/O произойдёт позже, в фоновом потоке, параллельно с
+    /// рендером текущего и следующих кадров. Готовый результат будет
+    /// подобран и интегрирован в GPU/Scene позже, в `drain_pending_chunk_io`
+    /// (через `integrate_loaded_chunk`), когда придёт по каналу.
+    fn request_chunk_load(&mut self, chunk_idx: usize) {
+        // Заём `self.world` намеренно ограничен этим блоком (тот же
+        // паттерн, что и в `load_chunk_sync_fallback`/`chunk_file_path`)
+        // — ниже понадобится `&mut self` для `send`/fallback-загрузки, а
+        // заём `&self.world` должен успеть закончиться до этого.
+        let chunk_path = {
+            let Some(world) = &self.world else { return };
+            let chunk = &world.world_file.chunks[chunk_idx];
+            Self::chunk_file_path(&world.chunks_dir, chunk)
+        };
+        let generation = self.world_generation;
+
+        let request = ChunkLoadRequest { chunk_idx, chunk_path, generation };
+        if self.chunk_loader_tx.send(request).is_err() {
+            // Фоновый поток недоступен (не создался при старте — см.
+            // `spawn_chunk_loader_thread` — или почему-то завершился,
+            // хотя штатно этого не происходит, пока жив `chunk_loader_tx`).
+            // Деградируем на старый полностью синхронный путь для ЭТОГО
+            // конкретного чанка, а не оставляем его вечно висеть в
+            // очереди без загрузки — тот же принцип отказоустойчивости,
+            // что и везде в стриминге: один сбой не должен ломать весь
+            // мир, максимум — вернуть его к до-фоновому поведению.
+            eprintln!("[ENGINE] WARNING: фоновый поток загрузки чанков недоступен — чанк {} загружается синхронно", chunk_idx);
+            self.load_chunk_sync_fallback(chunk_idx);
+            if let Some(world) = &mut self.world {
+                if chunk_idx < world.chunk_states.len() {
+                    world.chunk_states[chunk_idx].queued = false;
+                }
+            }
+        }
+    }
+
+    /// ДОБАВЛЕНО (фоновая загрузка чанков): забирает результат, уже
+    /// полностью прочитанный и распарсенный фоновым потоком (см.
+    /// `ChunkLoadResult`), и делает единственную оставшуюся часть работы,
+    /// которая ОБЯЗАНА выполняться на главном потоке — создание GPU-
+    /// ресурсов (буферы мешей через `load_object_mesh_from_parsed`) и
+    /// spawn сущностей Scene. Логика spawn/физики здесь ДОСЛОВНО совпадает
+    /// с тем, что раньше делал `load_chunk_sync_fallback` (ныне
+    /// `load_chunk_sync_fallback`) ПОСЛЕ чтения файла — единственное
+    /// отличие в том, откуда берутся `content`/распарсенные `.altex`.
+    fn integrate_loaded_chunk(&mut self, result: ChunkLoadResult) {
+        let chunk_idx = result.chunk_idx;
+        let content = result.content;
+        let parsed_altex = result.parsed_altex;
+
+        let mut spawned = Vec::with_capacity(content.objects.len());
+        let mut spawned_bodies = Vec::new();
+        for obj in &content.objects {
+            let m = &obj.transform;
+            let position = [m[12], m[13], m[14]];
+
+            let altex_path = content.get_string(obj.altex_path_string_id).to_string();
+            let mesh_indices = self.load_object_mesh_from_parsed(&altex_path, &parsed_altex);
+
+            let physics_body_id = if obj.flags & crate::alworld_format::CHUNK_OBJECT_FLAG_HAS_PHYSICS != 0 {
+                self.add_sphere_body(position[0], position[1], position[2], obj.mass)
+            } else {
+                None
+            };
+
+            let mut first_entity_of_object: Option<crate::scene::EntityId> = None;
+            for mesh_index in mesh_indices {
+                let entity = self.scene.spawn();
+                if let Some(transform) = self.scene.transform_mut(entity) {
+                    transform.position = position;
+                }
+                self.scene.add_mesh_renderer(entity, mesh_index);
+                if first_entity_of_object.is_none() {
+                    first_entity_of_object = Some(entity);
+                }
+                spawned.push(entity);
+            }
+
+            if let (Some(body_id), Some(entity)) = (physics_body_id, first_entity_of_object) {
+                self.physics_links.push((body_id, entity));
+                spawned_bodies.push(body_id);
+            }
+        }
+
+        if let Some(world) = &mut self.world {
+            if chunk_idx < world.chunk_states.len() {
+                let state = &mut world.chunk_states[chunk_idx];
+                state.spawned_entities = spawned;
+                state.spawned_physics_bodies = spawned_bodies;
+                state.loaded = true;
+                state.queued = false;
+                world.loaded_chunk_count += 1;
+            }
+        }
+    }
+
     /// ДОБАВЛЕНО (Задача #14: загрузчик .altex -> GPU Mesh). Возвращает
     /// список mesh_index (по одному на каждый `altex_format::Mesh` внутри
     /// файла) для объекта чанка, ссылающегося на geometry-файл по пути
@@ -7357,7 +8723,16 @@ impl AlkashEngine {
     ///   срез vertices per-mesh и переиндексируем index_offset/count
     ///   относительно НАЧАЛА этого среза — см. ниже), регистрируем через
     ///   `self.add_mesh`, кэшируем и возвращаем результат.
-    fn load_object_mesh(&mut self, altex_path: &str) -> Vec<usize> {
+    ///
+    /// ПЕРЕИМЕНОВАНО (фоновая загрузка чанков): это ПОЛНОСТЬЮ синхронный
+    /// путь (сам вызывает `AltexFile::load`, то есть сам читает файл с
+    /// диска) — раньше был единственным способом (`load_object_mesh`),
+    /// теперь используется только из `load_chunk_sync_fallback` (см. её
+    /// комментарий). Штатный путь — `load_object_mesh_from_parsed`, для
+    /// которого файл уже прочитан заранее фоновым потоком. Обе функции
+    /// делят общую GPU-часть через `build_meshes_from_altex`, чтобы не
+    /// дублировать логику работы с материалами/текстурами.
+    fn load_object_mesh_sync(&mut self, altex_path: &str) -> Vec<usize> {
         if altex_path.is_empty() || altex_path == "placeholder" {
             return vec![self.load_placeholder_mesh()];
         }
@@ -7379,6 +8754,68 @@ impl AlkashEngine {
             }
         };
 
+        self.build_meshes_from_altex(&altex, altex_path)
+    }
+
+    /// ДОБАВЛЕНО (фоновая загрузка чанков): штатный путь загрузки геометрии
+    /// объекта чанка — файл `.altex` УЖЕ прочитан и распарсен фоновым
+    /// потоком-загрузчиком (см. `spawn_chunk_loader_thread`) и передан
+    /// сюда готовым в `parsed_altex` (см. `ChunkLoadResult`). Эта функция
+    /// НЕ трогает диск вообще, только GPU-ресурсы — тот же кэш
+    /// `self.altex_mesh_cache` и та же логика fallback на placeholder-куб,
+    /// что и в `load_object_mesh_sync`, см. её комментарий.
+    fn load_object_mesh_from_parsed(
+        &mut self,
+        altex_path: &str,
+        parsed_altex: &std::collections::HashMap<String, std::result::Result<Arc<crate::altex_format::AltexFile>, String>>,
+    ) -> Vec<usize> {
+        if altex_path.is_empty() || altex_path == "placeholder" {
+            return vec![self.load_placeholder_mesh()];
+        }
+
+        if let Some(cached) = self.altex_mesh_cache.get(altex_path) {
+            return cached.clone();
+        }
+
+        let altex = match parsed_altex.get(altex_path) {
+            Some(Ok(file)) => Arc::clone(file),
+            Some(Err(e)) => {
+                eprintln!(
+                    "[ENGINE] WARNING: не удалось загрузить .altex '{}': {} — используется placeholder-куб",
+                    altex_path, e
+                );
+                let fallback = vec![self.load_placeholder_mesh()];
+                self.altex_mesh_cache.insert(altex_path.to_string(), fallback.clone());
+                return fallback;
+            }
+            None => {
+                // Не должно происходить в норме — фоновый поток парсит
+                // .altex ВСЕХ уникальных путей объектов этого чанка (см.
+                // `spawn_chunk_loader_thread`). Если всё же произошло
+                // (гонка/будущий баг) — тот же безопасный fallback, что и
+                // для отсутствующего файла, а не паника.
+                eprintln!(
+                    "[ENGINE] WARNING: .altex '{}' отсутствует в предзагруженных фоновым потоком данных — используется placeholder-куб",
+                    altex_path
+                );
+                let fallback = vec![self.load_placeholder_mesh()];
+                self.altex_mesh_cache.insert(altex_path.to_string(), fallback.clone());
+                return fallback;
+            }
+        };
+
+        self.build_meshes_from_altex(&altex, altex_path)
+    }
+
+    /// ДОБАВЛЕНО (фоновая загрузка чанков): общая GPU-часть загрузки
+    /// `.altex` — раньше была "хвостом" единственной функции
+    /// `load_object_mesh` ПОСЛЕ успешного чтения файла; вынесена сюда,
+    /// чтобы `load_object_mesh_sync` (fallback) и `load_object_mesh_from_parsed`
+    /// (штатный путь) не дублировали ~80 строк работы с материалами/
+    /// текстурами. Тело — ДОСЛОВНО то же самое, что было в старой
+    /// `load_object_mesh` после строки `let altex = ...`. Всегда
+    /// вызывается с главного потока (создаёт GPU mesh/texture ресурсы).
+    fn build_meshes_from_altex(&mut self, altex: &crate::altex_format::AltexFile, altex_path: &str) -> Vec<usize> {
         let mut mesh_indices = Vec::with_capacity(altex.meshes.len());
         for altex_mesh in &altex.meshes {
             let v_start = altex_mesh.vertex_offset as usize;
@@ -7423,7 +8860,7 @@ impl AlkashEngine {
                     // у всех мешей ДО этой задачи.
                     if let Some(material) = altex.materials.get(altex_mesh.material_id as usize) {
                         if material.albedo_map != 0xFFFFFFFF {
-                            mesh.albedo_srv_index = self.load_altex_map_srv(&altex, altex_path, material.albedo_map, "albedo");
+                            mesh.albedo_srv_index = self.load_altex_map_srv(altex, altex_path, material.albedo_map, "albedo");
                         }
 
                         // ДОБАВЛЕНО (Задача #15, normal mapping): normal
@@ -7435,7 +8872,7 @@ impl AlkashEngine {
                         // normal map", остаётся `None` (см. fallback на
                         // плоскую normal map в render_frame).
                         if material.normal_map != 0xFFFFFFFF {
-                            mesh.normal_srv_index = self.load_altex_map_srv(&altex, altex_path, material.normal_map, "normal");
+                            mesh.normal_srv_index = self.load_altex_map_srv(altex, altex_path, material.normal_map, "normal");
                         }
 
                         // ДОБАВЛЕНО (Задача #15, normal mapping):
@@ -7456,7 +8893,7 @@ impl AlkashEngine {
                         // этом случае использует скалярные
                         // material_metallic/material_roughness напрямую.
                         if material.metallic_map != 0xFFFFFFFF && material.metallic_map == material.roughness_map {
-                            mesh.mr_srv_index = self.load_altex_map_srv(&altex, altex_path, material.metallic_map, "metallic-roughness");
+                            mesh.mr_srv_index = self.load_altex_map_srv(altex, altex_path, material.metallic_map, "metallic-roughness");
                         } else if material.metallic_map != 0xFFFFFFFF || material.roughness_map != 0xFFFFFFFF {
                             eprintln!(
                                 "[ENGINE] WARNING: .altex '{}' содержит РАЗДЕЛЬНЫЕ metallic_map/roughness_map (индексы {} и {}) — объединение раздельных текстур в одну ORM-карту пока не реализовано, используются скалярные metallic={}/roughness={} материала",
@@ -7898,29 +9335,59 @@ impl AlkashEngine {
     /// ДОБАВЛЕНО (фризы стриминга, см. `pending_load` у `WorldStreamingState`):
     /// вызывается КАЖДЫЙ кадр из `update()` (в отличие от
     /// `update_world_streaming`, которая пересчитывает окрестность лишь
-    /// изредка) — обрабатывает не более `CHUNK_LOAD_BUDGET_PER_FRAME`
-    /// чанков из накопленных очередей `pending_load`/`pending_unload`.
-    /// Выгрузка обрабатывается тем же бюджетом (хоть и дешевле загрузки —
-    /// без файлового I/O, только despawn), чтобы massed unload (например
-    /// после телепорта камеры далеко в сторону) не давал свой всплеск на
-    /// одном кадре.
+    /// изредка).
+    ///
+    /// ИЗМЕНЕНО (фоновая загрузка чанков — см. подробное обоснование у
+    /// `spawn_chunk_loader_thread`): раньше эта функция САМА выполняла
+    /// синхронную загрузку (диск + парсинг + GPU) не более
+    /// `CHUNK_LOAD_BUDGET_PER_FRAME` чанков за кадр. Теперь три отдельных
+    /// шага:
+    ///  1. Забирает ГОТОВЫЕ результаты фоновой загрузки из канала
+    ///     (`try_recv`, не блокируясь) и интегрирует их в GPU/Scene —
+    ///     именно ЭТА часть (создание GPU-буферов/текстур) остаётся
+    ///     потенциально заметной по времени, поэтому бюджет
+    ///     (`CHUNK_LOAD_BUDGET_PER_FRAME`) применяется здесь.
+    ///  2. Отправляет фоновому потоку запросы на ВСЕ чанки из
+    ///     `pending_load` — сама отправка (`Sender::send`) не читает диск
+    ///     и не блокирует, поэтому бюджет ей не нужен (диск/парсинг
+    ///     происходят позже, уже в фоновом потоке, параллельно с кадрами).
+    ///  3. Выгрузка — как и раньше, дешёвая (despawn без файлового I/O),
+    ///     с тем же бюджетом, чтобы massed unload (например после
+    ///     телепорта камеры далеко в сторону) не давал свой всплеск на
+    ///     одном кадре.
     fn drain_pending_chunk_io(&mut self) {
-        let mut budget = CHUNK_LOAD_BUDGET_PER_FRAME;
+        // Шаг 1: интеграция готовых результатов фоновой загрузки.
+        let mut integrate_budget = CHUNK_LOAD_BUDGET_PER_FRAME;
+        while integrate_budget > 0 {
+            let Ok(result) = self.chunk_loader_rx.try_recv() else { break };
 
-        while budget > 0 {
+            // Устаревший результат от УЖЕ выгруженного/замененного мира
+            // (см. подробный комментарий у `world_generation`) — молча
+            // отбрасываем, не расходуя на него бюджет этого кадра (это не
+            // "работа", а просто игнорируемый мусор канала).
+            let current_generation = self.world_generation;
+            if result.generation != current_generation {
+                continue;
+            }
+
+            self.integrate_loaded_chunk(result);
+            integrate_budget -= 1;
+        }
+
+        // Шаг 2: постановка новых чанков в очередь фонового потока —
+        // без бюджета, см. комментарий у функции выше.
+        loop {
             let next = match &mut self.world {
                 Some(world) => world.pending_load.pop(),
                 None => None,
             };
             let Some(chunk_idx) = next else { break };
-            self.load_chunk(chunk_idx);
-            if let Some(world) = &mut self.world {
-                world.chunk_states[chunk_idx].queued = false;
-            }
-            budget -= 1;
+            self.request_chunk_load(chunk_idx);
         }
 
-        while budget > 0 {
+        // Шаг 3: выгрузка, budget как и раньше.
+        let mut unload_budget = CHUNK_LOAD_BUDGET_PER_FRAME;
+        while unload_budget > 0 {
             let next = match &mut self.world {
                 Some(world) => world.pending_unload.pop(),
                 None => None,
@@ -7930,7 +9397,7 @@ impl AlkashEngine {
             if let Some(world) = &mut self.world {
                 world.chunk_states[chunk_idx].queued = false;
             }
-            budget -= 1;
+            unload_budget -= 1;
         }
     }
 

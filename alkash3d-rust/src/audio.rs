@@ -38,6 +38,20 @@ use windows::Win32::Media::Audio::XAudio2::{
     XAudio2CreateWithVersionInfo, XAUDIO2_BUFFER, XAUDIO2_END_OF_STREAM,
     XAUDIO2_LOOP_INFINITE, XAUDIO2_VOICE_STATE,
 };
+// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш для редко играющих длинных
+// клипов, см. `VramAudioBlob`/`maybe_offload_to_vram` ниже): НЕ через
+// `use windows::core::*;` (как в texture.rs/device.rs) — этот модуль везде
+// использует СВОЙ двухпараметровый `Result<T, String>` (см. сигнатуры
+// play_sound_2d и т.д.), а `windows::core::Result<T>` — однопараметровый
+// алиас с тем же именем `Result`; wildcard-импорт вызвал бы конфликт имён и
+// поломал компиляцию каждой существующей сигнатуры в файле. Поэтому здесь
+// импортируются ТОЛЬКО конкретные типы Direct3D12 (не `Result`/`Error`), а
+// D3D12-ошибки конвертируются в `String` через `.map_err(...)` сразу на
+// месте — тем же паттерном, что уже используется для `load_wav_file` ниже.
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::Foundation::WAIT_TIMEOUT;
 
 use crate::alsnd_format::{AlsndFile, SoundDescriptor};
 use crate::math::Vec3;
@@ -97,6 +111,349 @@ pub struct SoundClip {
     pub format: WAVEFORMATEX,
     pub data: Vec<u8>,
     pub duration_ms: u32,
+    /// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш для редко играющих длинных
+    /// клипов, см. `maybe_offload_to_vram`): `Some`, если PCM-данные этого
+    /// клипа выгружены в видеопамять ВТОРОЙ карты вместо постоянного
+    /// хранения в системной RAM — тогда `data` выше НАРОЧНО пустой (RAM не
+    /// тратится на клип, пока он не играет), а реальные байты лежат в
+    /// `resource` этого поля. `None` — обычный клип, `data` всегда
+    /// резидентна, как было всегда (ВСЕГДА `None`, если вторая карта не
+    /// обнаружена или не пригодна — см. `secondary_gpu_usable` в lib.rs).
+    vram: Option<VramAudioBlob>,
+}
+
+/// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): сырые байты клипа,
+/// скопированные в буфер на устройстве ВТОРОЙ карты (`crate::get_secondary_device()`)
+/// вместо постоянного хранения в системной RAM. Не текстура и не имеет
+/// смысла как что-то самостоятельно "рендерящееся" — просто использует
+/// VRAM второй карты как холодное хранилище байт, к которому обращаются
+/// только при подготовке к проигрыванию (см. `fetch_bytes_from_vram`).
+struct VramAudioBlob {
+    resource: ID3D12Resource,
+    size: usize,
+}
+
+/// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): байты клипа, готовые к
+/// отправке в XAudio2 — либо заимствованные напрямую из `SoundClip::data`
+/// (обычный, резидентный в RAM клип — самый частый и самый дешёвый путь,
+/// ни одной лишней аллокации/копии), либо только что скопированные из
+/// VRAM второй карты во ВРЕМЕННЫЙ `Vec<u8>` (см. `resolve_playback_bytes`).
+enum PlaybackBytes<'a> {
+    Resident(&'a [u8]),
+    Fetched(Vec<u8>),
+}
+
+impl PlaybackBytes<'_> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            PlaybackBytes::Resident(s) => s,
+            PlaybackBytes::Fetched(v) => v.as_slice(),
+        }
+    }
+}
+
+impl SoundClip {
+    /// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): единственное место,
+    /// где что-либо в движке читает байты клипа перед проигрыванием —
+    /// прозрачно решает, резидентны они в RAM (`data`, обычный случай) или
+    /// их нужно СНАЧАЛА скопировать обратно из VRAM второй карты (`vram`,
+    /// см. `maybe_offload_to_vram`). Вызывающий код (`play_sound_2d`/
+    /// `play_sound_3d`) не должен знать, какой из двух случаев это —
+    /// разница видна только в том, что `Fetched`-вариант нужно сохранить
+    /// живым на всё время проигрывания (см. `ActiveVoice::playback_data`),
+    /// а `Resident` — нет (сами данные и так живут в `self.clips`, пока
+    /// клип загружен).
+    fn resolve_playback_bytes(&self) -> Result<PlaybackBytes<'_>, String> {
+        match &self.vram {
+            None => Ok(PlaybackBytes::Resident(&self.data)),
+            Some(blob) => {
+                let bytes = fetch_bytes_from_vram(blob)?;
+                Ok(PlaybackBytes::Fetched(bytes))
+            }
+        }
+    }
+}
+
+/// Клипы БОЛЬШЕ этого размера (декодированный PCM) — кандидаты на
+/// хранение в видеопамяти второй карты вместо системной RAM, если вторая
+/// карта обнаружена и пригодна. Короткие SFX (удары, щелчки UI и т.п.)
+/// почти всегда меньше — для них задержка на GPU-round-trip перед КАЖДЫМ
+/// проигрыванием была бы заметна и не оправдана экономией нескольких
+/// десятков КБ. Длинные клипы (музыка, эмбиент) — наоборот: несжатый PCM
+/// на минуту звучания легко занимает единицы-десятки МБ, реально играют
+/// редко/не одновременно пачками, и разовая задержка в начале
+/// воспроизведения (не каждый кадр, не в игровой синхронной петле)
+/// некритична.
+const VRAM_OFFLOAD_THRESHOLD_BYTES: usize = 256 * 1024;
+
+/// Синхронное ожидание GPU-копирования при работе с VRAM-кэшем аудио —
+/// тот же порог, что используется для загрузки текстур (`texture.rs`) и
+/// per-frame ожиданий в движке: операция разовая (не по кадру), поэтому
+/// оправдано подождать дольше busy-wait'а, но не бесконечно (см.
+/// подробный комментарий у `wait_for_fence` в engine/mod.rs про общий
+/// класс бага "вечное зависание на потерянном GPU").
+const VRAM_WAIT_TIMEOUT_MS: u32 = 5000;
+
+/// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): копирует `bytes` в
+/// НОВЫЙ буфер на устройстве ВТОРОЙ карты (DEFAULT heap — быстрая
+/// локальная VRAM для этого устройства). Возвращает `Err`, если вторая
+/// карта не обнаружена/не пригодна (`secondary_gpu_usable == false`) или
+/// любой шаг создания/копирования не удался — вызывающий код
+/// (`maybe_offload_to_vram`) в этом случае просто оставляет клип
+/// резидентным в RAM, как было всегда: это НЕ должно и не может сломать
+/// загрузку звука.
+///
+/// Буфер (не текстура) — копирование через `CopyBufferRegion` не требует
+/// row pitch/footprint-выравнивания, которое нужно `CopyTextureRegion` в
+/// texture.rs — байты копируются как есть, одним диапазоном.
+fn upload_bytes_to_secondary_vram(bytes: &[u8]) -> Result<VramAudioBlob, String> {
+    let device = crate::get_secondary_device()
+        .ok_or_else(|| "вторая карта не создана/не пригодна".to_string())?;
+    let command_queue = crate::get_secondary_command_queue()
+        .ok_or_else(|| "у второй карты нет очереди команд".to_string())?;
+
+    let size = bytes.len() as u64;
+
+    unsafe {
+        // Upload heap — временный, CPU-видимый буфер-источник копирования.
+        let upload_heap_properties = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_UPLOAD, ..Default::default() };
+        let buffer_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT(0), // DXGI_FORMAT_UNKNOWN — буфер, не текстура
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+
+        let mut upload_resource: Option<ID3D12Resource> = None;
+        device.CreateCommittedResource(
+            &upload_heap_properties,
+            D3D12_HEAP_FLAG_NONE,
+            &buffer_desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            None,
+            &mut upload_resource,
+        ).map_err(|e| format!("CreateCommittedResource(upload) failed: {:?}", e))?;
+        let upload_resource = upload_resource
+            .ok_or_else(|| "upload-буфер второй карты — null".to_string())?;
+
+        let mut mapped = std::ptr::null_mut();
+        upload_resource.Map(0, None, Some(&mut mapped))
+            .map_err(|e| format!("Map(upload) failed: {:?}", e))?;
+        if mapped.is_null() {
+            return Err("указатель mapped upload-буфера второй карты — null".to_string());
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped as *mut u8, bytes.len());
+        upload_resource.Unmap(0, None);
+
+        // DEFAULT heap — постоянное место в VRAM второй карты, куда
+        // копируются байты. Остаётся здесь, пока клип не будет
+        // проигран (см. `fetch_bytes_from_vram`) — сам буфер никогда не
+        // читается напрямую CPU, только через промежуточный READBACK.
+        let default_heap_properties = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_DEFAULT, ..Default::default() };
+        let mut default_resource: Option<ID3D12Resource> = None;
+        device.CreateCommittedResource(
+            &default_heap_properties,
+            D3D12_HEAP_FLAG_NONE,
+            &buffer_desc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            None,
+            &mut default_resource,
+        ).map_err(|e| format!("CreateCommittedResource(default) failed: {:?}", e))?;
+        let default_resource = default_resource
+            .ok_or_else(|| "default-буфер второй карты — null".to_string())?;
+
+        let command_allocator: ID3D12CommandAllocator = device
+            .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+            .map_err(|e| format!("CreateCommandAllocator failed: {:?}", e))?;
+        let command_list: ID3D12GraphicsCommandList = device
+            .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &command_allocator, None)
+            .map_err(|e| format!("CreateCommandList failed: {:?}", e))?;
+
+        command_list.CopyBufferRegion(&default_resource, 0, &upload_resource, 0, size);
+
+        // Переводим буфер в COPY_SOURCE сразу здесь — единственное
+        // состояние, в котором он когда-либо понадобится дальше (только
+        // как источник копирования при проигрывании, см.
+        // `fetch_bytes_from_vram`), больше в него никогда не пишут.
+        let barrier = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                    pResource: std::mem::ManuallyDrop::new(Some(default_resource.clone())),
+                    Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                    StateBefore: D3D12_RESOURCE_STATE_COPY_DEST,
+                    StateAfter: D3D12_RESOURCE_STATE_COPY_SOURCE,
+                }),
+            },
+        };
+        let mut barrier = barrier;
+        command_list.ResourceBarrier(&[barrier.clone()]);
+        std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition);
+
+        command_list.Close().map_err(|e| format!("Close failed: {:?}", e))?;
+        let cmd_lists: [Option<ID3D12CommandList>; 1] = [Some(command_list.into())];
+        command_queue.ExecuteCommandLists(&cmd_lists);
+
+        let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)
+            .map_err(|e| format!("CreateFence failed: {:?}", e))?;
+        let fence_value = 1u64;
+        command_queue.Signal(&fence, fence_value)
+            .map_err(|e| format!("Signal failed: {:?}", e))?;
+        if fence.GetCompletedValue() < fence_value {
+            let event = CreateEventW(None, false, false, None)
+                .map_err(|e| format!("CreateEventW failed: {:?}", e))?;
+            fence.SetEventOnCompletion(fence_value, event)
+                .map_err(|e| format!("SetEventOnCompletion failed: {:?}", e))?;
+            let wait_result = WaitForSingleObject(event, VRAM_WAIT_TIMEOUT_MS);
+            let _ = windows::Win32::Foundation::CloseHandle(event);
+            if wait_result == WAIT_TIMEOUT {
+                return Err(format!("таймаут ({} мс) ожидания копирования аудио в VRAM второй карты", VRAM_WAIT_TIMEOUT_MS));
+            }
+        }
+
+        Ok(VramAudioBlob { resource: default_resource, size: bytes.len() })
+    }
+}
+
+/// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): обратная операция —
+/// копирует `blob` из VRAM второй карты обратно во временный,
+/// CPU-читаемый (READBACK heap) буфер и возвращает его содержимое как
+/// `Vec<u8>`, готовый к прямой отправке в XAudio2. Вызывается ПЕРЕД
+/// КАЖДЫМ проигрыванием VRAM-резидентного клипа (см.
+/// `SoundClip::resolve_playback_bytes`) — сами байты не остаются
+/// резидентными в RAM дольше, чем длится конкретное проигрывание (см.
+/// `ActiveVoice::playback_data`).
+fn fetch_bytes_from_vram(blob: &VramAudioBlob) -> Result<Vec<u8>, String> {
+    let device = crate::get_secondary_device()
+        .ok_or_else(|| "вторая карта не создана/не пригодна".to_string())?;
+    let command_queue = crate::get_secondary_command_queue()
+        .ok_or_else(|| "у второй карты нет очереди команд".to_string())?;
+
+    let size = blob.size as u64;
+
+    unsafe {
+        let readback_heap_properties = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_READBACK, ..Default::default() };
+        let buffer_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Alignment: 0,
+            Width: size,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT(0),
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            Flags: D3D12_RESOURCE_FLAG_NONE,
+        };
+
+        let mut readback_resource: Option<ID3D12Resource> = None;
+        device.CreateCommittedResource(
+            &readback_heap_properties,
+            D3D12_HEAP_FLAG_NONE,
+            &buffer_desc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            None,
+            &mut readback_resource,
+        ).map_err(|e| format!("CreateCommittedResource(readback) failed: {:?}", e))?;
+        let readback_resource = readback_resource
+            .ok_or_else(|| "readback-буфер второй карты — null".to_string())?;
+
+        let command_allocator: ID3D12CommandAllocator = device
+            .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+            .map_err(|e| format!("CreateCommandAllocator failed: {:?}", e))?;
+        let command_list: ID3D12GraphicsCommandList = device
+            .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &command_allocator, None)
+            .map_err(|e| format!("CreateCommandList failed: {:?}", e))?;
+
+        command_list.CopyBufferRegion(&readback_resource, 0, &blob.resource, 0, size);
+        command_list.Close().map_err(|e| format!("Close failed: {:?}", e))?;
+
+        let cmd_lists: [Option<ID3D12CommandList>; 1] = [Some(command_list.into())];
+        command_queue.ExecuteCommandLists(&cmd_lists);
+
+        let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)
+            .map_err(|e| format!("CreateFence failed: {:?}", e))?;
+        let fence_value = 1u64;
+        command_queue.Signal(&fence, fence_value)
+            .map_err(|e| format!("Signal failed: {:?}", e))?;
+        if fence.GetCompletedValue() < fence_value {
+            let event = CreateEventW(None, false, false, None)
+                .map_err(|e| format!("CreateEventW failed: {:?}", e))?;
+            fence.SetEventOnCompletion(fence_value, event)
+                .map_err(|e| format!("SetEventOnCompletion failed: {:?}", e))?;
+            let wait_result = WaitForSingleObject(event, VRAM_WAIT_TIMEOUT_MS);
+            let _ = windows::Win32::Foundation::CloseHandle(event);
+            if wait_result == WAIT_TIMEOUT {
+                return Err(format!("таймаут ({} мс) ожидания чтения аудио из VRAM второй карты", VRAM_WAIT_TIMEOUT_MS));
+            }
+        }
+
+        let mut mapped = std::ptr::null_mut();
+        // READBACK-ресурс читается через `Map` с явным диапазоном для
+        // чтения (в отличие от upload-буфера, где читаемый диапазон —
+        // `None`, т.к. CPU туда только пишет) — так драйвер знает, что
+        // именно нужно синхронизировать перед тем, как отдать указатель.
+        let read_range = D3D12_RANGE { Begin: 0, End: blob.size };
+        readback_resource.Map(0, Some(&read_range), Some(&mut mapped))
+            .map_err(|e| format!("Map(readback) failed: {:?}", e))?;
+        if mapped.is_null() {
+            return Err("указатель mapped readback-буфера второй карты — null".to_string());
+        }
+        let mut out = vec![0u8; blob.size];
+        std::ptr::copy_nonoverlapping(mapped as *const u8, out.as_mut_ptr(), blob.size);
+        // Пустой диапазон при Unmap — CPU ничего не писал в этот буфер.
+        let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+        readback_resource.Unmap(0, Some(&written_range));
+
+        Ok(out)
+    }
+}
+
+/// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): вызывается сразу после
+/// декодирования WAV в `load_clip`/`load_bank`. Если клип достаточно
+/// большой И вторая карта пригодна — переносит его байты в VRAM второй
+/// карты и ОСВОБОЖДАЕТ `data` в RAM. Любая неудача на любом шаге —
+/// молча (только предупреждение в лог) оставляет клип как есть,
+/// РЕЗИДЕНТНЫМ в RAM, ровно как было бы без второй карты вообще — это
+/// НЕ должно и не может сорвать загрузку звука.
+fn maybe_offload_to_vram(clip: &mut SoundClip, clip_name: &str) {
+    if clip.data.len() <= VRAM_OFFLOAD_THRESHOLD_BYTES {
+        return;
+    }
+    // `upload_bytes_to_secondary_vram` сама возвращает понятную ошибку,
+    // если второй карты нет/она не пригодна (get_secondary_device()/
+    // get_secondary_command_queue() вернут None) — отдельная
+    // предварительная проверка здесь не нужна, обычный путь ошибки ниже
+    // покрывает и этот случай тоже.
+    match upload_bytes_to_secondary_vram(&clip.data) {
+        Ok(blob) => {
+            println!(
+                "[AUDIO] ✓ Клип '{}' ({} КБ) перенесён в VRAM второй карты, освобождено в RAM",
+                clip_name, clip.data.len() / 1024
+            );
+            clip.vram = Some(blob);
+            clip.data = Vec::new();
+        }
+        Err(e) => {
+            // Не критично — клип просто остаётся резидентным в RAM, как
+            // было бы всегда без второй карты. Не печатаем предупреждение
+            // на КАЖДЫЙ клип при полном отсутствии второй карты (частый,
+            // ожидаемый случай — залило бы лог сотней одинаковых строк
+            // при загрузке большого .alsnd-банка), только один раз можно
+            // было бы — но нет дешёвого способа отличить "второй карты
+            // нет вообще" от "она есть, но эта конкретная попытка не
+            // удалась" без доп. состояния, поэтому просто eprintln здесь,
+            // а не println — не шумит в обычном stdout-логе движка.
+            eprintln!("[AUDIO] Клип '{}' остаётся в RAM (в VRAM второй карты не перенесён: {})", clip_name, e);
+        }
+    }
 }
 
 /// Идентификатор активно проигрываемого звука, возвращаемый
@@ -118,6 +475,18 @@ struct ActiveVoice {
     /// Громкость 0.0-1.0, заданная при проигрывании (до учёта дистанции) —
     /// умножается на дистанционное затухание для 3D-звуков.
     base_volume: f32,
+    /// ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): `Some`, только если
+    /// этот голос играет клип, чьи байты были ВРЕМЕННО скопированы обратно
+    /// из VRAM второй карты (см. `PlaybackBytes::Fetched`) — XAudio2
+    /// НЕ копирует аудио-данные внутрь себя, а читает их по указателю
+    /// (`pAudioData`) всё время проигрывания, поэтому буфер обязан жить
+    /// как минимум столько же, сколько сам голос. Он и держится здесь —
+    /// когда `ActiveVoice` уничтожается (голос доигран или остановлен, см.
+    /// `update()`/`stop_sound`), буфер освобождается сам собой (RAII), и
+    /// RAM-footprint клипа возвращается к нулю до следующего проигрывания.
+    /// `None` для обычных (RAM-резидентных) клипов — там ничего лишнего
+    /// хранить не нужно, данные и так живут в `AudioEngine::clips`.
+    playback_data: Option<Vec<u8>>,
 }
 
 struct Spatial3D {
@@ -340,6 +709,7 @@ impl AudioEngine {
             format: fmt,
             data: data.to_vec(),
             duration_ms,
+            vram: None,
         })
     }
 
@@ -347,7 +717,8 @@ impl AudioEngine {
     /// загрузка того же `name` заменяет старый клип (не ошибка — полезно
     /// при горячей перезагрузке звуковых ассетов в редакторе в будущем).
     pub fn load_clip(&mut self, name: &str, wav_path: &str) -> Result<(), String> {
-        let clip = Self::load_wav_file(wav_path).map_err(|e| format!("{:?}", e))?;
+        let mut clip = Self::load_wav_file(wav_path).map_err(|e| format!("{:?}", e))?;
+        maybe_offload_to_vram(&mut clip, name);
         self.clips.insert(name.to_string(), std::sync::Arc::new(clip));
         Ok(())
     }
@@ -387,7 +758,8 @@ impl AudioEngine {
             }
             let wav_path = format!("{}/{}.wav", base_dir.trim_end_matches('/'), name);
             match Self::load_wav_file(&wav_path) {
-                Ok(clip) => {
+                Ok(mut clip) => {
+                    maybe_offload_to_vram(&mut clip, name);
                     self.clips.insert(name.to_string(), std::sync::Arc::new(clip));
                     loaded += 1;
                 }
@@ -417,13 +789,22 @@ impl AudioEngine {
 
     /// Создаёт новый source voice под формат клипа и отправляет ему буфер
     /// — общая часть для play_sound_2d/play_sound_3d.
-    fn create_and_submit_voice(&mut self, clip: &SoundClip, looped: bool) -> Result<IXAudio2SourceVoice, String> {
+    ///
+    /// ИЗМЕНЕНО (вторая видеокарта — VRAM-кэш аудио): раньше брал
+    /// `&SoundClip` и читал `clip.data` напрямую — теперь принимает уже
+    /// РАЗРЕШЁННЫЙ срез байт (`bytes`) отдельно от формата, т.к. байты
+    /// могут быть либо резидентным `clip.data`, либо временным буфером,
+    /// только что скопированным из VRAM второй карты (см.
+    /// `SoundClip::resolve_playback_bytes` в местах вызова) — эта функция
+    /// не должна знать/решать, откуда взялся срез, только отправить его в
+    /// XAudio2.
+    fn create_and_submit_voice(&mut self, format: &WAVEFORMATEX, bytes: &[u8], looped: bool) -> Result<IXAudio2SourceVoice, String> {
         let voice: IXAudio2SourceVoice = unsafe {
             let mut ptr: Option<IXAudio2SourceVoice> = None;
             self.xaudio2
                 .CreateSourceVoice(
                     &mut ptr,
-                    &clip.format as *const WAVEFORMATEX,
+                    format as *const WAVEFORMATEX,
                     0,
                     windows::Win32::Media::Audio::XAudio2::XAUDIO2_DEFAULT_FREQ_RATIO,
                     None::<&windows::Win32::Media::Audio::XAudio2::IXAudio2VoiceCallback>,
@@ -436,8 +817,8 @@ impl AudioEngine {
 
         let buffer = XAUDIO2_BUFFER {
             Flags: XAUDIO2_END_OF_STREAM,
-            AudioBytes: clip.data.len() as u32,
-            pAudioData: clip.data.as_ptr(),
+            AudioBytes: bytes.len() as u32,
+            pAudioData: bytes.as_ptr(),
             PlayBegin: 0,
             PlayLength: 0, // 0 = играть весь буфер целиком
             LoopBegin: 0,
@@ -465,7 +846,12 @@ impl AudioEngine {
         self.evict_if_over_budget();
 
         let clip = self.clips.get(clip_name).cloned().ok_or_else(|| format!("звук '{}' не загружен (ни load_clip, ни load_bank его не предоставили)", clip_name))?;
-        let voice = self.create_and_submit_voice(&clip, looped)?;
+        // ДОБАВЛЕНО (вторая видеокарта — VRAM-кэш аудио): если байты клипа
+        // сейчас в VRAM второй карты — копирует их обратно ВО ВРЕМЕННЫЙ
+        // буфер здесь же; если клип обычный (резидентный) — просто
+        // заимствует `clip.data` без единой лишней аллокации/копии.
+        let playback_bytes = clip.resolve_playback_bytes()?;
+        let voice = self.create_and_submit_voice(&clip.format, playback_bytes.as_slice(), looped)?;
 
         let volume = volume.clamp(0.0, 1.0);
         unsafe {
@@ -479,6 +865,14 @@ impl AudioEngine {
             priority: 128,
             spatial: None,
             base_volume: volume,
+            // Только что скопированный из VRAM буфер обязан жить, пока
+            // играет голос — см. подробный комментарий у
+            // `ActiveVoice::playback_data`. Для резидентных клипов — None,
+            // хранить нечего.
+            playback_data: match playback_bytes {
+                PlaybackBytes::Fetched(v) => Some(v),
+                PlaybackBytes::Resident(_) => None,
+            },
         });
         Ok(handle)
     }
@@ -493,7 +887,8 @@ impl AudioEngine {
         self.evict_if_over_budget();
 
         let clip = self.clips.get(clip_name).cloned().ok_or_else(|| format!("звук '{}' не загружен", clip_name))?;
-        let voice = self.create_and_submit_voice(&clip, looped)?;
+        let playback_bytes = clip.resolve_playback_bytes()?;
+        let voice = self.create_and_submit_voice(&clip.format, playback_bytes.as_slice(), looped)?;
 
         let volume = volume.clamp(0.0, 1.0);
         let handle = self.alloc_handle();
@@ -503,6 +898,10 @@ impl AudioEngine {
             priority: 128,
             spatial: Some(Spatial3D { position, attenuation }),
             base_volume: volume,
+            playback_data: match playback_bytes {
+                PlaybackBytes::Fetched(v) => Some(v),
+                PlaybackBytes::Resident(_) => None,
+            },
         };
         self.apply_spatial(&mut active);
         self.active.insert(handle.0, active);
