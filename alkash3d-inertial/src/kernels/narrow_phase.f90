@@ -14,10 +14,11 @@ module narrow_phase_mod
     ! в движке) не несут никакой информации о форме тела — GJK/EPA общего
     ! назначения тут не нужен: ниже честный, корректный sphere-sphere
     ! тест с РЕАЛЬНОЙ глубиной проникновения и нормированной нормалью.
-    ! Тот же implicit-радиус (0.5), что и раньше использовался в
-    ! get_support_sphere — так что поведение по форме тел не изменилось,
-    ! просто расчёт стал математически верным вместо заглушки.
-    real(c_float), parameter :: BODY_RADIUS = 0.5
+    !
+    ! ИСПРАВЛЕНО (код-ревью): раньше радиус был одним захардкоженным
+    ! `BODY_RADIUS` на ВСЕ тела без исключения. Теперь каждое тело несёт
+    ! свой `%radius` (см. rigid_body_c) — сумма радиусов обоих тел вместо
+    ! `BODY_RADIUS + BODY_RADIUS`.
     real(c_float), parameter :: MIN_DISTANCE = 1.0e-6
 
 contains
@@ -40,7 +41,7 @@ contains
 
         delta = body_b%position - body_a%position
         dist_sq = delta(1)*delta(1) + delta(2)*delta(2) + delta(3)*delta(3)
-        radius_sum = BODY_RADIUS + BODY_RADIUS
+        radius_sum = body_a%radius + body_b%radius
 
         if (dist_sq >= radius_sum * radius_sum) then
             return  ! не пересекаются
@@ -55,6 +56,6 @@ contains
         ! Настоящая глубина проникновения (раньше — константа 0.5).
         contact%penetration = radius_sum - dist
         ! Точка контакта — на поверхности сферы A вдоль нормали к B.
-        contact%point = body_a%position + contact%normal * BODY_RADIUS
+        contact%point = body_a%position + contact%normal * body_a%radius
     end function narrow_phase_gjk
 end module narrow_phase_mod

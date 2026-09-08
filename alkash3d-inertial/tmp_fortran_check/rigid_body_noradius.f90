@@ -33,11 +33,6 @@ module rigid_body_mod
         ! кода, который заполняет rigid_body_c по имени поля, а не по
         ! смещению.
         real(c_float) :: orientation(4)
-        ! ДОБАВЛЕНО (код-ревью — per-body радиус вместо одного
-        ! глобального BODY_RADIUS=0.5 на все тела без исключения, см.
-        ! narrow_phase.f90): опять же добавлено В КОНЕЦ структуры, та же
-        ! причина, что у orientation выше.
-        real(c_float) :: radius
     end type rigid_body_c
 
     type, bind(c) :: contact_c

@@ -26,12 +26,12 @@
 
 mod ffi;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::Mutex;
 
-use ffi::{FortranContact, FortranRigidBody, FortranPhysics};
+use ffi::{FortranContact, FortranConstraint, FortranRigidBody, FortranPhysics};
 
 // =====================================================================
 // ABI СТРУКТУРЫ
@@ -68,6 +68,29 @@ pub struct PhysicsBody {
     pub angular_damping: f32,
     pub is_static: i32,
     pub is_asleep: i32,
+    // ДОБАВЛЕНО (физика автомобиля — вращение кузова): кватернион
+    // ориентации (x, y, z, w) — теперь реально интегрируется в
+    // rigid_body.f90/kernels_optimized.f90 (см. integrate_orientation).
+    // ВАЖНО: этот тип — локальный ABI-контракт (не Cargo-зависимость от
+    // движка, см. комментарий в шапке файла про #[repr(C)] layout) —
+    // при обновлении этого поля здесь СИММЕТРИЧНО обновить
+    // PhysicsBody/аналог в alkash3d-rust/src/plugin/{abi.rs,
+    // physics_api.rs} (или там, где ABI физики реально объявлен в
+    // движке), иначе поля после orientation в движковой копии будут
+    // читаться со сдвигом.
+    pub orientation: [f32; 4],
+    // ДОБАВЛЕНО (код-ревью: раньше у ВСЕХ тел без исключения был один
+    // захардкоженный радиус столкновения `IMPLICIT_RADIUS = 0.5` — кузов
+    // машины физически вёл бы себя как шарик 0.5м, заметно меньше
+    // видимого кузова, см. подробное обоснование в шапке
+    // `alkash3d-rust/src/car_sim.rs`). Теперь радиус — per-body поле,
+    // читаемое `narrow_phase.f90` (`radius_sum = body_a%radius +
+    // body_b%radius`, было `BODY_RADIUS + BODY_RADIUS`) и моментом
+    // инерции тела (см. `to_fortran_body` ниже: `0.4 * mass * radius²`).
+    // ПОСЛЕДНЕЕ поле структуры (та же конвенция "дописывать только в
+    // конец", что и у `orientation` выше) — СИММЕТРИЧНО обнови
+    // `alkash3d-rust/src/plugin/physics_api.rs`.
+    pub radius: f32,
 }
 
 #[repr(C)]
@@ -80,6 +103,136 @@ pub struct PhysicsContact {
     pub point: [f32; 3],
 }
 
+/// ДОБАВЛЕНО (разборка машины на детали — джойнты/constraint API): см.
+/// подробное обоснование каждого типа у `JOINT_*` в
+/// `src/kernels/rigid_body.f90`. Реэкспорт (а не вторая копия тех же
+/// констант) — движковый ABI (`ConstraintDesc::joint_type`,
+/// `PhysicsAPI::add_constraint`) и внутренний Fortran-мост
+/// (`ffi::FortranConstraint::joint_type`) должны совпадать по значению
+/// один-в-один, а держать одно и то же число литералом в двух местах
+/// этого же крейта — только повод рассинхронизировать их при следующей
+/// правке. С Fortran-стороной (`rigid_body.f90`) синхронизация
+/// по-прежнему вручную (bind(c)-параметры не экспортируются как
+/// C-символы) — см. комментарий у самого `ffi::joint_type`.
+pub use ffi::joint_type;
+
+/// Описание нового соединения для `PhysicsAPI::add_constraint`.
+/// `body_a`/`body_b` — СТАБИЛЬНЫЕ handle'ы, возвращённые `add_body`, а не
+/// индексы в солвере (индексы двигаются при `remove_body`, см. подробное
+/// объяснение в `PhysicsState::update`) — тот же контракт, что уже
+/// использует весь остальной API (`get_body`/`remove_body` и т.п.).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ConstraintDesc {
+    pub body_a: i32,
+    pub body_b: i32,
+    /// См. `joint_type` выше.
+    pub joint_type: i32,
+    pub anchor_a: [f32; 3],
+    pub anchor_b: [f32; 3],
+    /// Используется JOINT_HINGE/JOINT_SLIDER, игнорируется JOINT_BALL/
+    /// JOINT_FIXED. Ось — в мировых координатах (см. ограничение "ось не
+    /// вращается вместе с телом" у `constraint_c` в rigid_body.f90).
+    pub axis_a: [f32; 3],
+    pub axis_b: [f32; 3],
+    /// Коэффициент "жёсткости" соединения (доля ошибки положения/
+    /// ориентации, устраняемая за одну итерацию солвера) — типичное
+    /// значение 1.0, меньше — мягче/эластичнее, больше 1.0 может
+    /// вызывать колебания.
+    pub bias: f32,
+    /// Порог суммарного линейного импульса ЗА ШАГ физики, после
+    /// превышения которого соединение помечается сломанным. `<= 0` —
+    /// неразрушимо.
+    pub break_impulse_linear: f32,
+    /// То же для углового (скручивающего/изгибающего) импульса.
+    pub break_impulse_angular: f32,
+}
+
+impl Default for ConstraintDesc {
+    fn default() -> Self {
+        Self {
+            body_a: -1,
+            body_b: -1,
+            joint_type: joint_type::BALL,
+            anchor_a: [0.0; 3],
+            anchor_b: [0.0; 3],
+            axis_a: [0.0, 1.0, 0.0],
+            axis_b: [0.0, 1.0, 0.0],
+            bias: 1.0,
+            break_impulse_linear: 0.0,
+            break_impulse_angular: 0.0,
+        }
+    }
+}
+
+/// ДОБАВЛЕНО (код-ревью — статичный коллайдер-плоскость): раньше у
+/// движка не было НИКАКОГО способа физически представить пол/землю,
+/// кроме как заставлять игровой код вручную городить плотную сетку
+/// статичных сфер (см. `alkash3d-rust/src/bin/main.rs`/`main_car.rs`,
+/// `FLOOR_SPHERE_SPACING`/`BARREL_FLOOR_*`). Плоскость — бесконечный
+/// полупространственный статичный коллайдер: `normal` (нормированный
+/// вектор нормали, "наружу", в сторону, где разрешено находиться телам)
+/// + `point` (любая точка на плоскости). Задаётся ОДИН раз при настройке
+/// уровня — в отличие от `ConstraintDesc`, нет `remove_plane`/CRUD в этой
+/// версии API (плоскости — статичная геометрия уровня, не игровые
+/// объекты, которые появляются/исчезают в рантайме).
+///
+/// ВАЖНО (см. код-ревью план): бесконечная плоскость корректна для ПОЛА
+/// (он действительно бесконечен), но НЕ подходит для стен ограниченного
+/// размера — плоскость просто рассекает весь мир по своей нормали, без
+/// понятия границ. Для стен ограниченной длины в этой версии движка
+/// коллайдера нет вообще (нужен отдельный, более сложный тип
+/// "ограниченная плоскость/OBB") — используй прежний кинематический
+/// AABB-тест на стороне игрового кода (см. `alkash3d-rust/src/car_sim.rs`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneDesc {
+    pub normal: [f32; 3],
+    pub point: [f32; 3],
+    pub friction: f32,
+    pub restitution: f32,
+}
+
+impl Default for PlaneDesc {
+    fn default() -> Self {
+        Self {
+            normal: [0.0, 1.0, 0.0],
+            point: [0.0, 0.0, 0.0],
+            friction: 0.5,
+            restitution: 0.0,
+        }
+    }
+}
+
+/// Текущее состояние соединения, возвращаемое `PhysicsAPI::get_constraint`
+/// — для отладочной визуализации и для опроса `is_broken` вручную (в
+/// дополнение к событийному списку `get_broken_constraints`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ConstraintInfo {
+    pub body_a: i32,
+    pub body_b: i32,
+    pub joint_type: i32,
+    pub is_broken: i32,
+    /// Суммарный импульс ПОСЛЕДНЕГО решённого физического шага (см.
+    /// обнуление в начале каждого `solve_constraints` в `solver.f90`) —
+    /// удобно для HUD/отладки "насколько близко соединение к разрушению",
+    /// не только для бинарного `is_broken`.
+    pub linear_impulse: [f32; 3],
+    pub angular_impulse: [f32; 3],
+}
+
+fn default_constraint_info() -> ConstraintInfo {
+    ConstraintInfo {
+        body_a: -1,
+        body_b: -1,
+        joint_type: joint_type::BALL,
+        is_broken: 0,
+        linear_impulse: [0.0; 3],
+        angular_impulse: [0.0; 3],
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PhysicsStats {
@@ -90,6 +243,12 @@ pub struct PhysicsStats {
     pub broad_phase_time_ms: f32,
     pub narrow_phase_time_ms: f32,
     pub solver_time_ms: f32,
+    /// ДОБАВЛЕНО (джойнты/constraint API): живые (не обязательно
+    /// решаемые — сломанные тоже считаются, пока их явно не удалили
+    /// через `remove_constraint`) соединения плюс сколько из них СЕЙЧАС
+    /// в состоянии `is_broken`.
+    pub constraints_count: u32,
+    pub broken_constraints_count: u32,
 }
 
 #[repr(C)]
@@ -105,6 +264,79 @@ pub struct PhysicsAPI {
     pub get_pairs: extern "C" fn(instance: *mut c_void) -> *const i32,
     pub get_pairs_count: extern "C" fn(instance: *mut c_void) -> i32,
     pub get_stats: extern "C" fn(instance: *mut c_void) -> PhysicsStats,
+    // ДОБАВЛЕНО (разборка машины на детали — джойнты/constraint API):
+    // добавлены В КОНЕЦ структуры — тот же принцип "новые поля только
+    // дописываются", что уже применяется ко всем #[repr(C)] ABI-типам в
+    // этом проекте (см. комментарии у `orientation` в `PhysicsBody`),
+    // чтобы не сдвинуть смещения уже существующих полей ни на
+    // движковой, ни на плагинной стороне.
+    /// Создаёт соединение между двумя УЖЕ существующими телами (по их
+    /// handle'ам). Возвращает handle соединения (>= 0) либо `-1`, если
+    /// `instance`/`desc` — null, либо один из `body_a`/`body_b` не
+    /// существует.
+    pub add_constraint: extern "C" fn(instance: *mut c_void, desc: *const ConstraintDesc) -> i32,
+    /// Удаляет соединение (в т.ч. уже сломанное) по его handle'у. Не
+    /// затрагивает тела — только сам констрейнт.
+    pub remove_constraint: extern "C" fn(instance: *mut c_void, id: i32),
+    /// Текущее состояние соединения — `is_broken=0`,
+    /// `body_a=body_b=-1`, если handle не найден.
+    pub get_constraint: extern "C" fn(instance: *mut c_void, id: i32) -> ConstraintInfo,
+    /// Handle'ы соединений, СЕЙЧАС ЖЕ (на последнем вызове `update`)
+    /// впервые перешедших в состояние `is_broken` — не весь список
+    /// когда-либо сломанных, только НОВЫЕ события этого шага (см.
+    /// `PhysicsState::update`), чтобы вызывающий код мог один раз
+    /// проиграть звук/заспавнить обломок на каждую поломку, а не на
+    /// каждый кадр, пока constraint остаётся сломанным.
+    ///
+    /// ИСПРАВЛЕНО (код-ревью — гонка указатель/длина): раньше указатель и
+    /// количество читались ДВУМЯ отдельными вызовами
+    /// (`get_broken_constraints` + `get_broken_constraints_count`), то
+    /// есть двумя независимыми lock/unlock мьютекса. Если бы
+    /// `PhysicsState::update` (который каждый кадр очищает и заново
+    /// заполняет `broken_constraints_abi`) хоть раз выполнился на другом
+    /// потоке МЕЖДУ этими двумя вызовами, `Vec` мог переаллоцироваться —
+    /// указатель стал бы висячим, а count отражал бы уже новое состояние,
+    /// и `slice::from_raw_parts` на стороне движка читал бы
+    /// освобождённую/чужую память. Теперь `count_out` заполняется ПОД ТЕМ
+    /// ЖЕ mutex-локом, что и получение указателя — один атомарный снимок
+    /// вместо двух рассинхронизируемых чтений. `get_broken_constraints_count`
+    /// оставлен в ABI как есть (в т.ч. для случая, если `count_out` —
+    /// null), но новый комбинированный вызов — единственный, которым
+    /// теперь пользуется `PhysicsPlugin::get_broken_constraints`.
+    pub get_broken_constraints: extern "C" fn(instance: *mut c_void, count_out: *mut i32) -> *const i32,
+    pub get_broken_constraints_count: extern "C" fn(instance: *mut c_void) -> i32,
+    // ДОБАВЛЕНО (Фаза 1 реальной физики — см. план "фундамент реальной
+    // физики"): до этого движок мог только ЧИТАТЬ состояние тела
+    // (get_body) или удалить его — не было НИКАКОГО способа повлиять на
+    // уже созданное тело, что делало невозможной любую реальную физику
+    // вождения (газ/руль/тормоз через силы). Снова строго В КОНЕЦ
+    // структуры, тот же append-only принцип, что и у constraint-полей
+    // выше.
+    /// Копит силу (Н, мировые координаты) в аккумулятор ДО следующего
+    /// `update()` — вызывать КАЖДЫЙ кадр, пока сила должна действовать
+    /// (аккумулятор обнуляется сразу после интеграции). `force` —
+    /// указатель на 3 float. Будит тело. No-op для static/несуществующего
+    /// id.
+    pub apply_force: extern "C" fn(instance: *mut c_void, id: i32, force: *const f32),
+    /// Мгновенно `v += impulse * inv_mass`, в отличие от `apply_force` не
+    /// ждёт следующего `update()`. Будит тело. No-op для
+    /// static/несуществующего id.
+    pub apply_impulse: extern "C" fn(instance: *mut c_void, id: i32, impulse: *const f32),
+    /// Прямая перезапись линейной/угловой скорости (телепорт скорости).
+    /// Будит тело. No-op для static/несуществующего id.
+    pub set_velocity: extern "C" fn(instance: *mut c_void, id: i32, linear: *const f32, angular: *const f32),
+    /// Прямая перезапись позиции/ориентации (телепорт). Скорость НЕ
+    /// трогает — зови `set_velocity` отдельно, если нужно ещё и
+    /// погасить/задать скорость. Кватернион нормализуется защитно на
+    /// стороне плагина. Будит тело. No-op для static/несуществующего id.
+    pub set_transform: extern "C" fn(instance: *mut c_void, id: i32, position: *const f32, orientation: *const f32),
+    // ДОБАВЛЕНО (код-ревью — статичный коллайдер-плоскость, см.
+    // `PlaneDesc`): строго В КОНЕЦ структуры, тот же append-only принцип.
+    /// Добавляет статичный полупространственный коллайдер (пол и т.п.).
+    /// Возвращает `>= 0` (порядковый номер, не handle для удаления — CRUD
+    /// не поддерживается, см. `PlaneDesc`) либо `-1`, если `instance`/
+    /// `desc` — null, либо `normal` — вырожденный (нулевой) вектор.
+    pub add_plane: extern "C" fn(instance: *mut c_void, desc: *const PlaneDesc) -> i32,
 }
 
 #[repr(u32)]
@@ -135,11 +367,17 @@ static PLUGIN_NAME: &[u8] = b"inertial\0";
 // Мостик PhysicsBody(ABI, без формы) <-> FortranRigidBody(с тензором инерции)
 // =====================================================================
 
+// ИСПРАВЛЕНО (код-ревью): раньше был ОДИН глобальный радиус для всех тел
+// без исключения — `PhysicsBody::radius` (новое поле, см. его комментарий)
+// заменил эту константу везде, где радиус реально на что-то влияет
+// (момент инерции ниже, `narrow_phase.f90`). Оставлена как fallback ТОЛЬКО
+// для `default_abi_body()` (синтетическое "тело не найдено" — там любое
+// значение одинаково безобидно, реального столкновения не будет).
 const IMPLICIT_RADIUS: f32 = 0.5;
 
 fn to_fortran_body(b: &PhysicsBody) -> FortranRigidBody {
     let inertia_scalar = if b.mass > 0.0 {
-        0.4 * b.mass * IMPLICIT_RADIUS * IMPLICIT_RADIUS
+        0.4 * b.mass * b.radius * b.radius
     } else {
         0.0
     };
@@ -171,6 +409,8 @@ fn to_fortran_body(b: &PhysicsBody) -> FortranRigidBody {
         angular_damping: b.angular_damping,
         is_static: b.is_static,
         is_asleep: b.is_asleep,
+        orientation: b.orientation,
+        radius: b.radius,
     }
 }
 
@@ -189,6 +429,8 @@ fn to_abi_body(f: &FortranRigidBody) -> PhysicsBody {
         angular_damping: f.angular_damping,
         is_static: f.is_static,
         is_asleep: f.is_asleep,
+        orientation: f.orientation,
+        radius: f.radius,
     }
 }
 
@@ -207,12 +449,28 @@ fn default_abi_body() -> PhysicsBody {
         angular_damping: 0.0,
         is_static: 1,
         is_asleep: 1,
+        // Единичный кватернион (0,0,0,1) — "без поворота".
+        orientation: [0.0, 0.0, 0.0, 1.0],
+        radius: IMPLICIT_RADIUS,
     }
 }
 
 // =====================================================================
 // PhysicsState — реальная логика поверх Fortran-солвера
 // =====================================================================
+
+/// ДОБАВЛЕНО (джойнты/constraint API): одна запись реестра соединений
+/// движка. Хранит handle'ы ТЕЛ (не индексы — см. подробное объяснение в
+/// `PhysicsState::update`) отдельно от `data` (само описание +
+/// последний решённый результат), потому что `data.body_a`/`data.body_b`
+/// каждый кадр перезаписываются ТЕКУЩИМИ индексами солвера перед
+/// вызовом `solve_constraints` — если бы handle хранился только внутри
+/// `data`, он бы каждый кадр затирался этой перезаписью.
+struct ConstraintRecord {
+    body_a_handle: i32,
+    body_b_handle: i32,
+    data: FortranConstraint,
+}
 
 pub struct PhysicsState {
     config: PhysicsConfig,
@@ -223,6 +481,39 @@ pub struct PhysicsState {
     contacts_abi: Vec<PhysicsContact>,
     pairs_abi: Vec<i32>,
     stats: PhysicsStats,
+    /// ДОБАВЛЕНО (джойнты/constraint API): та же схема handle<->index
+    /// индирекции, что уже используется для тел выше (`next_handle`/
+    /// `handle_to_index`/`index_to_handle`) — нужна по той же причине:
+    /// `remove_constraint` использует `swap_remove` (дёшево, не требует
+    /// сдвигать хвост), поэтому "текущий индекс в `constraints`" не
+    /// может служить стабильным ID, который движок держит у себя между
+    /// кадрами.
+    constraints: Vec<ConstraintRecord>,
+    next_constraint_handle: i32,
+    constraint_handle_to_index: HashMap<i32, usize>,
+    constraint_index_to_handle: Vec<i32>,
+    /// Handle'ы соединений, впервые сломавшихся НА ЭТОМ вызове `update` —
+    /// см. `PhysicsAPI::get_broken_constraints`. Перезаполняется с нуля
+    /// в начале каждого `update`, не накапливается между кадрами.
+    broken_constraints_abi: Vec<i32>,
+    /// ДОБАВЛЕНО (код-ревью — статичный коллайдер-плоскость): статичная
+    /// геометрия уровня, задаётся один раз при инициализации (см.
+    /// `PlaneDesc`) — никакого handle/индекса-для-удаления, поэтому
+    /// просто растущий `Vec`, без схемы handle<->index, которая нужна
+    /// телам/констрейнтам ТОЛЬКО из-за `remove_*`.
+    planes: Vec<PlaneRecord>,
+}
+
+/// Внутреннее (не-ABI) представление одной плоскости — `normal` хранится
+/// уже нормированным (валидируется/нормализуется в `add_plane`), чтобы
+/// `resolve_plane_contacts` не пересчитывал длину на каждое тело каждый
+/// кадр.
+#[derive(Debug, Clone, Copy)]
+struct PlaneRecord {
+    normal: [f32; 3],
+    point: [f32; 3],
+    friction: f32,
+    restitution: f32,
 }
 
 impl PhysicsState {
@@ -240,10 +531,132 @@ impl PhysicsState {
             contacts_abi: Vec::new(),
             pairs_abi: Vec::new(),
             stats: PhysicsStats::default(),
+            constraints: Vec::new(),
+            next_constraint_handle: 0,
+            constraint_handle_to_index: HashMap::new(),
+            constraint_index_to_handle: Vec::new(),
+            broken_constraints_abi: Vec::new(),
+            planes: Vec::new(),
+        }
+    }
+
+    /// См. `PlaneDesc`/`PhysicsAPI::add_plane`. `-1` при вырожденной
+    /// (нулевой длины) нормали — тот же принцип "отрицательный id —
+    /// отказ", что и у `add_constraint`.
+    fn add_plane(&mut self, desc: &PlaneDesc) -> i32 {
+        let len_sq = desc.normal[0] * desc.normal[0]
+            + desc.normal[1] * desc.normal[1]
+            + desc.normal[2] * desc.normal[2];
+        if len_sq < 1.0e-8 {
+            return -1;
+        }
+        let inv_len = 1.0 / len_sq.sqrt();
+        self.planes.push(PlaneRecord {
+            normal: [desc.normal[0] * inv_len, desc.normal[1] * inv_len, desc.normal[2] * inv_len],
+            point: desc.point,
+            friction: desc.friction,
+            restitution: desc.restitution,
+        });
+        (self.planes.len() - 1) as i32
+    }
+
+    /// Разрешает столкновение каждого нестатичного тела с каждой
+    /// плоскостью — см. подробное обоснование "почему в Rust, а не в
+    /// Fortran" у `PlaneDesc`/в плане код-ревью: плоскость всегда
+    /// статична (бесконечная масса), поэтому это односторонняя коррекция
+    /// ОДНОГО тела, а не парный impulse-солвер, которым Fortran честно
+    /// разрешает sphere-sphere контакты. Тот же порядок вызова, что и
+    /// сфера-сфера контакты — ПОСЛЕ constraint'ов, ДО `batch_integrate`
+    /// (сначала скорректировать скорость, потом проинтегрировать позицию
+    /// этой скорректированной скоростью).
+    fn resolve_plane_contacts(&mut self) {
+        if self.planes.is_empty() {
+            return;
+        }
+        for body in self.solver.bodies.iter_mut() {
+            if body.is_static != 0 {
+                continue;
+            }
+            for plane in &self.planes {
+                let rel = [
+                    body.position[0] - plane.point[0],
+                    body.position[1] - plane.point[1],
+                    body.position[2] - plane.point[2],
+                ];
+                let dist = rel[0] * plane.normal[0] + rel[1] * plane.normal[1] + rel[2] * plane.normal[2];
+                let penetration = body.radius - dist;
+                if penetration <= 0.0 {
+                    continue;
+                }
+                // Вытолкнуть вдоль нормали на глубину проникновения.
+                body.position[0] += plane.normal[0] * penetration;
+                body.position[1] += plane.normal[1] * penetration;
+                body.position[2] += plane.normal[2] * penetration;
+
+                let v_n = body.velocity[0] * plane.normal[0]
+                    + body.velocity[1] * plane.normal[1]
+                    + body.velocity[2] * plane.normal[2];
+                if v_n < 0.0 {
+                    // Гасим нормальную составляющую скорости по
+                    // restitution (0 = прилипает, 1 = честный упругий
+                    // отскок) — та же формула, что для sphere-sphere.
+                    let combined_restitution = (body.restitution + plane.restitution) * 0.5;
+                    let new_v_n = -v_n * combined_restitution;
+                    let delta_v_n = new_v_n - v_n;
+                    body.velocity[0] += plane.normal[0] * delta_v_n;
+                    body.velocity[1] += plane.normal[1] * delta_v_n;
+                    body.velocity[2] += plane.normal[2] * delta_v_n;
+
+                    // Приближённое (не честный Кулон — см. общую
+                    // оговорку о трении в комментариях этого крейта)
+                    // затухание касательной составляющей — иначе тело,
+                    // упавшее на пол с горизонтальной скоростью, катится
+                    // по инерции почти бесконечно (тот же эффект уже
+                    // описан у бочек в main_car.rs).
+                    let combined_friction = ((body.friction + plane.friction) * 0.5).clamp(0.0, 1.0);
+                    let v_tn = body.velocity[0] * plane.normal[0]
+                        + body.velocity[1] * plane.normal[1]
+                        + body.velocity[2] * plane.normal[2];
+                    for i in 0..3 {
+                        let v_tangent = body.velocity[i] - plane.normal[i] * v_tn;
+                        body.velocity[i] -= v_tangent * combined_friction;
+                    }
+                }
+            }
         }
     }
 
     fn add_body(&mut self, body: &PhysicsBody) -> i32 {
+        // ИСПРАВЛЕНО (краш видеодрайвера/зависание, воспроизведено
+        // пользователем — 2025 тел вместо запланированных ~150 при
+        // `max_bodies: 256`): раньше эта функция НЕ проверяла лимит
+        // вообще — `self.solver.bodies` (`Vec<FortranRigidBody>`) просто
+        // рос без ограничений, при том что `FortranPhysics::new`
+        // выделяет фиксированные Fortran-буферы РОВНО под
+        // `config.max_bodies` (см. `cell_pairs: vec![0; max_bodies * 8]`
+        // в ffi/mod.rs). `find_pairs_grid` (единственный broad-phase
+        // путь, реально используемый из `update()` ниже) сам по себе
+        // защищён — динамически ресайзит `cell_pairs`, если пар
+        // оказывается больше вместимости — так что прямого
+        // переполнения буфера через ЭТОТ путь не было. Но при
+        // многократном превышении `max_bodies` (2025 вместо 256, почти
+        // в 8 раз) broad-phase на плотной сетке тел даёт квадратично
+        // больше пар/контактов КАЖДЫЙ кадр — кадр физики переставал
+        // укладываться в разумное время, и Windows TDR (Timeout
+        // Detection and Recovery) считал GPU зависшим и перезапускал
+        // драйвер. Плюс `max_bodies` — явный, документированный
+        // пользователем движка контракт (см. `PhysicsConfig`) — молчаливо
+        // игнорировать его всё равно неверно, даже если бы конкретно
+        // этот буфер не переполнялся.
+        //
+        // Теперь — честный отказ при превышении лимита: `-1` (тот же
+        // код ошибки, что уже используют другие ветки `api_add_body`
+        // ниже, например null instance/body), а не тихий безлимитный
+        // рост.
+        if self.solver.bodies.len() >= self.config.max_bodies.max(1) as usize {
+            return -1;
+        }
+
         let handle = self.next_handle;
         self.next_handle += 1;
 
@@ -265,6 +678,7 @@ impl PhysicsState {
 
         self.solver.bodies.swap_remove(idx);
         self.solver.sleep_timers.swap_remove(idx);
+        self.solver.force_accum.swap_remove(idx);
 
         if idx != last {
             let moved_handle = self.index_to_handle[last];
@@ -279,8 +693,191 @@ impl PhysicsState {
         Some(to_abi_body(&self.solver.bodies[idx]))
     }
 
+    /// См. `PhysicsAPI::apply_force`. Тихо игнорирует несуществующий
+    /// handle (тот же контракт, что `remove_constraint`) — `apply_force`
+    /// на уже удалённое/никогда не существовавшее тело физически ничего
+    /// не значит, а не ошибка, которую стоит как-то сигнализировать через
+    /// этот ABI (в нём и так нет возврата ошибки у этой группы функций).
+    fn apply_force(&mut self, handle: i32, force: [f32; 3]) {
+        if let Some(&idx) = self.handle_to_index.get(&handle) {
+            self.solver.apply_force(idx, force);
+        }
+    }
+
+    fn apply_impulse(&mut self, handle: i32, impulse: [f32; 3]) {
+        if let Some(&idx) = self.handle_to_index.get(&handle) {
+            self.solver.apply_impulse(idx, impulse);
+        }
+    }
+
+    fn set_velocity(&mut self, handle: i32, linear: [f32; 3], angular: [f32; 3]) {
+        if let Some(&idx) = self.handle_to_index.get(&handle) {
+            self.solver.set_velocity(idx, linear, angular);
+        }
+    }
+
+    fn set_transform(&mut self, handle: i32, position: [f32; 3], orientation: [f32; 4]) {
+        if let Some(&idx) = self.handle_to_index.get(&handle) {
+            self.solver.set_transform(idx, position, orientation);
+        }
+    }
+
     fn bodies_count(&self) -> i32 {
         self.solver.bodies.len() as i32
+    }
+
+    /// ДОБАВЛЕНО (джойнты/constraint API): см. `ConstraintRecord` за
+    /// объяснением, почему handle'ы тел хранятся отдельно от `data`.
+    /// Отказывает (`-1`), если любой из `body_a`/`body_b` не существует —
+    /// соединение "в никуда" не может быть создано даже временно (в
+    /// отличие от тел, которые могут исчезнуть уже ПОСЛЕ создания
+    /// соединения — та ситуация обрабатывается в `update`, см. там).
+    ///
+    /// ИСПРАВЛЕНО (код-ревью): также отказывает при `body_a == body_b`.
+    /// Раньше это не проверялось, а `solver.f90` (solve_point/
+    /// solve_hinge_angular/solve_fixed_angular) принимает body_a и body_b
+    /// как ДВА ОТДЕЛЬНЫХ `INTENT(INOUT)` фортрановских аргумента без
+    /// защиты от алиасинга — если это один и тот же элемент массива тел,
+    /// правила Фортрана для алиасированных INTENT(INOUT)-аргументов
+    /// нарушаются, как только один из них записывается, и результат
+    /// становится неопределённым (зависит от оптимизаций компилятора)
+    /// вместо чистого отказа на границе API.
+    fn add_constraint(&mut self, desc: &ConstraintDesc) -> i32 {
+        if desc.body_a == desc.body_b
+            || !self.handle_to_index.contains_key(&desc.body_a)
+            || !self.handle_to_index.contains_key(&desc.body_b)
+        {
+            return -1;
+        }
+
+        let handle = self.next_constraint_handle;
+        self.next_constraint_handle += 1;
+
+        let idx = self.constraints.len();
+        self.constraints.push(ConstraintRecord {
+            body_a_handle: desc.body_a,
+            body_b_handle: desc.body_b,
+            data: FortranConstraint {
+                // Перезаписываются реальными индексами перед каждым
+                // `solve_constraints` в `update()` — значения здесь
+                // никогда не читаются как индексы.
+                body_a: 0,
+                body_b: 0,
+                joint_type: desc.joint_type,
+                anchor_a: desc.anchor_a,
+                anchor_b: desc.anchor_b,
+                axis_a: desc.axis_a,
+                axis_b: desc.axis_b,
+                bias: desc.bias,
+                break_impulse_linear: desc.break_impulse_linear,
+                break_impulse_angular: desc.break_impulse_angular,
+                linear_impulse: [0.0; 3],
+                angular_impulse: [0.0; 3],
+                is_broken: 0,
+            },
+        });
+        self.constraint_index_to_handle.push(handle);
+        self.constraint_handle_to_index.insert(handle, idx);
+        handle
+    }
+
+    /// Тот же swap_remove-паттерн, что и `remove_body` выше — см. его
+    /// комментарий про то, почему это не портит чужие handle'ы.
+    fn remove_constraint(&mut self, handle: i32) {
+        let Some(idx) = self.constraint_handle_to_index.remove(&handle) else {
+            return;
+        };
+        if self.constraints.is_empty() {
+            return;
+        }
+        let last = self.constraints.len() - 1;
+
+        self.constraints.swap_remove(idx);
+
+        if idx != last {
+            let moved_handle = self.constraint_index_to_handle[last];
+            self.constraint_index_to_handle[idx] = moved_handle;
+            self.constraint_handle_to_index.insert(moved_handle, idx);
+        }
+        self.constraint_index_to_handle.pop();
+    }
+
+    fn get_constraint(&self, handle: i32) -> Option<ConstraintInfo> {
+        let &idx = self.constraint_handle_to_index.get(&handle)?;
+        let rec = &self.constraints[idx];
+        Some(ConstraintInfo {
+            body_a: rec.body_a_handle,
+            body_b: rec.body_b_handle,
+            joint_type: rec.data.joint_type,
+            is_broken: rec.data.is_broken,
+            linear_impulse: rec.data.linear_impulse,
+            angular_impulse: rec.data.angular_impulse,
+        })
+    }
+
+    /// Переводит handle'ы тел каждого ЕЩЁ НЕ сломанного соединения в
+    /// текущие индексы солвера и решает их все разом через
+    /// `FortranPhysics::solve_constraints`. Вызывается из `update()`
+    /// СРАЗУ после решения контактов — см. вызов ниже.
+    ///
+    /// Соединение, чьё тело успело исчезнуть (`remove_body` был вызван
+    /// без предварительного `remove_constraint` — например, движок
+    /// выгрузил чанк, не думая о соединениях внутри него), физически не
+    /// может продолжать существовать — удаляется здесь же, автоматически.
+    /// Это НЕ добавляется в `broken_constraints_abi`: пропавшее тело —
+    /// рутинная уборка после `remove_body`, а не событие "деталь
+    /// оторвалась под нагрузкой", на которое игровой код должен был бы
+    /// реагировать звуком/осколками.
+    fn solve_and_update_constraints(&mut self) {
+        self.broken_constraints_abi.clear();
+        if self.constraints.is_empty() {
+            return;
+        }
+
+        self.solver.clear_constraints();
+        // Индекс в этом Vec == индекс соответствующей записи в буфере
+        // `self.solver.constraints`, который сейчас будет решаться —
+        // нужен, чтобы после решения скопировать результат обратно в
+        // ПРАВИЛЬНУЮ запись `self.constraints` (порядок двух Vec иначе
+        // мог бы разойтись, если бы часть констрейнтов пропускалась).
+        let mut solved_record_indices: Vec<usize> = Vec::with_capacity(self.constraints.len());
+        let mut stale_handles: Vec<i32> = Vec::new();
+
+        for (record_idx, record) in self.constraints.iter().enumerate() {
+            if record.data.is_broken != 0 {
+                continue;
+            }
+            let ia = self.handle_to_index.get(&record.body_a_handle).copied();
+            let ib = self.handle_to_index.get(&record.body_b_handle).copied();
+            match (ia, ib) {
+                (Some(ia), Some(ib)) => {
+                    let mut c = record.data;
+                    c.body_a = ia as i32;
+                    c.body_b = ib as i32;
+                    self.solver.push_constraint(c);
+                    solved_record_indices.push(record_idx);
+                }
+                _ => stale_handles.push(self.constraint_index_to_handle[record_idx]),
+            }
+        }
+
+        if !solved_record_indices.is_empty() {
+            self.solver.solve_constraints(self.config.solver_iterations.max(1));
+            for (buffer_idx, &record_idx) in solved_record_indices.iter().enumerate() {
+                let solved = self.solver.constraints[buffer_idx];
+                let was_broken = self.constraints[record_idx].data.is_broken != 0;
+                self.constraints[record_idx].data.linear_impulse = solved.linear_impulse;
+                self.constraints[record_idx].data.angular_impulse = solved.angular_impulse;
+                self.constraints[record_idx].data.is_broken = solved.is_broken;
+                if !was_broken && solved.is_broken != 0 {
+                    self.broken_constraints_abi.push(self.constraint_index_to_handle[record_idx]);
+                }
+            }
+        }
+
+        for handle in stale_handles {
+            self.remove_constraint(handle);
+        }
     }
 
     fn update(&mut self, dt: f32, gravity: f32) {
@@ -288,12 +885,57 @@ impl PhysicsState {
             self.stats = PhysicsStats::default();
             self.contacts_abi.clear();
             self.pairs_abi.clear();
+            // ДОБАВЛЕНО (джойнты/constraint API): без тел ни одно
+            // соединение не может решаться (все ссылались бы на
+            // несуществующие handle'ы) — очищаем список событий поломки
+            // этого шага тем же способом, что и contacts_abi/pairs_abi
+            // выше, вместо того чтобы оставлять в нём "протухший" список
+            // с прошлого кадра, когда тела ещё существовали.
+            self.broken_constraints_abi.clear();
             return;
         }
 
         let t0 = std::time::Instant::now();
         let raw_pairs: Vec<i32> = self.solver.find_pairs_grid().to_vec();
         let broad_phase_time_ms = t0.elapsed().as_secs_f32() * 1000.0;
+
+        // ДОБАВЛЕНО (джойнты/constraint API, найдено
+        // `examples/joint_test.rs::test_fixed_holds_against_gravity`):
+        // тела, скреплённые constraint'ом, в реальных сценариях сборки
+        // (болт держит деталь ВПЛОТНУЮ к кузову, колесо надето на ступицу
+        // и т.п.) почти всегда физически перекрываются своими сферами
+        // столкновений. Без этого исключения narrow phase честно находит
+        // "проникновение" на КАЖДОМ кадре, а `resolve_contact_simple`
+        // (ниже) яростно расталкивает их позиционной коррекцией — которая
+        // напрямую воюет с constraint'ом, пытающимся удержать ИМЕННО эту
+        // пару вместе в той же самой точке. На практике это проявлялось
+        // как взрывной, нефизичный скачок положения в первые же кадры
+        // после создания соединения. Стандартное решение (используется
+        // практически во всех физических движках с констрейнтами) —
+        // отключать контакты между телами одного и того же (не сломанного)
+        // соединения; сам констрейнт — единственный источник истины об их
+        // взаимном положении, пока он жив.
+        //
+        // Строится КАЖДЫЙ кадр (а не кэшируется) — множество активных
+        // соединений обычно небольшое (десятки-сотни, не тысячи), а
+        // индексы тел в солвере двигаются при `remove_body` (`swap_remove`),
+        // так что кэш индексов от прошлого кадра всё равно нельзя было бы
+        // использовать без пересчёта.
+        let mut constrained_pairs: HashSet<(usize, usize)> = HashSet::with_capacity(self.constraints.len());
+        for record in &self.constraints {
+            if record.data.is_broken != 0 {
+                // Сломанное соединение больше не должно подавлять контакты
+                // между обломками — наоборот, именно после разрушения им
+                // естественно физически столкнуться друг с другом.
+                continue;
+            }
+            if let (Some(&ia), Some(&ib)) = (
+                self.handle_to_index.get(&record.body_a_handle),
+                self.handle_to_index.get(&record.body_b_handle),
+            ) {
+                constrained_pairs.insert((ia.min(ib), ia.max(ib)));
+            }
+        }
 
         let t1 = std::time::Instant::now();
         self.solver.clear_contacts();
@@ -302,6 +944,9 @@ impl PhysicsState {
             let ia = pair[0] as usize;
             let ib = pair[1] as usize;
             if ia >= self.solver.bodies.len() || ib >= self.solver.bodies.len() {
+                continue;
+            }
+            if constrained_pairs.contains(&(ia.min(ib), ia.max(ib))) {
                 continue;
             }
             // ИСПРАВЛЕНО (найдено по жалобе пользователя на просадки FPS
@@ -343,6 +988,24 @@ impl PhysicsState {
             self.solver.solve_contacts_vectorized(self.config.solver_iterations.max(1), dt);
         }
 
+        // ДОБАВЛЕНО (джойнты/constraint API): решается ПОСЛЕ контактов
+        // (соединение не должно "спорить" с ещё не разрешённым
+        // проникновением тел) и ДО batch_integrate — joints корректируют
+        // линейную/угловую СКОРОСТЬ, а не позицию напрямую, поэтому
+        // должны успеть отработать до того, как эта скорость будет
+        // проинтегрирована в положение/ориентацию тела этим кадром (см.
+        // solve_point/solve_hinge_angular/solve_fixed_angular в
+        // `solver.f90` — все три пишут только `velocity`/
+        // `angular_velocity`, а не `position`/`orientation` напрямую).
+        self.solve_and_update_constraints();
+
+        // ДОБАВЛЕНО (код-ревью — статичный коллайдер-плоскость): та же
+        // позиция в пайплайне, что и констрейнты выше — после контактов
+        // тел друг с другом, до интеграции, чтобы `batch_integrate`
+        // сразу использовал уже скорректированную (не "проваливающуюся"
+        // сквозь пол) скорость/позицию.
+        self.resolve_plane_contacts();
+
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
@@ -378,6 +1041,8 @@ impl PhysicsState {
             .filter(|b| b.is_asleep == 0 && b.is_static == 0)
             .count() as u32;
 
+        let broken_count = self.constraints.iter().filter(|r| r.data.is_broken != 0).count() as u32;
+
         self.stats = PhysicsStats {
             bodies_count: self.solver.bodies.len() as u32,
             active_bodies: active,
@@ -386,6 +1051,8 @@ impl PhysicsState {
             broad_phase_time_ms,
             narrow_phase_time_ms,
             solver_time_ms,
+            constraints_count: self.constraints.len() as u32,
+            broken_constraints_count: broken_count,
         };
     }
 }
@@ -542,6 +1209,156 @@ extern "C" fn api_get_stats(instance: *mut c_void) -> PhysicsStats {
     inst.state.lock().map(|s| s.stats).unwrap_or_default()
 }
 
+// ДОБАВЛЕНО (джойнты/constraint API): те же null-проверки и
+// lock()-паттерн, что и у всех остальных `api_*` выше.
+
+extern "C" fn api_add_constraint(instance: *mut c_void, desc: *const ConstraintDesc) -> i32 {
+    if instance.is_null() || desc.is_null() {
+        return -1;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let desc = unsafe { &*desc };
+    match inst.state.lock() {
+        Ok(mut state) => state.add_constraint(desc),
+        Err(_) => -1,
+    }
+}
+
+extern "C" fn api_remove_constraint(instance: *mut c_void, id: i32) {
+    if instance.is_null() {
+        return;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    if let Ok(mut state) = inst.state.lock() {
+        state.remove_constraint(id);
+    }
+}
+
+extern "C" fn api_get_constraint(instance: *mut c_void, id: i32) -> ConstraintInfo {
+    if instance.is_null() {
+        return default_constraint_info();
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    match inst.state.lock() {
+        Ok(state) => state.get_constraint(id).unwrap_or_else(default_constraint_info),
+        Err(_) => default_constraint_info(),
+    }
+}
+
+extern "C" fn api_get_broken_constraints(instance: *mut c_void, count_out: *mut i32) -> *const i32 {
+    if instance.is_null() {
+        if !count_out.is_null() {
+            unsafe { *count_out = 0 };
+        }
+        return std::ptr::null();
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    match inst.state.lock() {
+        // ИСПРАВЛЕНО (код-ревью): count читается из ТОГО ЖЕ `state`, под
+        // тем же локом, что и указатель — см. комментарий у поля
+        // `get_broken_constraints` в `PhysicsAPI` про гонку, которую это
+        // устраняет.
+        Ok(state) => {
+            if !count_out.is_null() {
+                unsafe { *count_out = state.broken_constraints_abi.len() as i32 };
+            }
+            state.broken_constraints_abi.as_ptr()
+        }
+        Err(_) => {
+            if !count_out.is_null() {
+                unsafe { *count_out = 0 };
+            }
+            std::ptr::null()
+        }
+    }
+}
+
+extern "C" fn api_get_broken_constraints_count(instance: *mut c_void) -> i32 {
+    if instance.is_null() {
+        return 0;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    inst.state.lock().map(|s| s.broken_constraints_abi.len() as i32).unwrap_or(0)
+}
+
+/// Читает 3 float из сырого указателя — тот же паттерн разыменования
+/// массива через границу ABI, что уже используют `LightAPI::cull`
+/// (`camera_pos: *const f32`) и `ConstraintDesc`/`add_constraint` для
+/// `anchor_a`/`axis_a` и т.п. Null-указатель — no-op (нулевой вектор),
+/// вызывающая сторона в этом случае ничего не поменяет, но и не крашнёт
+/// процесс.
+unsafe fn read_vec3(p: *const f32) -> [f32; 3] {
+    if p.is_null() {
+        return [0.0; 3];
+    }
+    unsafe { [*p, *p.add(1), *p.add(2)] }
+}
+
+unsafe fn read_vec4(p: *const f32) -> [f32; 4] {
+    if p.is_null() {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    unsafe { [*p, *p.add(1), *p.add(2), *p.add(3)] }
+}
+
+extern "C" fn api_apply_force(instance: *mut c_void, id: i32, force: *const f32) {
+    if instance.is_null() {
+        return;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let force = unsafe { read_vec3(force) };
+    if let Ok(mut state) = inst.state.lock() {
+        state.apply_force(id, force);
+    }
+}
+
+extern "C" fn api_apply_impulse(instance: *mut c_void, id: i32, impulse: *const f32) {
+    if instance.is_null() {
+        return;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let impulse = unsafe { read_vec3(impulse) };
+    if let Ok(mut state) = inst.state.lock() {
+        state.apply_impulse(id, impulse);
+    }
+}
+
+extern "C" fn api_set_velocity(instance: *mut c_void, id: i32, linear: *const f32, angular: *const f32) {
+    if instance.is_null() {
+        return;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let linear = unsafe { read_vec3(linear) };
+    let angular = unsafe { read_vec3(angular) };
+    if let Ok(mut state) = inst.state.lock() {
+        state.set_velocity(id, linear, angular);
+    }
+}
+
+extern "C" fn api_set_transform(instance: *mut c_void, id: i32, position: *const f32, orientation: *const f32) {
+    if instance.is_null() {
+        return;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let position = unsafe { read_vec3(position) };
+    let orientation = unsafe { read_vec4(orientation) };
+    if let Ok(mut state) = inst.state.lock() {
+        state.set_transform(id, position, orientation);
+    }
+}
+
+extern "C" fn api_add_plane(instance: *mut c_void, desc: *const PlaneDesc) -> i32 {
+    if instance.is_null() || desc.is_null() {
+        return -1;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let desc = unsafe { &*desc };
+    match inst.state.lock() {
+        Ok(mut state) => state.add_plane(desc),
+        Err(_) => -1,
+    }
+}
+
 static PHYSICS_API: PhysicsAPI = PhysicsAPI {
     add_body: api_add_body,
     remove_body: api_remove_body,
@@ -553,6 +1370,16 @@ static PHYSICS_API: PhysicsAPI = PhysicsAPI {
     get_pairs: api_get_pairs,
     get_pairs_count: api_get_pairs_count,
     get_stats: api_get_stats,
+    add_constraint: api_add_constraint,
+    remove_constraint: api_remove_constraint,
+    get_constraint: api_get_constraint,
+    get_broken_constraints: api_get_broken_constraints,
+    get_broken_constraints_count: api_get_broken_constraints_count,
+    apply_force: api_apply_force,
+    apply_impulse: api_apply_impulse,
+    set_velocity: api_set_velocity,
+    set_transform: api_set_transform,
+    add_plane: api_add_plane,
 };
 
 #[no_mangle]

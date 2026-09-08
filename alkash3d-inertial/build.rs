@@ -109,4 +109,76 @@ fn main() {
 
     println!("cargo:rustc-link-lib=dylib=gfortran");
     println!("cargo:rustc-link-lib=dylib=gomp");
+
+    // ДОБАВЛЕНО (диагностика "LoadLibraryExW failed" на реальной машине
+    // пользователя): строки выше линкуют `inertial.dll` ДИНАМИЧЕСКИ с
+    // рантаймами gfortran/OpenMP (`libgfortran-5.dll`/`libgomp-1.dll`, и
+    // транзитивно `libquadmath-0.dll`/`libwinpthread-1.dll`/
+    // `libgcc_s_seh-1.dll`) — все они живут только в MSYS2
+    // (`<mingw64>\bin`) и НЕ копируются рядом с итоговой `inertial.dll`
+    // сами по себе. Раньше это "работало" только пока эта папка была в
+    // PATH процесса, который грузит плагин (см. подробности в
+    // `alkash3d-rust/src/plugin/manager.rs::load_library` — там же теперь
+    // явно запрошен поиск зависимостей ещё и В ПАПКЕ САМОЙ DLL). Обе
+    // правки нужны вместе: копия DLL рядом бесполезна без флага поиска на
+    // стороне загрузчика, а флаг поиска бесполезен, если копий тут нет.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        copy_runtime_dlls(&out_dir);
+    }
+}
+
+/// Копирует рантайм-DLL gfortran/OpenMP рядом с итоговой `inertial.dll` —
+/// и в `target/<triple>/<profile>/`, и в `.../deps/` (примеры вида
+/// `cargo run --example joint_test` собираются и запускаются именно из
+/// `deps/`, им отдельно нужны те же DLL рядом). Папку с DLL ищем через
+/// `where gfortran` — тот же PATH-контракт, что этот build.rs УЖЕ требует
+/// для самой компиляции Fortran-ядер несколькими строками выше, новой
+/// зависимости не добавляет.
+fn copy_runtime_dlls(out_dir: &PathBuf) {
+    const RUNTIME_DLLS: [&str; 5] = [
+        "libgfortran-5.dll",
+        "libgomp-1.dll",
+        "libquadmath-0.dll",
+        "libwinpthread-1.dll",
+        "libgcc_s_seh-1.dll",
+    ];
+
+    let where_output = Command::new("where").arg("gfortran").output();
+    let gfortran_dir = match where_output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.lines().next().and_then(|line| {
+                PathBuf::from(line.trim()).parent().map(|p| p.to_path_buf())
+            })
+        }
+        _ => None,
+    };
+
+    let Some(gfortran_dir) = gfortran_dir else {
+        println!(
+            "cargo:warning=inertial: не удалось найти папку gfortran через `where gfortran` \
+             — рантайм-DLL (libgfortran/libgomp/...) не скопированы рядом с inertial.dll. \
+             Плагин загрузится, только если эта папка (обычно <MSYS2>\\mingw64\\bin) есть в PATH \
+             процесса, который его грузит."
+        );
+        return;
+    };
+
+    // out_dir = target/<triple>/<profile>/build/inertial-<hash>/out
+    // -> подняться на 3 уровня до target/<triple>/<profile>/
+    let Some(profile_dir) = out_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) else {
+        return;
+    };
+    let deps_dir = profile_dir.join("deps");
+
+    for dll in RUNTIME_DLLS {
+        let src = gfortran_dir.join(dll);
+        if !src.exists() {
+            println!("cargo:warning=inertial: {} не найден в {}", dll, gfortran_dir.display());
+            continue;
+        }
+        let _ = std::fs::copy(&src, profile_dir.join(dll));
+        let _ = std::fs::create_dir_all(&deps_dir);
+        let _ = std::fs::copy(&src, deps_dir.join(dll));
+    }
 }

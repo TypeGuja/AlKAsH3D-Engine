@@ -21,6 +21,18 @@ pub struct FortranRigidBody {
     pub angular_damping: f32,
     pub is_static: i32,
     pub is_asleep: i32,
+    // ДОБАВЛЕНО (физика автомобиля — вращение кузова): кватернион
+    // ориентации (x, y, z, w). layout #[repr(C)] обязан побайтово
+    // совпадать с bind(c) типом rigid_body_c в rigid_body.f90.
+    // integrate_orientation в rigid_body.f90 — формула интеграции.
+    pub orientation: [f32; 4],
+    // ДОБАВЛЕНО (код-ревью — per-body радиус вместо одного глобального
+    // IMPLICIT_RADIUS на все тела): читается `narrow_phase.f90`
+    // (`radius_sum = body_a%radius + body_b%radius`) и моментом инерции
+    // в `to_fortran_body` (lib.rs). ПОСЛЕДНЕЕ поле структуры — layout
+    // должен побайтово совпадать с `rigid_body_c` в rigid_body.f90, где
+    // это поле тоже дописано в самый конец.
+    pub radius: f32,
 }
 
 #[repr(C)]
@@ -36,15 +48,71 @@ pub struct FortranContact {
     pub friction_impulse: [f32; 2],
 }
 
+/// ДОБАВЛЕНО (разборка машины на детали — джойнты/constraint API):
+/// типы соединений `FortranConstraint::joint_type` — ЗНАЧЕНИЯ ДОЛЖНЫ
+/// побайтово совпадать с константами `JOINT_*` в
+/// `src/kernels/rigid_body.f90` (bind(c)-параметры Fortran не
+/// экспортируются как C-символы, поэтому синхронизация — вручную, тот же
+/// принцип, что уже применяется здесь для layout структур).
+pub mod joint_type {
+    /// Шаровой шарнир — только точка крепления, вращение свободно.
+    pub const BALL: i32 = 0;
+    /// Петля — точка крепления + вращение только вокруг `axis_a` (дверь,
+    /// капот, крышка багажника).
+    pub const HINGE: i32 = 1;
+    /// Жёсткая сварка/болтовое соединение — точка крепления + вращение
+    /// полностью заперто (пока соединение не разрушено).
+    pub const FIXED: i32 = 2;
+    /// Ползун — свободное смещение вдоль `axis_a`, перпендикулярные оси
+    /// заперты, вращение не ограничивается.
+    pub const SLIDER: i32 = 3;
+}
+
+/// ИЗМЕНЕНО (разборка машины на детали — джойнты/constraint API): layout
+/// расширен под универсальные соединения (шар/петля/сварка/ползун) с
+/// разрушением по порогу нагрузки — см. подробное обоснование каждого
+/// поля у синхронного `constraint_c` в `src/kernels/rigid_body.f90`.
+/// Раньше это была структура ТОЛЬКО под шаровой шарнир со скалярным
+/// `accumulated_impulse`, никогда не использовавшаяся снаружи этого
+/// крейта (в `PhysicsAPI` плагина не было `add_constraint`) — сейчас
+/// именно эта структура пересекает ABI-границу движка через
+/// `alkash3d-inertial/src/lib.rs::ConstraintDesc`/`ConstraintInfo`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FortranConstraint {
     pub body_a: i32,
     pub body_b: i32,
+    pub joint_type: i32,
     pub anchor_a: [f32; 3],
     pub anchor_b: [f32; 3],
+    pub axis_a: [f32; 3],
+    pub axis_b: [f32; 3],
     pub bias: f32,
-    pub accumulated_impulse: f32,
+    pub break_impulse_linear: f32,
+    pub break_impulse_angular: f32,
+    pub linear_impulse: [f32; 3],
+    pub angular_impulse: [f32; 3],
+    pub is_broken: i32,
+}
+
+impl Default for FortranConstraint {
+    fn default() -> Self {
+        Self {
+            body_a: 0,
+            body_b: 0,
+            joint_type: joint_type::BALL,
+            anchor_a: [0.0; 3],
+            anchor_b: [0.0; 3],
+            axis_a: [0.0, 1.0, 0.0],
+            axis_b: [0.0, 1.0, 0.0],
+            bias: 1.0,
+            break_impulse_linear: 0.0,
+            break_impulse_angular: 0.0,
+            linear_impulse: [0.0; 3],
+            angular_impulse: [0.0; 3],
+            is_broken: 0,
+        }
+    }
 }
 
 impl Default for FortranContact {
@@ -220,6 +288,13 @@ pub struct FortranPhysics {
     pub cell_pairs: Vec<i32>,
     pub active_indices: Vec<i32>,
     pub sleep_timers: Vec<f32>,
+    /// ДОБАВЛЕНО (apply_force — см. `PhysicsAPI::apply_force` в lib.rs):
+    /// аккумулятор силы (Н, мировые координаты) на тело, копится между
+    /// вызовами `apply_force` и переносится в `bodies[i].acceleration`
+    /// (через `inv_mass`) прямо перед `batch_integrate`, обнуляется сразу
+    /// после — тот же жизненный цикл push/swap_remove, что у
+    /// `sleep_timers` выше.
+    pub force_accum: Vec<[f32; 3]>,
     pub grid_width: i32,
     pub grid_height: i32,
     pub cell_size: f32,
@@ -239,6 +314,7 @@ impl FortranPhysics {
             cell_pairs: vec![0; max_bodies * 8],
             active_indices: Vec::with_capacity(max_bodies),
             sleep_timers: Vec::with_capacity(max_bodies),
+            force_accum: Vec::with_capacity(max_bodies),
             grid_width: grid_size,
             grid_height: grid_size,
             cell_size,
@@ -248,6 +324,65 @@ impl FortranPhysics {
     pub fn add_body(&mut self, body: FortranRigidBody) {
         self.bodies.push(body);
         self.sleep_timers.push(0.0);
+        self.force_accum.push([0.0; 3]);
+    }
+
+    /// Копит силу (Н) в аккумулятор ДО следующего `batch_integrate` — см.
+    /// комментарий у `force_accum`. Будит тело (иначе `batch_integrate`
+    /// его просто пропустит целиком, см. `is_asleep` в
+    /// kernels_optimized.f90). No-op для статичных тел — им сила не
+    /// нужна, они всё равно не интегрируются.
+    pub fn apply_force(&mut self, idx: usize, force: [f32; 3]) {
+        if self.bodies[idx].is_static != 0 {
+            return;
+        }
+        for k in 0..3 {
+            self.force_accum[idx][k] += force[k];
+        }
+        self.bodies[idx].is_asleep = 0;
+    }
+
+    /// Мгновенно `v += impulse * inv_mass` — в отличие от `apply_force`,
+    /// не ждёт следующего `batch_integrate`.
+    pub fn apply_impulse(&mut self, idx: usize, impulse: [f32; 3]) {
+        if self.bodies[idx].is_static != 0 {
+            return;
+        }
+        let inv_mass = self.bodies[idx].inv_mass;
+        for k in 0..3 {
+            self.bodies[idx].velocity[k] += impulse[k] * inv_mass;
+        }
+        self.bodies[idx].is_asleep = 0;
+    }
+
+    /// Прямая перезапись линейной/угловой скорости (телепорт скорости).
+    pub fn set_velocity(&mut self, idx: usize, linear: [f32; 3], angular: [f32; 3]) {
+        if self.bodies[idx].is_static != 0 {
+            return;
+        }
+        self.bodies[idx].velocity = linear;
+        self.bodies[idx].angular_velocity = angular;
+        self.bodies[idx].is_asleep = 0;
+    }
+
+    /// Прямая перезапись позиции/ориентации (телепорт). Скорость НЕ
+    /// трогает — вызывающая сторона зовёт `set_velocity` отдельно, если
+    /// нужно ещё и погасить/задать скорость при телепорте. Кватернион
+    /// нормализуется защитно — вызывающая сторона может передать
+    /// ненормализованный (например накопленную ошибку из другого места).
+    pub fn set_transform(&mut self, idx: usize, position: [f32; 3], orientation: [f32; 4]) {
+        if self.bodies[idx].is_static != 0 {
+            return;
+        }
+        self.bodies[idx].position = position;
+        let len_sq: f32 = orientation.iter().map(|c| c * c).sum();
+        self.bodies[idx].orientation = if len_sq > 1.0e-12 {
+            let inv_len = len_sq.sqrt().recip();
+            [orientation[0] * inv_len, orientation[1] * inv_len, orientation[2] * inv_len, orientation[3] * inv_len]
+        } else {
+            [0.0, 0.0, 0.0, 1.0]
+        };
+        self.bodies[idx].is_asleep = 0;
     }
 
     pub fn add_contact(&mut self, contact: FortranContact) {
@@ -256,6 +391,46 @@ impl FortranPhysics {
 
     pub fn clear_contacts(&mut self) {
         self.contacts.clear();
+    }
+
+    /// ДОБАВЛЕНО (разборка машины на детали — джойнты/constraint API): в
+    /// отличие от контактов (пересчитываются заново каждый кадр из
+    /// broad+narrow phase, см. `add_contact`/`clear_contacts` выше),
+    /// констрейнты — ДОЛГОЖИВУЩИЕ игровые объекты (болт остаётся болтом,
+    /// пока его явно не открутили или не сломали), поэтому у них
+    /// раздельные push/clear/get-по-индексу — вызывающая сторона
+    /// (`PhysicsState` в `lib.rs`) сама решает, когда пересобирать этот
+    /// буфер (при добавлении/удалении соединения или сдвиге индексов тел
+    /// после `remove_body`), а не обязана делать это каждый кадр заново.
+    pub fn clear_constraints(&mut self) {
+        self.constraints.clear();
+    }
+
+    pub fn push_constraint(&mut self, constraint: FortranConstraint) {
+        self.constraints.push(constraint);
+    }
+
+    /// Решает ВСЕ констрейнты, сейчас лежащие в `self.constraints`, читая/
+    /// записывая `self.bodies` напрямую по индексам `body_a`/`body_b`
+    /// каждого констрейнта (индексы, НЕ стабильные handle'ы — см.
+    /// подробное объяснение разницы в `PhysicsState::update` в `lib.rs`,
+    /// где handle'ы переводятся в текущие индексы перед КАЖДЫМ вызовом
+    /// этого метода, потому что `remove_body` двигает индексы через
+    /// `swap_remove`). Ничего не делает при пустом буфере — тот же
+    /// принцип раннего выхода, что уже применяется для контактов в
+    /// `PhysicsState::update`.
+    pub fn solve_constraints(&mut self, iterations: i32) {
+        if self.constraints.is_empty() {
+            return;
+        }
+        unsafe {
+            solve_constraints(
+                self.bodies.as_mut_ptr(),
+                self.constraints.as_mut_ptr(),
+                self.constraints.len() as i32,
+                iterations,
+            );
+        }
     }
 
     /// Broad phase с uniform grid - O(N).
@@ -380,6 +555,21 @@ impl FortranPhysics {
         if self.bodies.is_empty() {
             return;
         }
+
+        // ДОБАВЛЕНО (apply_force): переносим накопленный за кадр(ы)
+        // аккумулятор силы в `acceleration` (F=ma => a=F*inv_mass) прямо
+        // перед интеграцией — та самая строка в kernels_optimized.f90/
+        // batch_integrate теперь читает именно это поле. Статичные тела
+        // сюда не попадают в `apply_force` (no-op), но на всякий случай
+        // не трогаем их acceleration и здесь тоже.
+        for i in 0..self.bodies.len() {
+            if self.bodies[i].is_static == 0 {
+                let inv_mass = self.bodies[i].inv_mass;
+                let f = self.force_accum[i];
+                self.bodies[i].acceleration = [f[0] * inv_mass, f[1] * inv_mass, f[2] * inv_mass];
+            }
+        }
+
         let num_threads = num_threads.max(1).min(self.bodies.len());
         let chunk_size = (self.bodies.len() + num_threads - 1) / num_threads;
 
@@ -395,6 +585,13 @@ impl FortranPhysics {
                 });
             }
         });
+
+        // Аккумулятор — за ОДИН кадр, не накапливается дальше (тот же
+        // контракт, что у Bullet/Box2D: вызывающая сторона обязана звать
+        // apply_force КАЖДЫЙ кадр, пока сила должна действовать).
+        for f in self.force_accum.iter_mut() {
+            *f = [0.0; 3];
+        }
     }
 
     pub fn solve_contacts(&mut self, iterations: i32) {

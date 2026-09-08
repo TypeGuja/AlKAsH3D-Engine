@@ -22,6 +22,11 @@ typedef struct {
     float angular_damping;
     int is_static;
     int is_asleep;
+    // ДОБАВЛЕНО (физика автомобиля — вращение кузова): кватернион
+    // ориентации (x, y, z, w) — см. синхронный комментарий в ffi/mod.rs и
+    // rigid_body.f90. ПОСЛЕДНЕЕ поле, layout должен побайтово совпадать
+    // со всеми тремя сторонами (Fortran/Rust FFI/этот header).
+    float orientation[4];
 } FortranRigidBody;
 
 typedef struct {
@@ -35,13 +40,25 @@ typedef struct {
     float friction_impulse[2];
 } FortranContact;
 
+// ИЗМЕНЕНО (разборка машины на детали — джойнты/constraint API): layout
+// расширен под универсальные соединения (шар/петля/сварка/ползун) с
+// разрушением по порогу нагрузки — см. JOINT_* в rigid_body.f90 и
+// подробное обоснование каждого поля у синхронного constraint_c там же.
+// joint_type: 0=BALL, 1=HINGE, 2=FIXED, 3=SLIDER.
 typedef struct {
     int body_a;
     int body_b;
+    int joint_type;
     float anchor_a[3];
     float anchor_b[3];
+    float axis_a[3];
+    float axis_b[3];
     float bias;
-    float accumulated_impulse;
+    float break_impulse_linear;
+    float break_impulse_angular;
+    float linear_impulse[3];
+    float angular_impulse[3];
+    int is_broken;
 } FortranConstraint;
 
 // Broad phase

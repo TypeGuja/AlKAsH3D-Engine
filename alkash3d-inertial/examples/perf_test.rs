@@ -32,6 +32,10 @@ fn make_body(x: f32, y: f32, z: f32, mass: f32) -> PhysicsBody {
         angular_damping: 0.01,
         is_static: if mass <= 0.0 { 1 } else { 0 },
         is_asleep: 0,
+        // ИСПРАВЛЕНО: пример не обновили, когда `PhysicsBody` получил
+        // поле `orientation` (кватернион вращения кузова) — единичный
+        // кватернион (0,0,0,1) = без поворота, как и везде в движке.
+        orientation: [0.0, 0.0, 0.0, 1.0],
     }
 }
 
