@@ -100,6 +100,92 @@ impl PhysicsPlugin {
     pub fn get_stats(&self) -> PhysicsStats {
         (self.api.get_stats)(self.instance)
     }
+
+    /// ДОБАВЛЕНО (разборка машины на детали — джойнты/constraint API):
+    /// обёртка над `PhysicsAPI::add_constraint` — создаёт соединение
+    /// (шар/петля/сварка/ползун, см. `ConstraintDesc::joint_type`/
+    /// `joint_type` в physics_api.rs) между двумя УЖЕ существующими
+    /// телами. `None`, если плагин отказал (один из `body_a`/`body_b`
+    /// не существует) — тот же принцип "отрицательный id — ошибка,
+    /// превращаем в `Option`", что уже применяет
+    /// `AlkashEngine::add_physics_body` в `engine/physics_bridge.rs` для
+    /// `add_body`.
+    pub fn add_constraint(&mut self, desc: &ConstraintDesc) -> Option<i32> {
+        let id = (self.api.add_constraint)(self.instance, desc);
+        if id >= 0 { Some(id) } else { None }
+    }
+
+    /// ДОБАВЛЕНО (код-ревью — статичный коллайдер-плоскость): та же
+    /// обёртка "отрицательный id → `None`", что `add_constraint` выше.
+    /// См. `PlaneDesc` за объяснением, почему это только для пола.
+    pub fn add_plane(&mut self, desc: &PlaneDesc) -> Option<i32> {
+        let id = (self.api.add_plane)(self.instance, desc);
+        if id >= 0 { Some(id) } else { None }
+    }
+
+    /// Удаляет соединение (в т.ч. уже сломанное) по его handle'у — не
+    /// затрагивает сами тела.
+    pub fn remove_constraint(&mut self, id: i32) {
+        (self.api.remove_constraint)(self.instance, id);
+    }
+
+    pub fn get_constraint(&self, id: i32) -> ConstraintInfo {
+        (self.api.get_constraint)(self.instance, id)
+    }
+
+    /// Handle'ы соединений, впервые сломавшихся на ПОСЛЕДНЕМ `update()`
+    /// физики — см. подробное объяснение "почему только новые события, а
+    /// не весь список сломанных" у `PhysicsAPI::get_broken_constraints`.
+    /// Игровой код (например `AlkashEngine`) читает этот список раз за
+    /// кадр, чтобы один раз проиграть звук/заспавнить обломок на каждую
+    /// поломку.
+    pub fn get_broken_constraints(&self) -> &[i32] {
+        unsafe {
+            // ИСПРАВЛЕНО (код-ревью — гонка указатель/длина): раньше
+            // указатель и count читались ДВУМЯ отдельными FFI-вызовами
+            // (двумя независимыми lock/unlock мьютекса плагина), что
+            // могло дать висячий указатель при пересекающемся `update()`
+            // на другом потоке. Теперь один вызов `get_broken_constraints`
+            // отдаёт оба значения под одним локом — см. комментарий у
+            // этого поля в `physics_api.rs`.
+            let mut count: i32 = 0;
+            let ptr = (self.api.get_broken_constraints)(self.instance, &mut count);
+            if count > 0 && !ptr.is_null() {
+                std::slice::from_raw_parts(ptr, count as usize)
+            } else {
+                &[]
+            }
+        }
+    }
+
+    /// ДОБАВЛЕНО (Фаза 1 реальной физики — см. план "фундамент реальной
+    /// физики"): копит силу (Н, мировые координаты) в аккумулятор плагина
+    /// ДО следующего `update()` — зови КАЖДЫЙ кадр, пока сила должна
+    /// действовать (газ, сопротивление воздуха и т.п.), аккумулятор
+    /// обнуляется сразу после интеграции этого кадра. Будит тело, no-op
+    /// для static/несуществующего id.
+    pub fn apply_force(&mut self, id: i32, force: [f32; 3]) {
+        (self.api.apply_force)(self.instance, id, force.as_ptr());
+    }
+
+    /// Мгновенно `v += impulse * inv_mass`, в отличие от `apply_force` не
+    /// ждёт следующего `update()`.
+    pub fn apply_impulse(&mut self, id: i32, impulse: [f32; 3]) {
+        (self.api.apply_impulse)(self.instance, id, impulse.as_ptr());
+    }
+
+    /// Прямая перезапись линейной/угловой скорости тела (телепорт
+    /// скорости).
+    pub fn set_velocity(&mut self, id: i32, linear: [f32; 3], angular: [f32; 3]) {
+        (self.api.set_velocity)(self.instance, id, linear.as_ptr(), angular.as_ptr());
+    }
+
+    /// Прямая перезапись позиции/ориентации тела (телепорт) — скорость НЕ
+    /// трогает, зови `set_velocity` отдельно, если нужно ещё и
+    /// погасить/задать скорость при телепорте.
+    pub fn set_transform(&mut self, id: i32, position: [f32; 3], orientation: [f32; 4]) {
+        (self.api.set_transform)(self.instance, id, position.as_ptr(), orientation.as_ptr());
+    }
 }
 
 pub struct LightPlugin {

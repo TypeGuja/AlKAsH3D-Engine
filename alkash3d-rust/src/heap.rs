@@ -82,12 +82,24 @@ impl DescriptorHeap {
         }
     }
 
+    // ИСПРАВЛЕНО (найдено при аудите — жалоба пользователя на низкий FPS):
+    // `get_cpu_handle`/`get_gpu_handle` вызываются КАЖДЫЙ КАДР для КАЖДОГО
+    // объекта/материала в основном цикле рендера (в отличие от
+    // create_*_heap выше, которые выполняются один раз при инициализации
+    // — там println! оставлены, это не hot path). `println!` здесь means
+    // форматирование строки + системный вызов записи в консоль на КАЖДЫЙ
+    // такой вызов, десятки-сотни раз за кадр — то есть тысячи операций
+    // ввода-вывода в секунду только на этот лог, который к тому же после
+    // добавления console_log.rs дополнительно каждый раз пишется ещё и в
+    // файл на диск (см. engine_log.txt — вырос до десятков мегабайт всего
+    // за пару минут работы именно из-за этого спама). Сама диагностическая
+    // ценность этих строк крайне мала (просто index/offset без контекста
+    // "для какого объекта", "на каком кадре") — убраны полностью.
     pub fn get_cpu_handle(heap: &ID3D12DescriptorHeap, index: u32, increment_size: u32) -> D3D12_CPU_DESCRIPTOR_HANDLE {
         unsafe {
             let handle = heap.GetCPUDescriptorHandleForHeapStart();
             let offset = (index as u64) * (increment_size as u64);
             let ptr = handle.ptr + offset as usize;
-            println!("[HEAP] CPU handle: index={}, offset={}", index, offset);
             D3D12_CPU_DESCRIPTOR_HANDLE { ptr }
         }
     }
@@ -97,7 +109,6 @@ impl DescriptorHeap {
             let handle = heap.GetGPUDescriptorHandleForHeapStart();
             let offset = (index as u64) * (increment_size as u64);
             let ptr = handle.ptr + offset;
-            println!("[HEAP] GPU handle: index={}, offset={}", index, offset);
             D3D12_GPU_DESCRIPTOR_HANDLE { ptr }
         }
     }

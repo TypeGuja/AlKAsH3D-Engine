@@ -4,11 +4,13 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL_12_0,
-    // ДОБАВЛЕНО (тени на второй видеокарте — фаза 1): для устройства
-    // ВТОРОЙ карты (потенциально старой/слабой вроде GT710) нельзя
-    // требовать сразу 12_0, как для основной — см. блок создания второго
-    // устройства в конце `D3D12Device::create()` ниже, который пробует
-    // уровни по убыванию и берёт первый, который реально поддерживается.
+    // ДОБАВЛЕНО (тени на второй видеокарте — фаза 1; ОБНОВЛЕНО — теперь
+    // используется для ОБОИХ устройств, не только второй карты, см.
+    // комментарий у `levels_primary` в `D3D12Device::create()` ниже): ни
+    // primary, ни secondary адаптер не обязаны поддерживать 12_0 (старые/
+    // слабые карты вроде GT710 — не поддерживают) — оба места кода теперь
+    // пробуют уровни по убыванию и берут первый, который реально
+    // поддерживается, вместо жёсткого требования конкретного уровня.
     D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
 };
 use crate::STATE;
@@ -43,6 +45,73 @@ impl D3D12Device {
                     if let Some(debug) = debug {
                         debug.EnableDebugLayer();
                         println!("[DEVICE] ✓ D3D12 debug layer enabled");
+
+                        // ОТКЛЮЧЕНО ПО УМОЛЧАНИЮ (2026-09-05): GBV на тяжёлой
+                        // сцене (сотни ECS-сущностей + 3 каскада теней)
+                        // раздувала время первого кадра до нескольких МИНУТ —
+                        // GPU выглядел подвисшим для Windows, fence timeout не
+                        // успевал восстановиться штатно, и в итоге
+                        // зависала/крашилась вся система, а не только процесс.
+                        // Баг на кадре 2 (E_INVALIDARG из-за содержимого
+                        // root-дескрипторов), ради которого включали GBV, всё
+                        // ещё не подтверждён как исправленный.
+                        //
+                        // ДОБАВЛЕНО (2026-09-05, диагностика на main_car):
+                        // включается через переменную окружения ALKASH3D_GBV
+                        // вместо жёсткого кода — так можно временно включить
+                        // GBV именно на лёгкой сцене (main_car — 21 сущность,
+                        // не city-демо/world streaming) для одноразовой
+                        // диагностики, не трогая поведение по умолчанию
+                        // (main.rs/тяжёлые сцены остаются без GBV).
+                        match debug.cast::<ID3D12Debug1>() {
+                            Ok(debug1) => {
+                                if std::env::var("ALKASH3D_GBV").is_ok() {
+                                    // ДОБАВЛЕНО (код-ревью: у ALKASH3D_GBV не было
+                                    // НИКАКОЙ защиты от того самого сценария, ради
+                                    // предотвращения которого GBV вообще выключили
+                                    // по умолчанию — включить её на тяжёлой сцене
+                                    // (main.rs — city-демо + world streaming, сотни
+                                    // сущностей) и снова подвесить всю машину.
+                                    // device.rs создаётся ДО загрузки сцены, поэтому
+                                    // реальное число сущностей здесь ещё не
+                                    // известно — но известно, КАКОЙ бинарник
+                                    // запущен, а лёгкие/тяжёлые демо в этом крейте
+                                    // жёстко привязаны к конкретным бинарникам (см.
+                                    // main.rs vs main1/main2/main_car). Поэтому
+                                    // используем имя исполняемого файла как
+                                    // практическую замену проверке размера сцены:
+                                    // GBV включается ТОЛЬКО для заведомо лёгких
+                                    // демо из этого списка, для всех остальных
+                                    // (включая main.rs и любой будущий неизвестный
+                                    // бинарник) переменная окружения игнорируется.
+                                    const GBV_SAFE_BINARIES: &[&str] =
+                                        &["main_car", "main1", "main2", "physics_api_smoke"];
+                                    let exe_name = std::env::current_exe()
+                                        .ok()
+                                        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
+                                    let is_safe = exe_name
+                                        .as_deref()
+                                        .map(|n| GBV_SAFE_BINARIES.contains(&n))
+                                        .unwrap_or(false);
+
+                                    if is_safe {
+                                        debug1.SetEnableGPUBasedValidation(true);
+                                        println!("[DEVICE] ⚠ GPU-Based Validation ВКЛЮЧЕНА (ALKASH3D_GBV, бинарник '{}' в списке лёгких сцен) — кадр может выполняться на порядки дольше", exe_name.unwrap_or_default());
+                                    } else {
+                                        println!(
+                                            "[DEVICE] ALKASH3D_GBV установлена, но ИГНОРИРУЕТСЯ: бинарник '{}' не входит в список лёгких сцен {:?} — GBV на тяжёлой сцене уже приводила к зависанию всей машины (см. комментарий выше). Запусти диагностику через один из лёгких демо-бинарников.",
+                                            exe_name.unwrap_or_else(|| "<неизвестно>".to_string()),
+                                            GBV_SAFE_BINARIES
+                                        );
+                                    }
+                                } else {
+                                    println!("[DEVICE] GPU-Based Validation доступен, но отключён по умолчанию (см. комментарий в device.rs — на тяжёлой сцене раздувает кадр до минут и может подвесить систему; установи ALKASH3D_GBV=1 для диагностики на лёгкой сцене)");
+                                }
+                            }
+                            Err(e) => {
+                                println!("[DEVICE] ID3D12Debug1 (GPU-Based Validation) недоступен ({:?}) — продолжаем без неё", e);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -94,7 +163,33 @@ impl D3D12Device {
                             "[DEVICE] Adapter {}: {} - Software: {} - VRAM: {} MB",
                             i, name, is_software, vram_mb
                         );
-                        if !is_software {
+                        // ИСПРАВЛЕНО (реальный краш на живой машине —
+                        // HRESULT 0x887A0004 "уровень не поддерживается"
+                        // при инициализации): на системе с проблемным
+                        // драйвером одной из карт DXGI может отдать
+                        // "Microsoft Basic Render Driver" (системный
+                        // software-рендерер, присутствует в списке адаптеров
+                        // ВСЕГДА, независимо от реального железа) с флагом
+                        // `DXGI_ADAPTER_FLAG_SOFTWARE`, который выставлен
+                        // НЕВЕРНО (`is_software == false`) — то есть чисто
+                        // по флагу он неотличим от настоящей аппаратной
+                        // карты и проходит в `hardware_adapters`. У такого
+                        // ложного адаптера VRAM=0, но раньше это не
+                        // спасало: если он оказывался ЕДИНСТВЕННЫМ
+                        // "аппаратным" адаптером в списке (например —
+                        // настоящая дискретная карта на этот момент
+                        // недоступна из-за кода 31 в диспетчере устройств),
+                        // сортировка по VRAM была не при чём, а сам он мог
+                        // попасть в primary просто как единственный
+                        // претендент. Хуже того, при наличии ДВУХ таких
+                        // ложных записей (что и произошло на практике) одна
+                        // из них ошибочно засчитывалась как "вторая
+                        // видеокарта". Теперь дополнительно проверяем ИМЯ —
+                        // "Microsoft Basic Render Driver" никогда не
+                        // считается настоящим hardware-адаптером, вне
+                        // зависимости от значения флага `is_software`.
+                        let is_basic_render_driver = name == "Microsoft Basic Render Driver";
+                        if !is_software && !is_basic_render_driver {
                             hardware_adapters.push(AdapterInfo { adapter: adap, name, vram_mb });
                         }
                     }
@@ -143,13 +238,55 @@ impl D3D12Device {
             };
 
             println!("[DEVICE] Creating D3D12 device...");
+            // ИСПРАВЛЕНО (реальный краш на живой машине — HRESULT
+            // 0x887A0004 "Указанный интерфейс устройства или уровень
+            // компонента не поддерживается в данной системе" прямо на
+            // старте): раньше primary-адаптер жёстко требовал
+            // D3D_FEATURE_LEVEL_12_0 без какого-либо fallback — в отличие
+            // от secondary-адаптера ниже, который уже пробует уровни по
+            // убыванию. Из-за этого ЛЮБАЯ ситуация, когда самой "мощной по
+            // VRAM" картой в списке оказывается адаптер без поддержки
+            // 12_0 (например — единственная доступная в моменте карта
+            // старого поколения вроде GT710/Kepler, или временная
+            // ситуация, когда основная карта отвалилась из-за проблемы с
+            // драйвером — код 31 в диспетчере устройств — и её место
+            // "самой мощной" занял единственный оставшийся адаптер),
+            // приводила к падению уже на этапе создания устройства, ещё
+            // до окна и рендера. Теперь primary тоже пробует уровни по
+            // убыванию — так же, как secondary — и падает только если НИ
+            // ОДИН уровень не поддерживается вообще ни на каком доступном
+            // адаптере.
+            let levels_primary = [
+                ("12_1", D3D_FEATURE_LEVEL_12_1),
+                ("12_0", D3D_FEATURE_LEVEL_12_0),
+                ("11_1", D3D_FEATURE_LEVEL_11_1),
+                ("11_0", D3D_FEATURE_LEVEL_11_0),
+            ];
             let mut device: Option<ID3D12Device> = None;
-            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device)?;
+            let mut selected_level_name = "";
+            for (level_name, level) in levels_primary {
+                let mut candidate: Option<ID3D12Device> = None;
+                match D3D12CreateDevice(&adapter, level, &mut candidate) {
+                    Ok(()) => {
+                        if candidate.is_some() {
+                            device = candidate;
+                            selected_level_name = level_name;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        println!(
+                            "[DEVICE] Основная карта не поддерживает feature level {}: {:?}",
+                            level_name, e
+                        );
+                    }
+                }
+            }
             let device = device.ok_or_else(|| {
-                eprintln!("[DEVICE] ERROR: Failed to create device!");
+                eprintln!("[DEVICE] ERROR: Failed to create device! (ни один feature level не поддержан)");
                 Error::from_hresult(HRESULT(1))
             })?;
-            println!("[DEVICE] D3D12 device created");
+            println!("[DEVICE] D3D12 device created (feature level {})", selected_level_name);
 
             println!("[DEVICE] Getting descriptor sizes...");
             let rtv_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);

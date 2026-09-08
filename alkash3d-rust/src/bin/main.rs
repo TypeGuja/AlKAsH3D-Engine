@@ -171,6 +171,15 @@ const LUA_BOBBER_SCRIPT_PATH: &str = "../alkash3d-luascript/examples/bobber.lua"
 // C++/Rust (DLL).
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // ДОБАВЛЕНО (по просьбе пользователя): сохраняем весь вывод консоли
+    // (stdout+stderr, то есть буквально ВСЁ, что печатает движок и все
+    // плагины через println!/eprintln! где угодно в процессе) в .txt-файл
+    // рядом с исполняемым файлом — ДОЛЖНО быть вызвано самым первым
+    // делом, до первого println! ниже, иначе первые строки лога (баннер
+    // движка) в файл не попадут. См. подробности механизма в
+    // console_log.rs.
+    alkash3d_rs::console_log::init_console_log_to_file("engine_log.txt");
+
     println!("==========================================");
     println!("Alkash3D Engine v{}", alkash3d_rs::VERSION);
     println!("==========================================");

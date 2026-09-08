@@ -21,6 +21,12 @@ mod pso;
 mod altex_format;
 mod alfar_format;
 mod alcar_format;
+// ДОБАВЛЕНО (разборка машины/двигателя/коробки на детали): граф физически
+// разбираемых деталей поверх joints/constraint API из alkash3d-inertial —
+// независим от alcar (тот — игровые характеристики машины, этот — из
+// чего она физически состоит и как скреплена). Подробно см. шапку
+// alasm_format.rs.
+mod alasm_format;
 mod alroute_format;
 mod alworld_format;
 mod almat_format;
@@ -34,6 +40,16 @@ mod aluv_format;
 // плагина на диске пользователя, в отличие от alkash3d-inertial/
 // alkash3d-FirstFires — поэтому звук реализован напрямую здесь).
 pub mod audio;
+
+/// ДОБАВЛЕНО (My Summer Car-like демо — текстуры): см. подробное
+/// объяснение в шапке `proc_textures.rs` про то, почему текстуры считаются
+/// процедурно на CPU, а не грузятся из PNG/JPG.
+pub mod proc_textures;
+
+/// ДОБАВЛЕНО (My Summer Car-like демо — вождение): см. подробное
+/// объяснение в шапке `car_sim.rs` про то, почему аркадная симуляция
+/// написана отдельно от физики Inertial, а не через неё.
+pub mod car_sim;
 
 mod plugin;
 mod scheduler;
@@ -51,6 +67,10 @@ pub mod scene;
 
 /// Система ввода — см. input.rs.
 pub mod input;
+
+/// ДОБАВЛЕНО (по просьбе пользователя): сохранение лога консоли в .txt
+/// файл — см. подробное описание механизма в console_log.rs.
+pub mod console_log;
 
 ///  in pub
 pub use device::*;

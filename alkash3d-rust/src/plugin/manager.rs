@@ -22,6 +22,65 @@ struct LoadedPlugin {
     instance: *mut c_void,
 }
 
+// ДОБАВЛЕНО (диагностика "LoadLibraryExW failed" на реальной машине
+// пользователя — `inertial.dll` иногда не грузился): по умолчанию
+// `Library::new(path)` → `LoadLibraryExW(path, NULL, 0)` — при флагах=0
+// Windows ищет DLL-ЗАВИСИМОСТИ загружаемой библиотеки (для `inertial.dll`
+// это `libgfortran-5.dll`/`libgomp-1.dll`/... из MSYS2, см. build.rs) по
+// СТАНДАРТНОМУ порядку поиска, в который папка самой `inertial.dll` НЕ
+// входит, если явно не запрошено флагом. Раньше это "работало" только
+// пока `C:\msys64\mingw64\bin` был в PATH процесса (например, свежий
+// терминал) — в IDE, запущенной до того как PATH обновился, или на чужой
+// машине без MSYS2 в PATH, загрузка падала с малополезным сообщением.
+// `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` —
+// официально рекомендованная Microsoft комбинация для ровно этого случая
+// ("плагин с DLL-зависимостями рядом с собой"): ищет зависимости и в
+// стандартных местах (System32/PATH и т.п.), И в папке самого plugin.dll,
+// вне зависимости от PATH запускающего процесса. `build.rs` в
+// alkash3d-inertial теперь дополнительно копирует эти рантайм-DLL рядом с
+// `inertial.dll`, так что после этой правки загрузка не зависит от PATH
+// вообще.
+#[cfg(windows)]
+fn load_library(path: &Path) -> Result<Library, libloading::Error> {
+    use libloading::os::windows::{
+        Library as WinLibrary, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    };
+    // LoadLibraryExW сам разрешает относительный путь, но резолвим
+    // абсолютный явно — надёжнее, если рабочая директория процесса вдруг
+    // не та, что ожидает вызывающий код (например, плагин запущен не из
+    // папки проекта).
+    let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    unsafe {
+        WinLibrary::load_with_flags(
+            abs_path,
+            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        )
+        .map(Into::into)
+    }
+}
+
+#[cfg(not(windows))]
+fn load_library(path: &Path) -> Result<Library, libloading::Error> {
+    unsafe { Library::new(path) }
+}
+
+/// Печатает ВСЮ цепочку `source()` ошибки, а не только верхний уровень.
+/// Нужно конкретно для `libloading::Error::LoadLibraryExW` — его `Display`
+/// печатает буквально "LoadLibraryExW failed" без реального кода ошибки
+/// Windows (`GetLastError()`, например 126 = ERROR_MOD_NOT_FOUND — "не
+/// найдена зависимость"); настоящий текст лежит в обёрнутом
+/// `source()`-объекте.
+fn describe_error(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(s) = src {
+        msg.push_str(" -> ");
+        msg.push_str(&s.to_string());
+        src = s.source();
+    }
+    msg
+}
+
 impl PluginManager {
     pub fn new() -> Self {
         Self {
@@ -39,7 +98,8 @@ impl PluginManager {
         }
 
         unsafe {
-            let lib = Library::new(path).map_err(|e| format!("Failed to load {}: {}", path.display(), e))?;
+            let lib = load_library(path)
+                .map_err(|e| format!("Failed to load {}: {}", path.display(), describe_error(&e)))?;
 
             // Получаем функцию get_plugin_api
             let get_api: Symbol<extern "C" fn() -> PluginAPI> = lib

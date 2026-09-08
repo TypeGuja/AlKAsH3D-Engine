@@ -1,0 +1,1150 @@
+//! Главный проход рендера кадра: shadow-проход (cascaded shadow maps),
+//! основной 3D draw pass (frustum culling + occlusion culling + материалы +
+//! constant buffer per-object), volumetric god-rays, bloom (extract+blur
+//! ping-pong), composite/tonemap в back buffer, Present. Плюс рост GPU-
+//! буферов по требованию (`ensure_*_capacity`) и хелперы transition-барьеров.
+//!
+//! ВЫНЕСЕНО из `engine/mod.rs` (Фаза 1 архитектурного рефакторинга — разбивка
+//! монолита `impl AlkashEngine` на подсистемы). Перенос дословный, тела
+//! методов не менялись — видимость `ensure_constant_buffer_capacity` поднята
+//! до `pub(super)`, т.к. её вызывает `init()`, оставшийся в mod.rs.
+
+use windows::core::*;
+use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Direct3D::D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
+use std::sync::atomic::Ordering;
+use crate::STATE;
+use crate::buffer::Buffer;
+use crate::plugin::{GPULight, LightGridCell, LightGridEntry};
+use crate::constant_buffer::TransformConstants;
+use crate::command::CommandList;
+use crate::math::{identity, Mat4, Vec3};
+use super::{
+    AlkashEngine, Vertex, NUM_CASCADES, CASCADE_SPLITS, SHADOW_MAP_RESOLUTION,
+    OCCLUDER_MIN_WORLD_RADIUS, OCCLUDER_INSCRIBE_FACTOR,
+    NEXT_FENCE_VALUE, wait_for_fence,
+};
+
+impl AlkashEngine {
+
+    /// ИСПРАВЛЕНО (краш exit code 2173 / 0x87d после ~200 кадров, ловилось
+    /// только БЕЗ GPU-Based Validation): все `ensure_*_capacity` ниже при
+    /// пересоздании буфера делали `self.some_buffer = Some(new_buffer)`,
+    /// что дропает старый `ID3D12Resource` НЕМЕДЛЕННО, отдавая его память
+    /// обратно. `render_frame` ждёт fence только ТЕКУЩЕГО frame_index
+    /// (двойная буферизация слотов ВНУТРИ буфера) — но пересоздание рвёт
+    /// буфер целиком, под ОБОИМИ слотами сразу, включая слот "чужого"
+    /// frame_index, чей command list мог быть отправлен на GPU в прошлом
+    /// кадре и ещё не завершиться (fence для него не проверялся в этом
+    /// вызове). Если GPU в этот момент ещё читает старый буфер —
+    /// classic use-after-free на GPU-стороне: без diagnostic-сообщений,
+    /// просто обрыв процесса (структурное исключение из драйвера/рантайма,
+    /// не наш Rust-код). GPU-Based Validation резко замедляет GPU-команды
+    /// и почти всегда даёт GPU закончить читать старый буфер раньше, чем
+    /// CPU успевает его пересоздать — маскирует гонку, а не убирает её.
+    ///
+    /// Фикс: перед ЛЮБЫМ пересозданием (не первым выделением с нуля —
+    /// тогда старого буфера просто нет) дожидаемся МАКСИМАЛЬНОГО из двух
+    /// `frame_fence_values` — то есть гарантируем, что GPU закончил ОБА
+    /// in-flight кадра, а не только текущий, прежде чем отдать память
+    /// старого буфера.
+    fn wait_for_all_frames_idle_before_realloc(&self) {
+        if let Ok(fence) = crate::get_fence() {
+            let target = self.frame_fence_values.iter().copied().max().unwrap_or(0);
+            if let Err(reason) = wait_for_fence(&fence, target, std::time::Duration::from_secs(5)) {
+                eprintln!("[ENGINE] wait_for_all_frames_idle_before_realloc: {} — продолжаем пересоздание буфера рискованно", reason);
+            }
+        }
+    }
+
+    /// Гарантирует, что константный буфер вмещает как минимум
+    /// `needed_per_frame` слотов трансформаций НА КАЖДЫЙ из двух back
+    /// buffer'ов (итого выделяется `needed_per_frame * 2` слотов).
+    /// Пересоздаёт буфер, если текущей ёмкости не хватает (например,
+    /// сцена выросла — добавили ещё кубов в сетку пола).
+    ///
+    /// Буфер удваивается на оба back buffer'а по той же причине, по
+    /// которой у нас уже два `command allocator`'а: пока GPU дорисовывает
+    /// кадр N (frame_index k), CPU уже готовит кадр N+1 (frame_index
+    /// 1-k). Если бы оба кадра писали в одни и те же слоты одного и того
+    /// же буфера — это была бы гонка данных между CPU, пишущим новый
+    /// кадр, и GPU, всё ещё читающим предыдущий. Слот для конкретного
+    /// кадра выбирается как `frame_index * capacity + i` — см.
+    /// `render_frame`.
+    pub(super) fn ensure_constant_buffer_capacity(&mut self, needed_per_frame: usize) -> Result<()> {
+        if self.constant_buffer.is_some() && needed_per_frame <= self.constant_buffer_capacity {
+            return Ok(());
+        }
+        if self.constant_buffer.is_some() {
+            self.wait_for_all_frames_idle_before_realloc();
+        }
+
+        let new_capacity = needed_per_frame.max(64).next_power_of_two();
+        let total_slots = new_capacity * 2;
+        let buffer = Buffer::create_constant_buffer_array(TransformConstants::aligned_size(), total_slots)?;
+        println!(
+            "[ENGINE] Constant buffer (re)allocated: {} slots/кадр x2 = {} слотов",
+            new_capacity, total_slots
+        );
+        self.constant_buffer = Some(buffer);
+        self.constant_buffer_capacity = new_capacity;
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (Фаза 6 плана по реализму/фонарям — тени): тот же
+    /// паттерн роста, что и `ensure_constant_buffer_capacity` выше, но для
+    /// отдельного `shadow_constant_buffer` (см. `constant_buffer::ShadowConstants`)
+    /// — shadow-проход рисует ТЕ ЖЕ объекты кадра, поэтому нуждается в
+    /// ровно таком же количестве слотов, просто в СВОЁМ буфере (другой
+    /// layout данных, другая root signature).
+    ///
+    /// ИСПРАВЛЕНО (Cascaded Shadow Maps — переполнение буфера): `caller`
+    /// (render_frame) передаёт `needed_per_frame = shadow_jobs.len() *
+    /// NUM_CASCADES` — то есть `shadow_constant_buffer_capacity` ниже
+    /// хранит ёмкость на ОДИН ПОЛНЫЙ кадр (все каскады сразу), а формула
+    /// слота в render_frame — `(frame_index * NUM_CASCADES + cascade) *
+    /// shadow_constant_buffer_capacity + i` — умножает `capacity` НА
+    /// (frame_index * NUM_CASCADES + cascade), а НЕ просто на frame_index.
+    /// Раньше (до CSM, один каскад) буфер выделялся как `capacity * 2`
+    /// (x2 только на frame_index) — теперь этого катастрофически не
+    /// хватает: слот для cascade=2 при frame_index=1 обращается далеко ЗА
+    /// пределы буфера (undefined behaviour/GPU crash). Нужно выделять
+    /// `capacity`, умноженную на ПОЛНОЕ число независимых блоков —
+    /// `2 (frame_index) * NUM_CASCADES` — а не на 2.
+    fn ensure_shadow_constant_buffer_capacity(&mut self, needed_per_frame: usize) -> Result<()> {
+        if self.shadow_constant_buffer.is_some() && needed_per_frame <= self.shadow_constant_buffer_capacity {
+            return Ok(());
+        }
+        if self.shadow_constant_buffer.is_some() {
+            self.wait_for_all_frames_idle_before_realloc();
+        }
+
+        let new_capacity = needed_per_frame.max(64).next_power_of_two();
+        let total_slots = new_capacity * 2 * NUM_CASCADES;
+        let buffer = Buffer::create_constant_buffer_array(crate::constant_buffer::ShadowConstants::aligned_size(), total_slots)?;
+        println!(
+            "[ENGINE] Shadow constant buffer (re)allocated: {} slots/(кадр*каскад) x2 x{} каскада = {} слотов",
+            new_capacity, NUM_CASCADES, total_slots
+        );
+        self.shadow_constant_buffer = Some(buffer);
+        self.shadow_constant_buffer_capacity = new_capacity;
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (Фаза 2 плана по реализму/фонарям): гарантирует, что
+    /// `light_buffer` вмещает как минимум `needed` элементов `GPULight`.
+    /// Тот же паттерн роста, что и у `ensure_constant_buffer_capacity`
+    /// (степень двойки, минимум разумного стартового размера) — растёт по
+    /// требованию, а не выделяется на весь возможный максимум сразу,
+    /// потому что реальное число видимых после каллинга фонарей в кадре
+    /// обычно НАМНОГО меньше total_lights (это и есть весь смысл каллинга).
+    fn ensure_light_buffer_capacity(&mut self, needed: usize) -> Result<()> {
+        if self.light_buffer.is_some() && needed <= self.light_buffer_capacity {
+            return Ok(());
+        }
+        if self.light_buffer.is_some() {
+            self.wait_for_all_frames_idle_before_realloc();
+        }
+
+        let new_capacity = needed.max(64).next_power_of_two();
+        let size_bytes = new_capacity as u64 * std::mem::size_of::<GPULight>() as u64;
+        let buffer = Buffer::create_structured_buffer(size_bytes)?;
+        println!(
+            "[ENGINE] Light buffer (re)allocated: {} GPULight слотов ({} байт)",
+            new_capacity, size_bytes
+        );
+        self.light_buffer = Some(buffer);
+        self.light_buffer_capacity = new_capacity;
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям): гарантирует, что
+    /// `grid_cells_buffer` вмещает РОВНО `needed` ячеек. В отличие от
+    /// `ensure_light_buffer_capacity`/`ensure_grid_entries_buffer_capacity`,
+    /// здесь НЕТ роста "с запасом" (`next_power_of_two`) — общее число
+    /// ячеек сетки в FirstFires фиксировано на весь срок жизни плагина
+    /// (задаётся один раз в LightConfig), пересоздание буфера при этом
+    /// размере НЕ происходит на каждый кадр (проверка `needed ==
+    /// capacity`, а не `needed <= capacity`, чтобы не тратить память под
+    /// "запас", который никогда не понадобится для этого буфера).
+    fn ensure_grid_cells_buffer_capacity(&mut self, needed: usize) -> Result<()> {
+        if self.grid_cells_buffer.is_some() && needed == self.grid_cells_buffer_capacity {
+            return Ok(());
+        }
+        if self.grid_cells_buffer.is_some() {
+            self.wait_for_all_frames_idle_before_realloc();
+        }
+        let size_bytes = needed.max(1) as u64 * std::mem::size_of::<LightGridCell>() as u64;
+        let buffer = Buffer::create_structured_buffer(size_bytes)?;
+        println!(
+            "[ENGINE] Grid cells buffer (re)allocated: {} ячеек ({} байт)",
+            needed, size_bytes
+        );
+        self.grid_cells_buffer = Some(buffer);
+        self.grid_cells_buffer_capacity = needed;
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям): то же самое, что
+    /// `ensure_light_buffer_capacity`, но для `grid_entries_buffer` —
+    /// число entries меняется каждый кадр (зависит от того, сколько
+    /// фонарей реально видимо), поэтому растёт степенями двойки, а не
+    /// фиксировано, как `grid_cells_buffer`.
+    fn ensure_grid_entries_buffer_capacity(&mut self, needed: usize) -> Result<()> {
+        if self.grid_entries_buffer.is_some() && needed <= self.grid_entries_buffer_capacity {
+            return Ok(());
+        }
+        if self.grid_entries_buffer.is_some() {
+            self.wait_for_all_frames_idle_before_realloc();
+        }
+        let new_capacity = needed.max(64).next_power_of_two();
+        let size_bytes = new_capacity as u64 * std::mem::size_of::<LightGridEntry>() as u64;
+        let buffer = Buffer::create_structured_buffer(size_bytes)?;
+        println!(
+            "[ENGINE] Grid entries buffer (re)allocated: {} слотов ({} байт)",
+            new_capacity, size_bytes
+        );
+        self.grid_entries_buffer = Some(buffer);
+        self.grid_entries_buffer_capacity = new_capacity;
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (Фаза 5 плана по реализму/фонарям): вспомогательная
+    /// функция для transition-барьера — до этой фазы движок вообще не
+    /// вызывал `ResourceBarrier` (рисовал прямо в back buffer без явных
+    /// переходов состояния, что формально некорректно по спецификации
+    /// D3D12, хоть и "работало" на многих драйверах). Теперь, когда
+    /// появился HDR render target с полноценным циклом состояний
+    /// (RENDER_TARGET во время draw pass -> PIXEL_SHADER_RESOURCE во время
+    /// чтения в composite pass -> обратно в RENDER_TARGET для следующего
+    /// кадра), обойтись без барьеров уже не получится — без них GPU не
+    /// гарантированно видит корректные данные (кэши/порядок записи-чтения
+    /// не синхронизированы).
+    ///
+    /// `pResource: ManuallyDrop<Option<ID3D12Resource>>` (см.
+    /// `D3D12_RESOURCE_TRANSITION_BARRIER` в windows-крейте) — тот же COM
+    /// refcounting паттерн, что уже встречался в `pso.rs` для
+    /// `pRootSignature`: клонируем ресурс (это увеличивает refcount на 1),
+    /// поэтому обязаны сами явно уменьшить его обратно после того, как
+    /// барьер отработал — см. `ManuallyDrop::drop` сразу после
+    /// `ResourceBarrier` в местах вызова.
+    fn transition_barrier(
+        resource: &ID3D12Resource,
+        before: D3D12_RESOURCE_STATES,
+        after: D3D12_RESOURCE_STATES,
+    ) -> D3D12_RESOURCE_BARRIER {
+        D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                    pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+                    Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                    StateBefore: before,
+                    StateAfter: after,
+                }),
+            },
+        }
+    }
+
+    /// Освобождает лишнюю ссылку на ресурс внутри барьера, добавленную
+    /// клонированием в `transition_barrier` — см. объяснение там же.
+    unsafe fn drop_transition_barrier(mut barrier: D3D12_RESOURCE_BARRIER) {
+        unsafe {
+            std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition);
+        }
+    }
+
+    pub fn render_frame(&mut self) -> Result<bool> {
+        let renderer = self.renderer.as_ref().ok_or_else(|| {
+            eprintln!("[ENGINE] ERROR: render_frame() called but renderer is not initialized");
+            Error::from_hresult(HRESULT(1))
+        })?;
+
+        let frame_index = {
+            let state = STATE.lock().unwrap();
+            state.frame_index as usize
+        };
+
+        if let Some(&target) = self.frame_fence_values.get(frame_index) {
+            if target > 0 {
+                let fence = crate::get_fence()?;
+                if let Err(reason) = wait_for_fence(&fence, target, std::time::Duration::from_secs(5)) {
+                    eprintln!("[ENGINE] render_frame: {} — прерываем кадр", reason);
+                    crate::dump_d3d12_debug_messages();
+                    return Err(Error::from_hresult(HRESULT(1)));
+                }
+            }
+        }
+
+        let allocator = CommandList::get_allocator(frame_index)
+            .ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
+
+        unsafe {
+            allocator.Reset()?;
+        }
+
+        let device = crate::get_device()?;
+
+        let cmd_list: ID3D12GraphicsCommandList = unsafe {
+            device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
+        };
+
+        let rtv_handle = renderer.hdr_rtv;
+        let dsv_handle = renderer.depth_stencil_view;
+
+        let shadow_jobs: Vec<(usize, Mat4)> = {
+            let mut v: Vec<(usize, Mat4)> = Vec::new();
+            if !self.mesh_instances.is_empty() {
+                for instance in &self.mesh_instances {
+                    if instance.mesh_index < self.meshes.len() {
+                        v.push((instance.mesh_index, instance.transform_matrix()));
+                    }
+                }
+            }
+            for (mesh_index, world) in self.scene.collect_renderables() {
+                if mesh_index < self.meshes.len() {
+                    v.push((mesh_index, world));
+                }
+            }
+            v
+        };
+
+        let light_dir_vec = Vec3::new(
+            self.transform_constants.light_dir[0],
+            self.transform_constants.light_dir[1],
+            self.transform_constants.light_dir[2],
+        );
+
+        let cascade_far_distances: [f32; NUM_CASCADES] = {
+            let mut arr = [0.0f32; NUM_CASCADES];
+            for i in 0..NUM_CASCADES {
+                arr[i] = self.camera.far * CASCADE_SPLITS[i];
+            }
+            arr
+        };
+        let cascade_view_projs: [Mat4; NUM_CASCADES] = {
+            let mut arr = [Mat4::IDENTITY; NUM_CASCADES];
+            let mut near_dist = self.camera.near;
+            for i in 0..NUM_CASCADES {
+                let far_dist = cascade_far_distances[i];
+                arr[i] = self.compute_cascade_view_proj(light_dir_vec, near_dist, far_dist);
+                near_dist = far_dist;
+            }
+            arr
+        };
+
+        if self.shadow_pipeline_state.is_some() && self.shadow_root_signature.is_some() {
+            if let Err(e) = self.ensure_shadow_constant_buffer_capacity(shadow_jobs.len() * NUM_CASCADES) {
+                eprintln!("[ENGINE] WARNING: не удалось выделить shadow_constant_buffer: {:?}", e);
+            }
+
+            unsafe {
+                cmd_list.SetPipelineState(Some(self.shadow_pipeline_state.as_ref().unwrap()));
+                cmd_list.SetGraphicsRootSignature(Some(self.shadow_root_signature.as_ref().unwrap()));
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                let shadow_viewport = D3D12_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: SHADOW_MAP_RESOLUTION as f32,
+                    Height: SHADOW_MAP_RESOLUTION as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                };
+                cmd_list.RSSetViewports(&[shadow_viewport]);
+                let shadow_scissor = RECT {
+                    left: 0,
+                    top: 0,
+                    right: SHADOW_MAP_RESOLUTION as i32,
+                    bottom: SHADOW_MAP_RESOLUTION as i32,
+                };
+                cmd_list.RSSetScissorRects(&[shadow_scissor]);
+
+                for cascade in 0..NUM_CASCADES {
+                    let dsv = self.shadow_dsvs[cascade];
+                    cmd_list.OMSetRenderTargets(0, None, false, Some(&dsv));
+                    cmd_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+
+                    let light_view_proj = cascade_view_projs[cascade];
+
+                    if let Some(shadow_cb) = &self.shadow_constant_buffer {
+                        for (i, (mesh_index, model)) in shadow_jobs.iter().enumerate() {
+                            let mesh = &self.meshes[*mesh_index];
+                            let mlvp = light_view_proj * (*model);
+                            let shadow_constants = crate::constant_buffer::ShadowConstants {
+                                model_light_view_proj: mlvp.to_cols_array_2d(),
+                            };
+                            let slot = (frame_index * NUM_CASCADES + cascade) * self.shadow_constant_buffer_capacity + i;
+                            if let Err(e) = shadow_constants.write_at(shadow_cb, slot) {
+                                eprintln!("[ENGINE] WARNING: failed to write shadow constant buffer slot {}: {:?}", slot, e);
+                                continue;
+                            }
+                            let gpu_addr = crate::constant_buffer::ShadowConstants::gpu_address_for_slot(shadow_cb, slot);
+                            cmd_list.SetGraphicsRootConstantBufferView(0, gpu_addr);
+
+                            let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                                BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                                SizeInBytes: mesh.vertex_buffer.size as u32,
+                                StrideInBytes: Vertex::STRIDE,
+                            };
+                            cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+
+                            if let Some(index_buffer) = &mesh.index_buffer {
+                                let index_view = D3D12_INDEX_BUFFER_VIEW {
+                                    BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                                    SizeInBytes: index_buffer.size as u32,
+                                    Format: DXGI_FORMAT_R32_UINT,
+                                };
+                                cmd_list.IASetIndexBuffer(Some(&index_view));
+                                cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+                            } else {
+                                cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                            }
+                        }
+                    }
+
+                    if let Some(shadow_map) = &self.shadow_maps[cascade] {
+                        if !self.shadow_maps_are_srv[cascade] {
+                            let barrier = Self::transition_barrier(
+                                &shadow_map.resource,
+                                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                            );
+                            let barriers = [barrier];
+                            cmd_list.ResourceBarrier(&barriers);
+                            for b in barriers {
+                                Self::drop_transition_barrier(b);
+                            }
+                            self.shadow_maps_are_srv[cascade] = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        unsafe {
+            cmd_list.OMSetRenderTargets(1, Some(&rtv_handle), false, Some(&dsv_handle));
+            cmd_list.ClearRenderTargetView(rtv_handle, &self.clear_color, None);
+            cmd_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+
+            let viewport = D3D12_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: self.width as f32,
+                Height: self.height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            cmd_list.RSSetViewports(&[viewport]);
+
+            let scissor = RECT {
+                left: 0,
+                top: 0,
+                right: self.width as i32,
+                bottom: self.height as i32,
+            };
+            cmd_list.RSSetScissorRects(&[scissor]);
+
+            cmd_list.SetPipelineState(Some(self.pipeline_state.as_ref().unwrap()));
+            cmd_list.SetGraphicsRootSignature(Some(self.root_signature.as_ref().unwrap()));
+
+            let white_texture_srv_fallback = match self.ensure_white_texture() {
+                Ok(index) => Some(index),
+                Err(e) => {
+                    eprintln!("[ENGINE] WARNING: не удалось создать белую fallback-текстуру: {:?} — material-биндинг пропущен в этом кадре", e);
+                    None
+                }
+            };
+            let flat_normal_srv_fallback = match self.ensure_flat_normal_texture() {
+                Ok(index) => Some(index),
+                Err(e) => {
+                    eprintln!("[ENGINE] WARNING: не удалось создать flat-normal fallback-текстуру: {:?} — normal mapping пропущен в этом кадре", e);
+                    None
+                }
+            };
+            let neutral_mr_srv_fallback = match self.ensure_neutral_mr_texture() {
+                Ok(index) => Some(index),
+                Err(e) => {
+                    eprintln!("[ENGINE] WARNING: не удалось создать нейтральную MR fallback-текстуру: {:?}", e);
+                    None
+                }
+            };
+            let cbv_srv_uav_size_materials = {
+                let state = STATE.lock().unwrap();
+                state.cbv_srv_uav_descriptor_size
+            };
+
+            if let Some(shadow_srv_heap) = &self.shadow_srv_heap {
+                let heaps = [Some(shadow_srv_heap.clone())];
+                cmd_list.SetDescriptorHeaps(&heaps);
+                cmd_list.SetGraphicsRootDescriptorTable(4, self.shadow_srv_gpu);
+            }
+
+            for cascade in 0..NUM_CASCADES {
+                self.transform_constants.light_view_proj[cascade] = cascade_view_projs[cascade].to_cols_array_2d();
+            }
+            self.transform_constants.cascade_split_distances = [
+                cascade_far_distances[0],
+                cascade_far_distances[1],
+                cascade_far_distances[2],
+                0.0,
+            ];
+            self.transform_constants.shadow_map_size = SHADOW_MAP_RESOLUTION as f32;
+            self.transform_constants.shadows_enabled =
+                if self.shadow_pipeline_state.is_some() && self.shadow_root_signature.is_some() { 1 } else { 0 };
+
+            let light_count = self.get_gpu_lights().len();
+            if let Err(e) = self.ensure_light_buffer_capacity(light_count) {
+                eprintln!("[ENGINE] WARNING: не удалось выделить light_buffer: {:?}", e);
+            }
+            if let Some(light_buffer) = &self.light_buffer {
+                if light_count > 0 {
+                    let gpu_lights = self.lights.as_ref().map(|l| l.get_gpu_lights()).unwrap_or(&[]);
+                    let bytes = std::slice::from_raw_parts(
+                        gpu_lights.as_ptr() as *const u8,
+                        light_count * std::mem::size_of::<GPULight>(),
+                    );
+                    if let Err(e) = light_buffer.update_structured_buffer(bytes) {
+                        eprintln!("[ENGINE] WARNING: не удалось обновить light_buffer: {:?}", e);
+                    }
+                }
+                let light_gpu_addr = light_buffer.resource.GetGPUVirtualAddress();
+                cmd_list.SetGraphicsRootShaderResourceView(1, light_gpu_addr);
+            }
+            self.transform_constants.light_count = light_count as u32;
+
+            let grid_params = self.lights.as_ref().map(|l| l.get_grid_params());
+            let grid_cells_count = self.lights.as_ref().map(|l| l.get_grid_cells().len()).unwrap_or(0);
+            let grid_entries_count = self.lights.as_ref().map(|l| l.get_grid_entries().len()).unwrap_or(0);
+
+            if let Err(e) = self.ensure_grid_cells_buffer_capacity(grid_cells_count) {
+                eprintln!("[ENGINE] WARNING: не удалось выделить grid_cells_buffer: {:?}", e);
+            }
+            if let Err(e) = self.ensure_grid_entries_buffer_capacity(grid_entries_count) {
+                eprintln!("[ENGINE] WARNING: не удалось выделить grid_entries_buffer: {:?}", e);
+            }
+
+            if let Some(grid_cells_buffer) = &self.grid_cells_buffer {
+                if grid_cells_count > 0 {
+                    let cells = self.lights.as_ref().map(|l| l.get_grid_cells()).unwrap_or(&[]);
+                    let bytes = std::slice::from_raw_parts(
+                        cells.as_ptr() as *const u8,
+                        grid_cells_count * std::mem::size_of::<LightGridCell>(),
+                    );
+                    if let Err(e) = grid_cells_buffer.update_structured_buffer(bytes) {
+                        eprintln!("[ENGINE] WARNING: не удалось обновить grid_cells_buffer: {:?}", e);
+                    }
+                }
+                let addr = grid_cells_buffer.resource.GetGPUVirtualAddress();
+                cmd_list.SetGraphicsRootShaderResourceView(2, addr);
+            }
+            if let Some(grid_entries_buffer) = &self.grid_entries_buffer {
+                if grid_entries_count > 0 {
+                    let entries = self.lights.as_ref().map(|l| l.get_grid_entries()).unwrap_or(&[]);
+                    let bytes = std::slice::from_raw_parts(
+                        entries.as_ptr() as *const u8,
+                        grid_entries_count * std::mem::size_of::<LightGridEntry>(),
+                    );
+                    if let Err(e) = grid_entries_buffer.update_structured_buffer(bytes) {
+                        eprintln!("[ENGINE] WARNING: не удалось обновить grid_entries_buffer: {:?}", e);
+                    }
+                }
+                let addr = grid_entries_buffer.resource.GetGPUVirtualAddress();
+                cmd_list.SetGraphicsRootShaderResourceView(3, addr);
+            }
+
+            match grid_params {
+                Some(p) => {
+                    self.transform_constants.grid_world_min = [p.world_min[0], p.world_min[1], p.world_min[2], p.cell_size];
+                    self.transform_constants.grid_dimensions = [p.grid_width, p.grid_height, p.grid_depth, 0];
+                }
+                None => {
+                    self.transform_constants.grid_world_min = [0.0, 0.0, 0.0, 1.0];
+                    self.transform_constants.grid_dimensions = [0, 0, 0, 0];
+                }
+            }
+
+            enum DrawTransform {
+                /// Обычный 3D-объект: своя model-матрица, view/proj берутся
+                /// из камеры один раз на весь кадр.
+                Camera(Mat4),
+                /// Старый 2D-режим (mesh_instances пуст) — все 4 матрицы
+                /// константного буфера были identity, без камеры. Сохраняем
+                /// это поведение один в один, чтобы не сломать main1.rs.
+                RawIdentity,
+            }
+            struct DrawJob {
+                mesh_index: usize,
+                transform: DrawTransform,
+            }
+
+            let mut jobs: Vec<DrawJob> = Vec::new();
+
+            if !self.mesh_instances.is_empty() {
+                for instance in &self.mesh_instances {
+                    if instance.mesh_index < self.meshes.len() {
+                        jobs.push(DrawJob {
+                            mesh_index: instance.mesh_index,
+                            transform: DrawTransform::Camera(instance.transform_matrix()),
+                        });
+                    }
+                }
+            } else if self.scene.is_empty() {
+                for i in 0..self.meshes.len() {
+                    jobs.push(DrawJob { mesh_index: i, transform: DrawTransform::RawIdentity });
+                }
+            }
+
+            for (mesh_index, world) in self.scene.collect_renderables() {
+                if mesh_index < self.meshes.len() {
+                    jobs.push(DrawJob { mesh_index, transform: DrawTransform::Camera(world) });
+                }
+            }
+
+            let view = self.camera.view_matrix();
+            let proj = self.camera.projection_matrix();
+            let id_matrix = identity();
+
+            let frustum = crate::math::Frustum::from_view_proj(&(proj * view));
+            jobs.retain(|job| match &job.transform {
+                DrawTransform::Camera(model) => {
+                    let mesh = &self.meshes[job.mesh_index];
+                    let (scale, _rotation, _translation) = model.to_scale_rotation_translation();
+                    let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+                    let local_center = Vec3::new(
+                        mesh.bounding_center[0],
+                        mesh.bounding_center[1],
+                        mesh.bounding_center[2],
+                    );
+                    let world_center = model.transform_point3(local_center);
+                    let world_radius = mesh.bounding_radius * max_scale;
+                    frustum.test_sphere(world_center, world_radius)
+                }
+                DrawTransform::RawIdentity => true,
+            });
+
+            self.poll_occluder_readback();
+            let mut occluder_instance_data: Vec<f32> = Vec::new();
+            for job in &jobs {
+                let DrawTransform::Camera(model) = &job.transform else { continue };
+                if job.mesh_index >= self.meshes.len() { continue; }
+                let mesh = &self.meshes[job.mesh_index];
+                let (scale, _rotation, _translation) = model.to_scale_rotation_translation();
+                let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+                let world_radius = mesh.bounding_radius * max_scale;
+                if world_radius < OCCLUDER_MIN_WORLD_RADIUS {
+                    continue;
+                }
+                let local_center = Vec3::new(mesh.bounding_center[0], mesh.bounding_center[1], mesh.bounding_center[2]);
+                let world_center = model.transform_point3(local_center);
+                let half_extent = world_radius * OCCLUDER_INSCRIBE_FACTOR;
+                occluder_instance_data.extend_from_slice(&[
+                    world_center.x - half_extent, world_center.y - half_extent, world_center.z - half_extent,
+                    world_center.x + half_extent, world_center.y + half_extent, world_center.z + half_extent,
+                ]);
+            }
+            self.submit_occluder_pass(&occluder_instance_data, view, proj);
+
+            self.ensure_constant_buffer_capacity(jobs.len())?;
+
+            for (i, job) in jobs.iter().enumerate() {
+                let mesh = &self.meshes[job.mesh_index];
+
+                if let Some(shadow_srv_heap) = self.shadow_srv_heap.as_ref() {
+                    let albedo_slot = mesh.albedo_srv_index.or(white_texture_srv_fallback);
+                    if let Some(albedo_slot) = albedo_slot {
+                        let gpu_handle = crate::heap::DescriptorHeap::get_gpu_handle(shadow_srv_heap, albedo_slot, cbv_srv_uav_size_materials);
+                        cmd_list.SetGraphicsRootDescriptorTable(5, gpu_handle);
+                    }
+
+                    let normal_slot = mesh.normal_srv_index.or(flat_normal_srv_fallback);
+                    if let Some(normal_slot) = normal_slot {
+                        let gpu_handle = crate::heap::DescriptorHeap::get_gpu_handle(shadow_srv_heap, normal_slot, cbv_srv_uav_size_materials);
+                        cmd_list.SetGraphicsRootDescriptorTable(6, gpu_handle);
+                    }
+
+                    let mr_slot = mesh.mr_srv_index.or(neutral_mr_srv_fallback);
+                    if let Some(mr_slot) = mr_slot {
+                        let gpu_handle = crate::heap::DescriptorHeap::get_gpu_handle(shadow_srv_heap, mr_slot, cbv_srv_uav_size_materials);
+                        cmd_list.SetGraphicsRootDescriptorTable(7, gpu_handle);
+                    }
+                }
+
+                let has_mr_map = if mesh.mr_srv_index.is_some() { 1.0f32 } else { 0.0f32 };
+                let mr_constants: [f32; 4] = [mesh.material_metallic, mesh.material_roughness, has_mr_map, 0.0];
+                cmd_list.SetGraphicsRoot32BitConstants(8, 4, mr_constants.as_ptr() as *const _, 0);
+
+                match &job.transform {
+                    DrawTransform::Camera(model) => {
+                        let model = *model;
+                        let model_view_proj = proj * view * model;
+                        self.transform_constants.model_view_proj = model_view_proj.to_cols_array_2d();
+                        self.transform_constants.model = model.to_cols_array_2d();
+                        self.transform_constants.view = view.to_cols_array_2d();
+                        self.transform_constants.proj = proj.to_cols_array_2d();
+                        self.transform_constants.camera_pos = [
+                            self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z,
+                            1.0,
+                        ];
+                    }
+                    DrawTransform::RawIdentity => {
+                        self.transform_constants.model_view_proj = id_matrix.to_cols_array_2d();
+                        self.transform_constants.model = id_matrix.to_cols_array_2d();
+                        self.transform_constants.view = id_matrix.to_cols_array_2d();
+                        self.transform_constants.proj = id_matrix.to_cols_array_2d();
+                    }
+                }
+
+                let slot = frame_index * self.constant_buffer_capacity + i;
+                let Some(cb) = self.constant_buffer.as_ref() else {
+                    eprintln!("[ENGINE] WARNING: no constant buffer available, skipping draw");
+                    continue;
+                };
+                if let Err(e) = self.transform_constants.write_at(cb, slot) {
+                    eprintln!("[ENGINE] WARNING: failed to write constant buffer slot {}: {:?}", slot, e);
+                    continue;
+                }
+                let gpu_addr = TransformConstants::gpu_address_for_slot(cb, slot);
+                cmd_list.SetGraphicsRootConstantBufferView(0, gpu_addr);
+
+                let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                    SizeInBytes: mesh.vertex_buffer.size as u32,
+                    StrideInBytes: Vertex::STRIDE,
+                };
+                cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                if let Some(index_buffer) = &mesh.index_buffer {
+                    let index_view = D3D12_INDEX_BUFFER_VIEW {
+                        BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                        SizeInBytes: index_buffer.size as u32,
+                        Format: DXGI_FORMAT_R32_UINT,
+                    };
+                    cmd_list.IASetIndexBuffer(Some(&index_view));
+                    cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+                } else {
+                    cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+                }
+            }
+
+            let renderer = self.renderer.as_ref().ok_or_else(|| {
+                eprintln!("[ENGINE] ERROR: render_frame() lost renderer mid-frame (unexpected)");
+                Error::from_hresult(HRESULT(1))
+            })?;
+
+            if let (Some(volumetric_texture), Some(volumetric_srv_heap), Some(volumetric_cb)) = (
+                &self.volumetric_texture,
+                &self.volumetric_srv_heap,
+                &self.volumetric_constant_buffer,
+            ) {
+                let vol_width = volumetric_texture.width;
+                let vol_height = volumetric_texture.height;
+
+                let mut barriers = Vec::with_capacity(2);
+                if !self.depth_stencil_is_srv {
+                    barriers.push(Self::transition_barrier(
+                        &renderer.depth_stencil.resource,
+                        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    ));
+                }
+                if self.volumetric_is_srv {
+                    barriers.push(Self::transition_barrier(
+                        &volumetric_texture.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    ));
+                }
+                if !barriers.is_empty() {
+                    cmd_list.ResourceBarrier(&barriers);
+                    for b in barriers {
+                        Self::drop_transition_barrier(b);
+                    }
+                }
+                self.depth_stencil_is_srv = true;
+                self.volumetric_is_srv = false;
+
+                let vol_viewport = D3D12_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: vol_width as f32,
+                    Height: vol_height as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                };
+                let vol_scissor = RECT {
+                    left: 0,
+                    top: 0,
+                    right: vol_width as i32,
+                    bottom: vol_height as i32,
+                };
+                cmd_list.RSSetViewports(&[vol_viewport]);
+                cmd_list.RSSetScissorRects(&[vol_scissor]);
+
+                cmd_list.OMSetRenderTargets(1, Some(&self.volumetric_rtv), false, None);
+                cmd_list.SetPipelineState(Some(self.volumetric_pipeline_state.as_ref().unwrap()));
+                cmd_list.SetGraphicsRootSignature(Some(self.volumetric_root_signature.as_ref().unwrap()));
+                let heaps = [Some(volumetric_srv_heap.clone())];
+                cmd_list.SetDescriptorHeaps(&heaps);
+                cmd_list.SetGraphicsRootDescriptorTable(0, self.volumetric_srv_gpu_raymarch);
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                let inv_view_proj = (self.camera.projection_matrix() * self.camera.view_matrix()).inverse();
+                let sun_color = [
+                    self.transform_constants.light_color[0],
+                    self.transform_constants.light_color[1],
+                    self.transform_constants.light_color[2],
+                ];
+                let sun_intensity = self.transform_constants.light_color[3];
+                let vol_intensity = 0.15 * sun_intensity;
+
+                #[repr(C)]
+                struct VolumetricParamsGpu {
+                    inv_view_proj: [[f32; 4]; 4],
+                    light_view_proj: [[f32; 4]; 4],
+                    camera_pos: [f32; 3],
+                    intensity: f32,
+                    light_dir: [f32; 3],
+                    _padding0: f32,
+                    light_color: [f32; 3],
+                    max_distance: f32,
+                }
+                let params = VolumetricParamsGpu {
+                    inv_view_proj: inv_view_proj.to_cols_array_2d(),
+                    light_view_proj: cascade_view_projs[0].to_cols_array_2d(),
+                    camera_pos: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
+                    intensity: vol_intensity,
+                    light_dir: [light_dir_vec.x, light_dir_vec.y, light_dir_vec.z],
+                    _padding0: 0.0,
+                    light_color: sun_color,
+                    max_distance: self.camera.far.min(150.0),
+                };
+                let bytes = std::slice::from_raw_parts(
+                    &params as *const VolumetricParamsGpu as *const u8,
+                    std::mem::size_of::<VolumetricParamsGpu>(),
+                );
+                let _ = volumetric_cb.update_constant_buffer(bytes);
+                cmd_list.SetGraphicsRootConstantBufferView(1, volumetric_cb.resource.GetGPUVirtualAddress());
+
+                cmd_list.DrawInstanced(3, 1, 0, 0);
+
+                let depth_back = Self::transition_barrier(
+                    &renderer.depth_stencil.resource,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                );
+                let vol_to_srv = Self::transition_barrier(
+                    &volumetric_texture.resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+                let barriers = [depth_back, vol_to_srv];
+                cmd_list.ResourceBarrier(&barriers);
+                for b in barriers {
+                    Self::drop_transition_barrier(b);
+                }
+                self.depth_stencil_is_srv = false;
+                self.volumetric_is_srv = true;
+            }
+
+            let mut bloom_ran = false;
+            if let (Some(bloom_a), Some(bloom_b), Some(bloom_srv_heap)) =
+                (&self.bloom_texture_a, &self.bloom_texture_b, &self.bloom_srv_heap)
+            {
+                bloom_ran = true;
+                let bloom_a_resource = &bloom_a.resource;
+                let bloom_b_resource = &bloom_b.resource;
+                let bloom_width = bloom_a.width;
+                let bloom_height = bloom_a.height;
+
+                let bloom_viewport = D3D12_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: bloom_width as f32,
+                    Height: bloom_height as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                };
+                let bloom_scissor = RECT {
+                    left: 0,
+                    top: 0,
+                    right: bloom_width as i32,
+                    bottom: bloom_height as i32,
+                };
+
+                cmd_list.RSSetViewports(&[bloom_viewport]);
+                cmd_list.RSSetScissorRects(&[bloom_scissor]);
+                cmd_list.SetGraphicsRootSignature(Some(self.bloom_root_signature.as_ref().unwrap()));
+                let heaps = [Some(bloom_srv_heap.clone())];
+                cmd_list.SetDescriptorHeaps(&heaps);
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                let hdr_to_srv = Self::transition_barrier(
+                    &renderer.hdr_target.resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+                let a_before = if self.bloom_a_is_srv {
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                } else {
+                    D3D12_RESOURCE_STATE_RENDER_TARGET
+                };
+                let mut barriers = Vec::with_capacity(2);
+                barriers.push(hdr_to_srv);
+                if a_before != D3D12_RESOURCE_STATE_RENDER_TARGET {
+                    barriers.push(Self::transition_barrier(
+                        bloom_a_resource,
+                        a_before,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    ));
+                }
+                cmd_list.ResourceBarrier(&barriers);
+                for b in barriers {
+                    Self::drop_transition_barrier(b);
+                }
+                self.bloom_a_is_srv = false;
+
+                cmd_list.OMSetRenderTargets(1, Some(&self.bloom_rtv_a), false, None);
+                cmd_list.SetPipelineState(Some(self.bloom_extract_pipeline_state.as_ref().unwrap()));
+                let hdr_heap = [Some(renderer.srv_uav_heap.clone())];
+                cmd_list.SetDescriptorHeaps(&hdr_heap);
+                cmd_list.SetGraphicsRootDescriptorTable(0, renderer.hdr_srv_gpu);
+                if let Some(params_cb) = &self.bloom_params_buffer {
+                    let params: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+                    let bytes = std::slice::from_raw_parts(params.as_ptr() as *const u8, 16);
+                    let _ = params_cb.update_constant_buffer(bytes);
+                    cmd_list.SetGraphicsRootConstantBufferView(1, params_cb.resource.GetGPUVirtualAddress());
+                }
+                cmd_list.DrawInstanced(3, 1, 0, 0);
+
+                let bloom_heap_rebind = [Some(bloom_srv_heap.clone())];
+                cmd_list.SetDescriptorHeaps(&bloom_heap_rebind);
+
+                let a_to_srv = Self::transition_barrier(
+                    bloom_a_resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+                let b_before = if self.bloom_b_is_srv {
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                } else {
+                    D3D12_RESOURCE_STATE_RENDER_TARGET
+                };
+                let mut barriers = Vec::with_capacity(2);
+                barriers.push(a_to_srv);
+                if b_before != D3D12_RESOURCE_STATE_RENDER_TARGET {
+                    barriers.push(Self::transition_barrier(
+                        bloom_b_resource,
+                        b_before,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    ));
+                }
+                cmd_list.ResourceBarrier(&barriers);
+                for b in barriers {
+                    Self::drop_transition_barrier(b);
+                }
+                self.bloom_a_is_srv = true;
+                self.bloom_b_is_srv = false;
+
+                cmd_list.OMSetRenderTargets(1, Some(&self.bloom_rtv_b), false, None);
+                cmd_list.SetPipelineState(Some(self.bloom_blur_pipeline_state.as_ref().unwrap()));
+                cmd_list.SetGraphicsRootDescriptorTable(0, self.bloom_srv_a_gpu);
+                if let Some(params_cb) = &self.bloom_params_buffer {
+                    let texel_x = 1.0 / bloom_width as f32;
+                    let params: [f32; 4] = [1.0, texel_x, 0.0, 0.0];
+                    let bytes = std::slice::from_raw_parts(params.as_ptr() as *const u8, 16);
+                    let _ = params_cb.update_constant_buffer(bytes);
+                    cmd_list.SetGraphicsRootConstantBufferView(1, params_cb.resource.GetGPUVirtualAddress());
+                }
+                cmd_list.DrawInstanced(3, 1, 0, 0);
+
+                let b_to_srv = Self::transition_barrier(
+                    bloom_b_resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+                let a_back_to_rt = Self::transition_barrier(
+                    bloom_a_resource,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                );
+                let barriers = [b_to_srv, a_back_to_rt];
+                cmd_list.ResourceBarrier(&barriers);
+                for b in barriers {
+                    Self::drop_transition_barrier(b);
+                }
+                self.bloom_b_is_srv = true;
+                self.bloom_a_is_srv = false;
+
+                cmd_list.OMSetRenderTargets(1, Some(&self.bloom_rtv_a), false, None);
+                cmd_list.SetGraphicsRootDescriptorTable(0, self.bloom_srv_b_gpu);
+                if let Some(params_cb) = &self.bloom_params_buffer {
+                    let texel_y = 1.0 / bloom_height as f32;
+                    let params: [f32; 4] = [1.0, 0.0, texel_y, 0.0];
+                    let bytes = std::slice::from_raw_parts(params.as_ptr() as *const u8, 16);
+                    let _ = params_cb.update_constant_buffer(bytes);
+                    cmd_list.SetGraphicsRootConstantBufferView(1, params_cb.resource.GetGPUVirtualAddress());
+                }
+                cmd_list.DrawInstanced(3, 1, 0, 0);
+
+                let a_final_to_srv = Self::transition_barrier(
+                    bloom_a_resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+                let barriers = [a_final_to_srv];
+                cmd_list.ResourceBarrier(&barriers);
+                for b in barriers {
+                    Self::drop_transition_barrier(b);
+                }
+                self.bloom_a_is_srv = true;
+            }
+
+            let hdr_resource = &renderer.hdr_target.resource;
+            let back_buffer_resource = &renderer.back_buffers[frame_index].resource;
+
+            let mut barriers_before = Vec::with_capacity(2);
+            if !bloom_ran {
+                barriers_before.push(Self::transition_barrier(
+                    hdr_resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                ));
+            }
+            barriers_before.push(Self::transition_barrier(
+                back_buffer_resource,
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+            ));
+            cmd_list.ResourceBarrier(&barriers_before);
+            for b in barriers_before {
+                Self::drop_transition_barrier(b);
+            }
+
+            let back_buffer_rtv = renderer.render_target_views[frame_index];
+            cmd_list.OMSetRenderTargets(1, Some(&back_buffer_rtv), false, None);
+
+            let viewport = D3D12_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: self.width as f32,
+                Height: self.height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            cmd_list.RSSetViewports(&[viewport]);
+            let scissor = RECT {
+                left: 0,
+                top: 0,
+                right: self.width as i32,
+                bottom: self.height as i32,
+            };
+            cmd_list.RSSetScissorRects(&[scissor]);
+
+            cmd_list.SetPipelineState(Some(self.tonemap_pipeline_state.as_ref().unwrap()));
+            cmd_list.SetGraphicsRootSignature(Some(self.tonemap_root_signature.as_ref().unwrap()));
+
+            let srv_heaps = [Some(renderer.srv_uav_heap.clone())];
+            cmd_list.SetDescriptorHeaps(&srv_heaps);
+            cmd_list.SetGraphicsRootDescriptorTable(0, renderer.hdr_srv_gpu);
+
+            if let Some(settings) = &self.light_global_settings {
+                if let Some(cb) = &self.tonemap_constant_buffer {
+                    let tonemap_data: [f32; 4] = [settings.exposure, settings.bloom_intensity, 0.0, 0.0];
+                    let bytes = std::slice::from_raw_parts(tonemap_data.as_ptr() as *const u8, 16);
+                    if let Err(e) = cb.update_constant_buffer(bytes) {
+                        eprintln!("[ENGINE] WARNING: не удалось обновить tonemap_constant_buffer: {:?}", e);
+                    }
+                }
+            }
+            if let Some(cb) = &self.tonemap_constant_buffer {
+                let gpu_addr = cb.resource.GetGPUVirtualAddress();
+                cmd_list.SetGraphicsRootConstantBufferView(1, gpu_addr);
+            }
+
+            cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            cmd_list.DrawInstanced(3, 1, 0, 0);
+
+            let mut barriers_after = vec![
+                Self::transition_barrier(
+                    back_buffer_resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PRESENT,
+                ),
+                Self::transition_barrier(
+                    hdr_resource,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                ),
+            ];
+            for cascade in 0..NUM_CASCADES {
+                if let Some(shadow_map) = &self.shadow_maps[cascade] {
+                    if self.shadow_maps_are_srv[cascade] {
+                        barriers_after.push(Self::transition_barrier(
+                            &shadow_map.resource,
+                            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                        ));
+                        self.shadow_maps_are_srv[cascade] = false;
+                    }
+                }
+            }
+            cmd_list.ResourceBarrier(&barriers_after);
+            for b in barriers_after {
+                Self::drop_transition_barrier(b);
+            }
+
+            if let Err(e) = cmd_list.Close() {
+                eprintln!("[ENGINE] cmd_list.Close() failed: {:?}", e);
+                crate::dump_d3d12_debug_messages();
+                return Err(e);
+            }
+        }
+
+        let queue = crate::get_command_queue()?;
+
+        let cmd_lists: &[Option<ID3D12CommandList>] = &[Some(cmd_list.into())];
+        unsafe {
+            queue.ExecuteCommandLists(cmd_lists);
+        }
+
+        let swap_chain = crate::get_swap_chain()?;
+
+        unsafe {
+            let hr = swap_chain.Present(1, DXGI_PRESENT(0));
+            if hr.is_err() {
+                eprintln!("[ENGINE] Present failed: {:?}", hr);
+                if let Some(reason) = crate::device_removed_reason() {
+                    eprintln!("[ENGINE] Device removed, reason: {}", reason);
+                }
+                crate::dump_d3d12_debug_messages();
+                return Err(Error::from_hresult(hr));
+            }
+        }
+
+        let fence = crate::get_fence()?;
+        let fence_value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            queue.Signal(&fence, fence_value)?;
+        }
+        if frame_index < self.frame_fence_values.len() {
+            self.frame_fence_values[frame_index] = fence_value;
+        }
+
+        {
+            let mut state = STATE.lock().unwrap();
+            if let Some(swap_chain) = &state.swap_chain {
+                state.frame_index = unsafe { swap_chain.GetCurrentBackBufferIndex() };
+            }
+        }
+
+        Ok(true)
+    }
+}

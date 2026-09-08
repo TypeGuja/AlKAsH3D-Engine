@@ -1,0 +1,318 @@
+[CONSOLE_LOG] ✓ Лог консоли сохраняется в файл: engine_car_log.txt
+==========================================
+Alkash3D Engine v0.1.0 — Car Demo
+==========================================
+
+🎮 УПРАВЛЕНИЕ:
+  WASD    - ходьба пешком / газ+тормоз+руль за рулём
+  Стрелки - осмотреться пешком
+  E       - сесть в машину (рядом с ней) / выйти из машины
+  R       - ручной тормоз (за рулём)
+  SHIFT   - ускорение ходьбы (x2)
+  ESC     - выход
+==========================================
+[ENGINE] Initializing Alkash3D Engine v0.1.0...
+[ENGINE] Window created: HWND=0x180268
+[ENGINE] ✓ Window created
+[DEVICE] ========== CREATING D3D12 DEVICE ==========
+[DEVICE] ✓ D3D12 debug layer enabled
+[DEVICE] ⚠ GPU-Based Validation ВКЛЮЧЕНА (ALKASH3D_GBV) — кадр может выполняться на порядки дольше
+[DEVICE] Creating DXGI factory...
+[DEVICE] DXGI factory created
+[DEVICE] Enumerating adapters...
+[DEVICE] Adapter 0: NVIDIA GeForce RTX 3050 - Software: false - VRAM: 8042 MB
+[DEVICE] Adapter 1: Microsoft Basic Render Driver - Software: true - VRAM: 0 MB
+[DEVICE] Selected primary (most powerful) hardware adapter
+[DEVICE] Creating D3D12 device...
+[DEVICE] D3D12 device created (feature level 12_1)
+[DEVICE] Getting descriptor sizes...
+[DEVICE] RTV size: 32, DSV size: 8, CBV/SRV/UAV size: 32
+[DEVICE] ✓ D3D12 info queue obtained (подробные сообщения об ошибках доступны)
+[DEVICE] ✓ D3D12 device initialized successfully
+[ENGINE] ✓ Device created
+[QUEUE] Creating command queue...
+[QUEUE] Queue type: DIRECT, priority: NORMAL
+[QUEUE] ✓ Command queue created
+[ENGINE] ✓ Command queue created
+[SWAPCHAIN] ========== CREATING SWAP CHAIN ==========
+[SWAPCHAIN] HWND: 0x180268, Width: 1366, Height: 768, Buffer count: 2
+[SWAPCHAIN] Command queue obtained
+[SWAPCHAIN] Creating DXGI factory...
+[SWAPCHAIN] DXGI factory created
+[SWAPCHAIN] Swap chain description created
+[SWAPCHAIN] Creating swap chain...
+[SWAPCHAIN] ✓ Swap chain created
+[SWAPCHAIN] ✓ Swap chain stored, initial frame index: 0
+[ENGINE] ✓ Swap chain created
+[COMMAND] ========== CREATING ALLOCATORS ==========
+[COMMAND] Requested allocator count: 2
+[COMMAND] Creating allocator 0...
+[COMMAND] Allocator 0 created
+[COMMAND] Creating allocator 1...
+[COMMAND] Allocator 1 created
+[COMMAND] ✓ 2 allocators created
+[ENGINE] ✓ Command allocators created
+[UTILS] Creating fence...
+[UTILS] ✓ Fence created
+[ENGINE] ✓ Fence created
+[RENDERER] ========== CREATING RENDERER ==========
+[RENDERER] Width: 1366, Height: 768, Buffer count: 2
+[RENDERER] Device obtained
+[RENDERER] Swap chain obtained
+[RENDERER] RTV size: 32, DSV size: 8
+[RENDERER] Creating RTV heap...
+[HEAP] Creating RTV heap with 2 descriptors
+[HEAP] ✓ RTV heap created
+[RENDERER] Creating DSV heap...
+[HEAP] Creating DSV heap with 1 descriptors
+[HEAP] ✓ DSV heap created
+[RENDERER] Getting back buffer 0
+[RENDERER] Back buffer 0 resource obtained
+[RENDERER] ✓ RTV 0 created
+[RENDERER] Getting back buffer 1
+[RENDERER] Back buffer 1 resource obtained
+[RENDERER] ✓ RTV 1 created
+[RENDERER] Creating depth stencil...
+[RENDERER] Creating depth stencil: 1366x768
+[RENDERER] ✓ Depth stencil created
+[RENDERER] ✓ Depth stencil created
+[RENDERER] Creating HDR target...
+[RENDERER] Creating HDR render target: 1366x768
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[RENDERER] ✓ HDR target + RTV + SRV created
+[RENDERER] ✓ Renderer created successfully
+[ENGINE] ✓ Renderer created
+[SHADER] Compiling vs_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 2516 bytes
+[SHADER] Compiling ps_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 14812 bytes
+[ENGINE] ✓ Default shaders compiled (нормали + сетка каллинга + spot-конус фонарей)
+[ENGINE] ✓ Root signature created (CBV b0 + SRV t0 фонари + SRV t1/t2 сетка каллинга + SRV table t3..t5 shadow map + SRV table t6 albedo + comparison sampler s0 + linear sampler s1)
+[PSO] ========== CREATING GRAPHICS PIPELINE STATE ==========
+[PSO] VS size: 2516 bytes
+[PSO] PS size: 14812 bytes
+[PSO] RTV format: DXGI_FORMAT(10)
+[PSO] DSV format: DXGI_FORMAT(40)
+[PSO] Device obtained successfully
+[PSO] Creating input layout...
+[PSO] Input layout created: 5 elements
+[PSO] Creating rasterizer state...
+[PSO] Rasterizer: FillMode=Solid, CullMode=None
+[PSO] Creating blend state...
+[PSO] Blend state created
+[PSO] Creating depth stencil state (ENABLED)...
+[PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL
+[PSO] Root signature: 0x5215eff150
+[PSO] Pipeline state descriptor created
+[PSO] Calling CreateGraphicsPipelineState...
+[PSO] ✓ PSO created successfully! PSO: 0x5215efd588
+[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target)
+[BUFFER] Creating constant buffer ARRAY: 256 slots x 768 bytes = 196608 bytes total
+[BUFFER] Creating constant buffer, size: 196608 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] Constant buffer (re)allocated: 128 slots/кадр x2 = 256 слотов
+[ENGINE] ✓ Constant buffer created
+[SHADER] Compiling vs_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 772 bytes
+[SHADER] Compiling ps_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 1640 bytes
+[ENGINE] ✓ Tonemap shaders compiled (ACES + экспозиция)
+[ENGINE] ✓ Tonemap root signature created (SRV table t0 + static sampler s0 + CBV b0)
+[ENGINE] ✓ Tonemap pipeline state created
+[BUFFER] Creating constant buffer, size: 256 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] ✓ Tonemap constant buffer created (exposure=1.0, bloomIntensity=1.0 по умолчанию)
+[SHADER] Compiling ps_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 1296 bytes
+[SHADER] Compiling ps_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 2076 bytes
+[ENGINE] ✓ Bloom shaders compiled (extract + separable Gaussian blur)
+[ENGINE] ✓ Bloom root signature created (SRV table t0 + static sampler s0 + CBV b0)
+[ENGINE] ✓ Bloom pipeline states created (extract + blur)
+[RENDERER] Creating HDR render target: 683x384
+[RENDERER] ✓ HDR render target created
+[RENDERER] Creating HDR render target: 683x384
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 2 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 2 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[BUFFER] Creating constant buffer, size: 256 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] ✓ Bloom resources created: 683x384 half-res ping-pong targets
+[SHADER] Compiling vs_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 884 bytes
+[ENGINE] ✓ Shadow shaders compiled (depth-only, без PS)
+[ENGINE] ✓ Shadow root signature created (CBV b0, только матрица)
+[ENGINE] ✓ Shadow pipeline state created (depth-only, DSVFormat=D32_FLOAT)
+[HEAP] Creating DSV heap with 3 descriptors
+[HEAP] ✓ DSV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 3 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[RENDERER] Creating shadow map: 2048x2048
+[RENDERER] ✓ Shadow map created
+[RENDERER] Creating shadow map: 2048x2048
+[RENDERER] ✓ Shadow map created
+[RENDERER] Creating shadow map: 2048x2048
+[RENDERER] ✓ Shadow map created
+[ENGINE] ✓ Shadow map resources created: 3 каскадов по 2048x2048
+[HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] ✓ Depth SRV created (для volumetric raymarch)
+[SHADER] Compiling vs_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 772 bytes
+[SHADER] Compiling ps_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 4348 bytes
+[ENGINE] ✓ Volumetric shaders compiled (screen-space raymarch, 24 шагов)
+[ENGINE] ✓ Volumetric root signature created (SRV table t0/t1 + point sampler s0 + comparison sampler s1 + CBV b0)
+[ENGINE] ✓ Volumetric pipeline state created
+[RENDERER] Creating HDR render target: 683x384
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 3 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[BUFFER] Creating constant buffer, size: 256 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] ✓ Volumetric resources created: 683x384 half-res target
+[ENGINE] Handling resize: 1350x729
+[RENDERER] ========== CREATING RENDERER ==========
+[RENDERER] Width: 1350, Height: 729, Buffer count: 2
+[RENDERER] Device obtained
+[RENDERER] Swap chain obtained
+[RENDERER] RTV size: 32, DSV size: 8
+[RENDERER] Creating RTV heap...
+[HEAP] Creating RTV heap with 2 descriptors
+[HEAP] ✓ RTV heap created
+[RENDERER] Creating DSV heap...
+[HEAP] Creating DSV heap with 1 descriptors
+[HEAP] ✓ DSV heap created
+[RENDERER] Getting back buffer 0
+[RENDERER] Back buffer 0 resource obtained
+[RENDERER] ✓ RTV 0 created
+[RENDERER] Getting back buffer 1
+[RENDERER] Back buffer 1 resource obtained
+[RENDERER] ✓ RTV 1 created
+[RENDERER] Creating depth stencil...
+[RENDERER] Creating depth stencil: 1350x729
+[RENDERER] ✓ Depth stencil created
+[RENDERER] ✓ Depth stencil created
+[RENDERER] Creating HDR target...
+[RENDERER] Creating HDR render target: 1350x729
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[RENDERER] ✓ HDR target + RTV + SRV created
+[RENDERER] ✓ Renderer created successfully
+[ENGINE] ✓ Renderer recreated after resize: 1350x729
+[ENGINE] ✓ Bloom SRV re-registered in new srv_uav_heap after resize
+[ENGINE] ✓ Initialization complete
+
+[MAIN_CAR] Setting up ground...
+[HEAP] Creating CBV/SRV/UAV heap with 19 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] shadow_srv_heap перевыделен под материалы: 19 слотов всего (3 каскадов + 16 материалов, 0 текстур перерегистрировано)
+[ENGINE] Mesh added, total meshes: 1
+[ENGINE] Mesh added, total meshes: 2
+✅ Ground ready: 1 плоскость двора + 1 гравийная площадка (вместо сетки плиток)
+
+[MAIN_CAR] Setting up garage...
+[ENGINE] Mesh added, total meshes: 3
+[ENGINE] Mesh added, total meshes: 4
+[ENGINE] Mesh added, total meshes: 5
+✅ Garage ready: 3 стены + крыша (открытый проём со стороны площадки)
+
+[MAIN_CAR] Loading Inertial physics plugin (для бочек)...
+[ENGINE] Failed to load physics plugin '../alkash3d-inertial/target/x86_64-pc-windows-gnu/release/inertial.dll': Failed to load ../alkash3d-inertial/target/x86_64-pc-windows-gnu/release/inertial.dll: LoadLibraryExW failed
+[MAIN_CAR] WARNING: не удалось загрузить Inertial (../alkash3d-inertial/target/x86_64-pc-windows-gnu/release/inertial.dll): Error { code: HRESULT(0x00000001), message: "Неверная функция." } — бочки не будут падать. Проверь, что alkash3d-inertial собран в release (cargo build --release из папки alkash3d-inertial).
+
+[MAIN_CAR] Spawning player car...
+[ENGINE] Mesh added, total meshes: 6
+[ENGINE] Mesh added, total meshes: 7
+[ENGINE] Mesh added, total meshes: 8
+[ENGINE] Mesh added, total meshes: 9
+[ENGINE] Mesh added, total meshes: 10
+[ENGINE] Mesh added, total meshes: 11
+✅ Car ready at (0.0, 0.7, -1.0), yaw=1.57
+
+[MAIN_CAR] Setting up yard props...
+[ENGINE] Mesh added, total meshes: 12
+✅ Yard props ready
+
+=== RENDER LOOP STARTING ===
+
+[BUFFER] Creating constant buffer ARRAY: 384 slots x 256 bytes = 98304 bytes total
+[BUFFER] Creating constant buffer, size: 98304 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] Shadow constant buffer (re)allocated: 64 slots/(кадр*каскад) x2 x3 каскада = 384 слотов
+[BUFFER] Creating structured buffer, size: 4096 bytes
+[BUFFER] Structured buffer created successfully
+[ENGINE] Light buffer (re)allocated: 64 GPULight слотов (4096 байт)
+[BUFFER] Creating structured buffer, size: 8 bytes
+[BUFFER] Structured buffer created successfully
+[ENGINE] Grid cells buffer (re)allocated: 0 ячеек (8 байт)
+[BUFFER] Creating structured buffer, size: 1024 bytes
+[BUFFER] Structured buffer created successfully
+[ENGINE] Grid entries buffer (re)allocated: 64 слотов (1024 байт)
+*** FIRST FRAME COMPLETED ***
+*** 21 ECS entities rendering ***
+
+[INFO] Frame 55 | FPS: 55.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 115 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 175 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 236 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 292 | FPS: 53.3 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 352 | FPS: 59.1 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 412 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 472 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 532 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 593 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 654 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 714 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 775 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 835 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 896 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 957 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1018 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1078 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1138 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1199 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1260 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1321 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1381 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1442 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1503 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1563 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1623 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1684 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1745 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1805 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1865 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1926 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 1987 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 2047 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 2107 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 21
+[INFO] Frame 2168 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 21
+[ENGINE] WM_CLOSE received - stopping engine loop
+[ENGINE] Shutting down...
+[ENGINE] Signaling fence (value=2195)...
+[ENGINE] Waiting for GPU to finish...
+[ENGINE] GPU idle
+[ENGINE] Clearing meshes...
+[ENGINE] Releasing resources...
+[ENGINE] Resetting global state...
+[ENGINE] Destroying window...
+[ENGINE] WM_DESTROY received - window being destroyed
+[ENGINE] Shutdown complete
+[MAIN_CAR] Goodbye!
+[ENGINE] Shutting down...
+[ENGINE] Clearing meshes...
+[ENGINE] Releasing resources...
+[ENGINE] Resetting global state...
+[ENGINE] Shutdown complete

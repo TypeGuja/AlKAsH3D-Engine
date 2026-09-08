@@ -30,6 +30,14 @@ path = "src/bin/main1.rs"
 name = "main2"
 path = "src/bin/main2.rs"
 
+# ДОБАВЛЕНО (задача #39 плана — My Summer Car-like демо): отдельный
+# бинарник, не часть "main" — своя дневная сцена (грунт + гараж-зона +
+# физическая машина), см. подробный комментарий в шапке main_car.rs про
+# то, почему это отдельный файл, а не ещё один setup_* в main.rs.
+[[bin]]
+name = "main_car"
+path = "src/bin/main_car.rs"
+
 
 [dependencies]
 # ДОБАВЛЕНО (звуковая подсистема — XAudio2): "Win32_Media_Audio_XAudio2"
@@ -42,7 +50,13 @@ path = "src/bin/main2.rs"
 # ВСТРОЕНА в саму ОС начиная с Windows 8 (часть XAudio2Redist слился в
 # системный компонент), никакого отдельного redist/vcredist не требуется
 # — то, что нужно под цель "10 лет минимального железа" из ТЗ движка.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Graphics_Dxgi_Common", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_Media_Audio_XAudio2", "Win32_Media_Audio", "Win32_Media_Multimedia"] }
+# ДОБАВЛЕНО (сохранение лога консоли в .txt-файл, см. console_log.rs):
+# Win32_System_Console — GetStdHandle/SetStdHandle/STD_HANDLE-константы;
+# Win32_System_Pipes — CreatePipe (анонимный pipe для tee-ретрансляции);
+# Win32_Storage_FileSystem — WriteFile/ReadFile для сырой записи/чтения
+# байтов через хендлы (в обход std::io::stdout(), см. комментарий в
+# console_log.rs про то, почему это важно именно здесь).
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Graphics_Dxgi_Common", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_Media_Audio_XAudio2", "Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_System_Console", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
 widestring = "1.0"
 windows-core = "0.62.2"
 winit = "0.31.0-beta.2"
