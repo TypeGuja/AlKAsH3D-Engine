@@ -87,10 +87,23 @@ pub struct PhysicsBody {
     // читаемое `narrow_phase.f90` (`radius_sum = body_a%radius +
     // body_b%radius`, было `BODY_RADIUS + BODY_RADIUS`) и моментом
     // инерции тела (см. `to_fortran_body` ниже: `0.4 * mass * radius²`).
-    // ПОСЛЕДНЕЕ поле структуры (та же конвенция "дописывать только в
-    // конец", что и у `orientation` выше) — СИММЕТРИЧНО обнови
-    // `alkash3d-rust/src/plugin/physics_api.rs`.
     pub radius: f32,
+    // ДОБАВЛЕНО (реальная физика машины — box-коллайдер кузова, см.
+    // подробный комментарий у `shape_type`/`half_extents` в `rigid_body_c`,
+    // kernels/rigid_body.f90): 0 = сфера (используй `radius` выше), 1 =
+    // коробка (половинные размеры в `half_extents`, локальные оси). ЭТИ
+    // ДВА ПОЛЯ — ПОСЛЕДНИЕ в структуре (та же конвенция "дописывать
+    // только в конец", что и у `orientation`/`radius` выше) — СИММЕТРИЧНО
+    // обнови `alkash3d-rust/src/plugin/physics_api.rs`.
+    pub shape_type: i32,
+    pub half_extents: [f32; 3],
+}
+
+/// Дискриминанты `PhysicsBody::shape_type` — см. его комментарий. Именованные
+/// константы вместо "магических" 0/1 на местах вызова.
+pub mod shape_type {
+    pub const SPHERE: i32 = 0;
+    pub const BOX: i32 = 1;
 }
 
 #[repr(C)]
@@ -337,6 +350,19 @@ pub struct PhysicsAPI {
     /// не поддерживается, см. `PlaneDesc`) либо `-1`, если `instance`/
     /// `desc` — null, либо `normal` — вырожденный (нулевой) вектор.
     pub add_plane: extern "C" fn(instance: *mut c_void, desc: *const PlaneDesc) -> i32,
+    // ДОБАВЛЕНО (реальная физика машины — box-коллайдер + подвеска):
+    // строго В КОНЕЦ структуры, тот же append-only принцип, что и у всех
+    // полей выше.
+    /// Копит момент силы (Н·м, мировые координаты) — та же семантика,
+    /// что у `apply_force`, только для угловой составляющей. Будит тело.
+    /// No-op для static/несуществующего id.
+    pub apply_torque: extern "C" fn(instance: *mut c_void, id: i32, torque: *const f32),
+    /// Прикладывает силу в точке `world_point`, а не через центр масс —
+    /// рождает и линейное ускорение, и момент (см. `apply_torque` выше).
+    /// Ключевая функция для честной подвески (сила пружины/демпфера на
+    /// колесе применяется именно в точке колеса, не в центре кузова).
+    /// Будит тело. No-op для static/несуществующего id.
+    pub apply_force_at_point: extern "C" fn(instance: *mut c_void, id: i32, force: *const f32, world_point: *const f32),
 }
 
 #[repr(u32)]
@@ -375,23 +401,195 @@ static PLUGIN_NAME: &[u8] = b"inertial\0";
 // значение одинаково безобидно, реального столкновения не будет).
 const IMPLICIT_RADIUS: f32 = 0.5;
 
-fn to_fortran_body(b: &PhysicsBody) -> FortranRigidBody {
-    let inertia_scalar = if b.mass > 0.0 {
-        0.4 * b.mass * b.radius * b.radius
+/// Векторное произведение — используется только кватернионными хелперами
+/// ниже, не стоит заводить ради него внешнюю зависимость.
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Сопряжённый кватернион — для ЕДИНИЧНОГО кватерниона (гарантируется
+/// нормализацией в `integrate_orientation`, rigid_body.f90) это то же
+/// самое, что обратный, и переводит из мировых осей в локальные оси тела.
+fn quat_conjugate(q: [f32; 4]) -> [f32; 4] {
+    [-q[0], -q[1], -q[2], q[3]]
+}
+
+/// Поворачивает вектор `v` кватернионом `q` (стандартная формула
+/// `v' = v + 2w*(u×v) + 2u×(u×v)`, где `u = q.xyz`) — используется для
+/// перевода локальных осей box-коллайдера в мировые координаты и обратно
+/// (узкая фаза box-vs-sphere/box-vs-plane ниже). Ни в этом крейте, ни в
+/// движке до box-коллайдера не было ни одного места, где нужно было
+/// повернуть произвольный вектор кватернионом (только сам кватернион
+/// ориентации тела интегрировался как есть) — поэтому такого хелпера
+/// раньше просто не существовало.
+fn quat_rotate_vector(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let u = [q[0], q[1], q[2]];
+    let w = q[3];
+    let uv = cross3(u, v);
+    let uuv = cross3(u, uv);
+    [
+        v[0] + 2.0 * (w * uv[0] + uuv[0]),
+        v[1] + 2.0 * (w * uv[1] + uuv[1]),
+        v[2] + 2.0 * (w * uv[2] + uuv[2]),
+    ]
+}
+
+/// Узкая фаза box-vs-sphere — Fortran-солвер (`narrow_phase.f90`) честно
+/// умеет ТОЛЬКО sphere-sphere (см. `PhysicsBody::shape_type`), поэтому
+/// для пары "коробка+сфера" normal/penetration/point считаются здесь, на
+/// Rust-стороне, а РЕЗУЛЬТАТ (тот же `FortranContact`, что вернул бы
+/// `narrow_phase_gjk`) уходит в ТОТ ЖЕ, ничем не изменённый Fortran-солвер
+/// импульсов/трения (`solve_contacts_vectorized`) — тот код по-прежнему
+/// работает с абстрактным "normal+penetration", ему всё равно, кто их
+/// вычислил.
+///
+/// Алгоритм — стандартный "ближайшая точка на OBB к центру сферы":
+/// переводим центр сферы в локальные оси коробки, зажимаем по
+/// `half_extents`, переводим найденную ближайшую точку обратно в мировые
+/// координаты. `body_a`/`body_b` — ИМЕННО в том порядке, в котором их
+/// передаёт вызывающий код (`update()` ниже, тот же порядок, что и у
+/// `narrow_phase_gjk`) — normal в результате всегда "от body_a к body_b",
+/// каким бы из них ни оказалась коробка, тот же контракт, что и у
+/// sphere-sphere.
+///
+/// ИЗВЕСТНОЕ УПРОЩЕНИЕ: если центр сферы уже глубоко внутри коробки
+/// (расстояние до зажатой точки ~0 — вырожденный случай, сфера "телепортом"
+/// провалилась внутрь за один слишком быстрый кадр), выталкиваем по оси
+/// НАИМЕНЬШЕГО проникновения относительно 6 граней — тот же принцип, что у
+/// честного SAT для box-box, только для одной точки вместо полного
+/// перебора рёбер.
+fn narrow_phase_box_sphere(body_a: &FortranRigidBody, body_b: &FortranRigidBody) -> Option<FortranContact> {
+    let (box_body, sphere_body, box_is_a) = if body_a.shape_type == shape_type::BOX {
+        (body_a, body_b, true)
+    } else if body_b.shape_type == shape_type::BOX {
+        (body_b, body_a, false)
     } else {
-        0.0
+        return None;
     };
-    let inv_inertia_scalar = if inertia_scalar > 0.0 { 1.0 / inertia_scalar } else { 0.0 };
+
+    let rel = [
+        sphere_body.position[0] - box_body.position[0],
+        sphere_body.position[1] - box_body.position[1],
+        sphere_body.position[2] - box_body.position[2],
+    ];
+    let local_rel = quat_rotate_vector(quat_conjugate(box_body.orientation), rel);
+
+    let clamped = [
+        local_rel[0].clamp(-box_body.half_extents[0], box_body.half_extents[0]),
+        local_rel[1].clamp(-box_body.half_extents[1], box_body.half_extents[1]),
+        local_rel[2].clamp(-box_body.half_extents[2], box_body.half_extents[2]),
+    ];
+    let delta_local = [
+        local_rel[0] - clamped[0],
+        local_rel[1] - clamped[1],
+        local_rel[2] - clamped[2],
+    ];
+    let dist_sq = delta_local[0] * delta_local[0] + delta_local[1] * delta_local[1] + delta_local[2] * delta_local[2];
+
+    let (normal_local, penetration) = if dist_sq < 1.0e-8 {
+        // Центр сферы внутри коробки — см. комментарий выше про упрощение.
+        let dx = box_body.half_extents[0] - local_rel[0].abs();
+        let dy = box_body.half_extents[1] - local_rel[1].abs();
+        let dz = box_body.half_extents[2] - local_rel[2].abs();
+        if dx <= dy && dx <= dz {
+            ([local_rel[0].signum(), 0.0, 0.0], dx + sphere_body.radius)
+        } else if dy <= dz {
+            ([0.0, local_rel[1].signum(), 0.0], dy + sphere_body.radius)
+        } else {
+            ([0.0, 0.0, local_rel[2].signum()], dz + sphere_body.radius)
+        }
+    } else {
+        let dist = dist_sq.sqrt();
+        if dist >= sphere_body.radius {
+            return None;
+        }
+        let inv_dist = 1.0 / dist;
+        (
+            [delta_local[0] * inv_dist, delta_local[1] * inv_dist, delta_local[2] * inv_dist],
+            sphere_body.radius - dist,
+        )
+    };
+
+    let normal_world = quat_rotate_vector(box_body.orientation, normal_local);
+    let closest_world_offset = quat_rotate_vector(box_body.orientation, clamped);
+    let point_world = [
+        box_body.position[0] + closest_world_offset[0],
+        box_body.position[1] + closest_world_offset[1],
+        box_body.position[2] + closest_world_offset[2],
+    ];
+
+    // normal_world сейчас "от коробки к сфере" — контракт солвера
+    // (см. narrow_phase.f90) требует "от body_a к body_b".
+    let final_normal = if box_is_a {
+        normal_world
+    } else {
+        [-normal_world[0], -normal_world[1], -normal_world[2]]
+    };
+
+    Some(FortranContact {
+        body_a: 0,
+        body_b: 0,
+        normal: final_normal,
+        penetration,
+        point: point_world,
+        tangent1: [0.0; 3],
+        tangent2: [0.0; 3],
+        friction_impulse: [0.0; 2],
+    })
+}
+
+/// Диагональный тензор инерции (в ЛОКАЛЬНЫХ осях тела) для сферы или
+/// коробки. ВАЖНО (упрощение, задокументированное честно): этот тензор
+/// считается ОДИН РАЗ при создании тела (здесь) и никогда не
+/// пересчитывается в мировые оси по мере вращения `orientation` —
+/// `integrate_bodies`/`batch_integrate` применяют его "как есть" каждый
+/// кадр. Для сферы это точно (изотропна — поворот не меняет тензор). Для
+/// коробки это ТОЛЬКО приближение, верное в состоянии покоя/малых углов
+/// (машина, стоящая или слегка накренившаяся на подвеске) — при большом
+/// повороте (переворот на бок/крышу) реальный мировой тензор инерции
+/// должен быть `R * I_local * R^T`, чего эта версия солвера не делает.
+/// Полный честный учёт потребовал бы пересчёта `inv_inertia` каждый кадр
+/// в Fortran-цикле интеграции — отдельная, более крупная доработка,
+/// сознательно отложенная (см. `PhysicsBody::shape_type` — весь этот
+/// box-коллайдер уже сам по себе большая доработка за один проход).
+fn compute_local_inertia(b: &PhysicsBody) -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
+    if b.mass <= 0.0 {
+        return ([[0.0; 3]; 3], [[0.0; 3]; 3]);
+    }
+    let diag = if b.shape_type == shape_type::BOX {
+        // Коробка со сторонами (2*hx, 2*hy, 2*hz): Ixx=m/3*(hy²+hz²) и т.д.
+        // (стандартная формула m/12*(полная_сторона²+полная_сторона²) с
+        // полной стороной = 2*half_extent).
+        let (hx, hy, hz) = (b.half_extents[0], b.half_extents[1], b.half_extents[2]);
+        [
+            (b.mass / 3.0) * (hy * hy + hz * hz),
+            (b.mass / 3.0) * (hx * hx + hz * hz),
+            (b.mass / 3.0) * (hx * hx + hy * hy),
+        ]
+    } else {
+        // Сплошная сфера: I = 2/5 * m * r² по всем трём осям (изотропна).
+        let i = 0.4 * b.mass * b.radius * b.radius;
+        [i, i, i]
+    };
     let inertia = [
-        [inertia_scalar, 0.0, 0.0],
-        [0.0, inertia_scalar, 0.0],
-        [0.0, 0.0, inertia_scalar],
+        [diag[0], 0.0, 0.0],
+        [0.0, diag[1], 0.0],
+        [0.0, 0.0, diag[2]],
     ];
     let inv_inertia = [
-        [inv_inertia_scalar, 0.0, 0.0],
-        [0.0, inv_inertia_scalar, 0.0],
-        [0.0, 0.0, inv_inertia_scalar],
+        [if diag[0] > 0.0 { 1.0 / diag[0] } else { 0.0 }, 0.0, 0.0],
+        [0.0, if diag[1] > 0.0 { 1.0 / diag[1] } else { 0.0 }, 0.0],
+        [0.0, 0.0, if diag[2] > 0.0 { 1.0 / diag[2] } else { 0.0 }],
     ];
+    (inertia, inv_inertia)
+}
+
+fn to_fortran_body(b: &PhysicsBody) -> FortranRigidBody {
+    let (inertia, inv_inertia) = compute_local_inertia(b);
 
     FortranRigidBody {
         position: b.position,
@@ -411,6 +609,8 @@ fn to_fortran_body(b: &PhysicsBody) -> FortranRigidBody {
         is_asleep: b.is_asleep,
         orientation: b.orientation,
         radius: b.radius,
+        shape_type: b.shape_type,
+        half_extents: b.half_extents,
     }
 }
 
@@ -431,6 +631,8 @@ fn to_abi_body(f: &FortranRigidBody) -> PhysicsBody {
         is_asleep: f.is_asleep,
         orientation: f.orientation,
         radius: f.radius,
+        shape_type: f.shape_type,
+        half_extents: f.half_extents,
     }
 }
 
@@ -452,6 +654,8 @@ fn default_abi_body() -> PhysicsBody {
         // Единичный кватернион (0,0,0,1) — "без поворота".
         orientation: [0.0, 0.0, 0.0, 1.0],
         radius: IMPLICIT_RADIUS,
+        shape_type: shape_type::SPHERE,
+        half_extents: [0.0; 3],
     }
 }
 
@@ -584,7 +788,30 @@ impl PhysicsState {
                     body.position[2] - plane.point[2],
                 ];
                 let dist = rel[0] * plane.normal[0] + rel[1] * plane.normal[1] + rel[2] * plane.normal[2];
-                let penetration = body.radius - dist;
+                // ДОБАВЛЕНО (box-коллайдер кузова — например, машина легла
+                // на бок/крышу): для сферы "насколько далеко тело
+                // выступает в сторону плоскости" — просто `radius`,
+                // одинаково по всем направлениям. Для коробки это ЗАВИСИТ
+                // от того, как она повёрнута относительно нормали —
+                // честная формула проекции полуразмеров OBB на
+                // произвольное направление: сумма |half_extent_i * (мировая
+                // ось_i · normal)| по трём локальным осям (стандартный
+                // "support function" OBB, точный, а не приближение через
+                // перебор 8 углов). При normal=(0,1,0) (плоский пол) и
+                // машине строго вертикально это даёт ровно half_extents.y,
+                // как и ожидается.
+                let effective_radius = if body.shape_type == shape_type::BOX {
+                    let axis_x = quat_rotate_vector(body.orientation, [1.0, 0.0, 0.0]);
+                    let axis_y = quat_rotate_vector(body.orientation, [0.0, 1.0, 0.0]);
+                    let axis_z = quat_rotate_vector(body.orientation, [0.0, 0.0, 1.0]);
+                    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                    body.half_extents[0] * dot(axis_x, plane.normal).abs()
+                        + body.half_extents[1] * dot(axis_y, plane.normal).abs()
+                        + body.half_extents[2] * dot(axis_z, plane.normal).abs()
+                } else {
+                    body.radius
+                };
+                let penetration = effective_radius - dist;
                 if penetration <= 0.0 {
                     continue;
                 }
@@ -679,6 +906,7 @@ impl PhysicsState {
         self.solver.bodies.swap_remove(idx);
         self.solver.sleep_timers.swap_remove(idx);
         self.solver.force_accum.swap_remove(idx);
+        self.solver.torque_accum.swap_remove(idx);
 
         if idx != last {
             let moved_handle = self.index_to_handle[last];
@@ -707,6 +935,18 @@ impl PhysicsState {
     fn apply_impulse(&mut self, handle: i32, impulse: [f32; 3]) {
         if let Some(&idx) = self.handle_to_index.get(&handle) {
             self.solver.apply_impulse(idx, impulse);
+        }
+    }
+
+    fn apply_torque(&mut self, handle: i32, torque: [f32; 3]) {
+        if let Some(&idx) = self.handle_to_index.get(&handle) {
+            self.solver.apply_torque(idx, torque);
+        }
+    }
+
+    fn apply_force_at_point(&mut self, handle: i32, force: [f32; 3], world_point: [f32; 3]) {
+        if let Some(&idx) = self.handle_to_index.get(&handle) {
+            self.solver.apply_force_at_point(idx, force, world_point);
         }
     }
 
@@ -970,9 +1210,25 @@ impl PhysicsState {
             if self.solver.bodies[ia].is_static != 0 && self.solver.bodies[ib].is_static != 0 {
                 continue;
             }
+            // ДОБАВЛЕНО (box-коллайдер кузова машины): Fortran-узкая фаза
+            // честно умеет только sphere-sphere — если ХОТЯ БЫ ОДНО из тел
+            // пары box, считаем контакт на Rust-стороне (см.
+            // `narrow_phase_box_sphere`). box-vs-box пока не реализован
+            // (не нужен ни одному текущему сценарию — единственное
+            // box-тело в сцене это кузов машины, а с другими box-телами
+            // он не сталкивается) — такая пара просто не даёт контакта,
+            // тот же результат, что и раньше (до box-коллайдера этих тел
+            // вообще не существовало).
             let mut contact = FortranContact::default();
-            let hit = unsafe {
-                ffi::narrow_phase_gjk(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact)
+            let hit = if self.solver.bodies[ia].shape_type == shape_type::SPHERE
+                && self.solver.bodies[ib].shape_type == shape_type::SPHERE
+            {
+                unsafe { ffi::narrow_phase_gjk(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) }
+            } else if let Some(c) = narrow_phase_box_sphere(&self.solver.bodies[ia], &self.solver.bodies[ib]) {
+                contact = c;
+                1
+            } else {
+                0
             };
             if hit != 0 {
                 contact.body_a = ia as i32;
@@ -1323,6 +1579,29 @@ extern "C" fn api_apply_impulse(instance: *mut c_void, id: i32, impulse: *const 
     }
 }
 
+extern "C" fn api_apply_torque(instance: *mut c_void, id: i32, torque: *const f32) {
+    if instance.is_null() {
+        return;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let torque = unsafe { read_vec3(torque) };
+    if let Ok(mut state) = inst.state.lock() {
+        state.apply_torque(id, torque);
+    }
+}
+
+extern "C" fn api_apply_force_at_point(instance: *mut c_void, id: i32, force: *const f32, world_point: *const f32) {
+    if instance.is_null() {
+        return;
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let force = unsafe { read_vec3(force) };
+    let world_point = unsafe { read_vec3(world_point) };
+    if let Ok(mut state) = inst.state.lock() {
+        state.apply_force_at_point(id, force, world_point);
+    }
+}
+
 extern "C" fn api_set_velocity(instance: *mut c_void, id: i32, linear: *const f32, angular: *const f32) {
     if instance.is_null() {
         return;
@@ -1380,6 +1659,8 @@ static PHYSICS_API: PhysicsAPI = PhysicsAPI {
     set_velocity: api_set_velocity,
     set_transform: api_set_transform,
     add_plane: api_add_plane,
+    apply_torque: api_apply_torque,
+    apply_force_at_point: api_apply_force_at_point,
 };
 
 #[no_mangle]

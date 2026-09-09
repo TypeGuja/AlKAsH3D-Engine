@@ -29,10 +29,13 @@ pub struct FortranRigidBody {
     // ДОБАВЛЕНО (код-ревью — per-body радиус вместо одного глобального
     // IMPLICIT_RADIUS на все тела): читается `narrow_phase.f90`
     // (`radius_sum = body_a%radius + body_b%radius`) и моментом инерции
-    // в `to_fortran_body` (lib.rs). ПОСЛЕДНЕЕ поле структуры — layout
-    // должен побайтово совпадать с `rigid_body_c` в rigid_body.f90, где
-    // это поле тоже дописано в самый конец.
+    // в `to_fortran_body` (lib.rs).
     pub radius: f32,
+    // ДОБАВЛЕНО (box-коллайдер кузова машины) — см. подробный комментарий
+    // у `shape_type`/`half_extents` в `rigid_body_c` (kernels/rigid_body.f90,
+    // ОБЯЗАН побайтово совпадать с этим layout). ПОСЛЕДНИЕ поля структуры.
+    pub shape_type: i32,
+    pub half_extents: [f32; 3],
 }
 
 #[repr(C)]
@@ -295,6 +298,15 @@ pub struct FortranPhysics {
     /// после — тот же жизненный цикл push/swap_remove, что у
     /// `sleep_timers` выше.
     pub force_accum: Vec<[f32; 3]>,
+    /// ДОБАВЛЕНО (реальная физика машины — подвеска прикладывает силу НЕ
+    /// через центр масс, а в точке колеса, что физически обязано рождать
+    /// момент, а не только линейное ускорение): аккумулятор момента силы
+    /// (Н·м, мировые координаты), тот же жизненный цикл, что у
+    /// `force_accum` выше — копится между вызовами `apply_torque`/
+    /// `apply_force_at_point`, переносится в `bodies[i].angular_acceleration`
+    /// (через `inv_inertia`, полную матрицу 3×3, не скаляр) прямо перед
+    /// `batch_integrate`, обнуляется сразу после.
+    pub torque_accum: Vec<[f32; 3]>,
     pub grid_width: i32,
     pub grid_height: i32,
     pub cell_size: f32,
@@ -315,6 +327,7 @@ impl FortranPhysics {
             active_indices: Vec::with_capacity(max_bodies),
             sleep_timers: Vec::with_capacity(max_bodies),
             force_accum: Vec::with_capacity(max_bodies),
+            torque_accum: Vec::with_capacity(max_bodies),
             grid_width: grid_size,
             grid_height: grid_size,
             cell_size,
@@ -325,6 +338,7 @@ impl FortranPhysics {
         self.bodies.push(body);
         self.sleep_timers.push(0.0);
         self.force_accum.push([0.0; 3]);
+        self.torque_accum.push([0.0; 3]);
     }
 
     /// Копит силу (Н) в аккумулятор ДО следующего `batch_integrate` — см.
@@ -340,6 +354,43 @@ impl FortranPhysics {
             self.force_accum[idx][k] += force[k];
         }
         self.bodies[idx].is_asleep = 0;
+    }
+
+    /// Копит момент силы (Н·м) в `torque_accum` — та же семантика, что у
+    /// `apply_force` выше, только для угловой составляющей.
+    pub fn apply_torque(&mut self, idx: usize, torque: [f32; 3]) {
+        if self.bodies[idx].is_static != 0 {
+            return;
+        }
+        for k in 0..3 {
+            self.torque_accum[idx][k] += torque[k];
+        }
+        self.bodies[idx].is_asleep = 0;
+    }
+
+    /// Прикладывает силу В ТОЧКЕ `world_point` (мировые координаты), а не
+    /// через центр масс — реалистично для подвески (сила пружины на
+    /// колесе рождает и линейное ускорение кузова, и вращение, если точка
+    /// приложения не совпадает с центром масс). Раскладывается на
+    /// `apply_force` (линейная часть) + `apply_torque` c моментом
+    /// `torque = (world_point - position) × force` (стандартное
+    /// определение момента силы).
+    pub fn apply_force_at_point(&mut self, idx: usize, force: [f32; 3], world_point: [f32; 3]) {
+        if self.bodies[idx].is_static != 0 {
+            return;
+        }
+        let r = [
+            world_point[0] - self.bodies[idx].position[0],
+            world_point[1] - self.bodies[idx].position[1],
+            world_point[2] - self.bodies[idx].position[2],
+        ];
+        let torque = [
+            r[1] * force[2] - r[2] * force[1],
+            r[2] * force[0] - r[0] * force[2],
+            r[0] * force[1] - r[1] * force[0],
+        ];
+        self.apply_force(idx, force);
+        self.apply_torque(idx, torque);
     }
 
     /// Мгновенно `v += impulse * inv_mass` — в отличие от `apply_force`,
@@ -567,6 +618,21 @@ impl FortranPhysics {
                 let inv_mass = self.bodies[i].inv_mass;
                 let f = self.force_accum[i];
                 self.bodies[i].acceleration = [f[0] * inv_mass, f[1] * inv_mass, f[2] * inv_mass];
+
+                // ДОБАВЛЕНО (apply_torque/apply_force_at_point — подвеска
+                // машины): та же идея, что и у линейного ускорения выше
+                // (F*inv_mass), но `angular_acceleration = inv_inertia *
+                // torque` — inv_inertia ПОЛНАЯ матрица 3×3 (см.
+                // `compute_local_inertia` в lib.rs), а не скаляр, поэтому
+                // умножение матрица-на-вектор явно построчно, а не F*inv_mass
+                // покомпонентно.
+                let t = self.torque_accum[i];
+                let ii = self.bodies[i].inv_inertia;
+                self.bodies[i].angular_acceleration = [
+                    ii[0][0] * t[0] + ii[0][1] * t[1] + ii[0][2] * t[2],
+                    ii[1][0] * t[0] + ii[1][1] * t[1] + ii[1][2] * t[2],
+                    ii[2][0] * t[0] + ii[2][1] * t[1] + ii[2][2] * t[2],
+                ];
             }
         }
 
@@ -591,6 +657,9 @@ impl FortranPhysics {
         // apply_force КАЖДЫЙ кадр, пока сила должна действовать).
         for f in self.force_accum.iter_mut() {
             *f = [0.0; 3];
+        }
+        for t in self.torque_accum.iter_mut() {
+            *t = [0.0; 3];
         }
     }
 

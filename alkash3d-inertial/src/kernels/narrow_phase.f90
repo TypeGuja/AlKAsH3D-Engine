@@ -39,6 +39,18 @@ contains
         contact%penetration = 0.0
         contact%point = [0.0, 0.0, 0.0]
 
+        ! ДОБАВЛЕНО (box-коллайдер кузова машины — см. `shape_type` в
+        ! rigid_body_c): эта функция понимает ТОЛЬКО sphere-sphere.
+        ! box-тела намеренно не должны сюда попадать (вызывающая
+        ! Rust-сторона в lib.rs фильтрует их до вызова и считает
+        ! box-vs-sphere/box-vs-plane сама), но защитный ранний выход на
+        ! случай прямого вызова — честное "не пересекаются" вместо того,
+        ! чтобы молча посчитать box как сферу радиуса `radius` (которое
+        ! для box-тела не имеет физического смысла и не инициализируется).
+        if (body_a%shape_type /= 0 .or. body_b%shape_type /= 0) then
+            return
+        end if
+
         delta = body_b%position - body_a%position
         dist_sq = delta(1)*delta(1) + delta(2)*delta(2) + delta(3)*delta(3)
         radius_sum = body_a%radius + body_b%radius

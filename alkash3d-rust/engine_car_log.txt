@@ -12,11 +12,12 @@ Alkash3D Engine v0.1.0 — Car Demo
   ESC     - выход
 ==========================================
 [ENGINE] Initializing Alkash3D Engine v0.1.0...
-[ENGINE] Window created: HWND=0x290B94
+[ENGINE] Window created: HWND=0x100A44
 [ENGINE] ✓ Window created
 [DEVICE] ========== CREATING D3D12 DEVICE ==========
 [DEVICE] ✓ D3D12 debug layer enabled
 [DEVICE] GPU-Based Validation доступен, но отключён по умолчанию (см. комментарий в device.rs — на тяжёлой сцене раздувает кадр до минут и может подвесить систему; установи ALKASH3D_GBV=1 для диагностики на лёгкой сцене)
+[DEVICE] ✓ DRED enabled (auto-breadcrumbs + page fault reporting)
 [DEVICE] Creating DXGI factory...
 [DEVICE] DXGI factory created
 [DEVICE] Enumerating adapters...
@@ -35,7 +36,7 @@ Alkash3D Engine v0.1.0 — Car Demo
 [QUEUE] ✓ Command queue created
 [ENGINE] ✓ Command queue created
 [SWAPCHAIN] ========== CREATING SWAP CHAIN ==========
-[SWAPCHAIN] HWND: 0x290B94, Width: 1366, Height: 768, Buffer count: 2
+[SWAPCHAIN] HWND: 0x100A44, Width: 1366, Height: 768, Buffer count: 2
 [SWAPCHAIN] Command queue obtained
 [SWAPCHAIN] Creating DXGI factory...
 [SWAPCHAIN] DXGI factory created
@@ -106,10 +107,10 @@ Alkash3D Engine v0.1.0 — Car Demo
 [PSO] Blend state created
 [PSO] Creating depth stencil state (ENABLED)...
 [PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL
-[PSO] Root signature: 0x9140ff020
+[PSO] Root signature: 0x282c0ff018
 [PSO] Pipeline state descriptor created
 [PSO] Calling CreateGraphicsPipelineState...
-[PSO] ✓ PSO created successfully! PSO: 0x9140fd438
+[PSO] ✓ PSO created successfully! PSO: 0x282c0fd418
 [ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target)
 [BUFFER] Creating constant buffer ARRAY: 256 slots x 768 bytes = 196608 bytes total
 [BUFFER] Creating constant buffer, size: 196608 bytes
@@ -211,6 +212,30 @@ Alkash3D Engine v0.1.0 — Car Demo
 [RENDERER] ✓ HDR target + RTV + SRV created
 [RENDERER] ✓ Renderer created successfully
 [ENGINE] ✓ Renderer recreated after resize: 1350x729
+[HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] ✓ Depth SRV created (для volumetric raymarch)
+[RENDERER] Creating HDR render target: 675x364
+[RENDERER] ✓ HDR render target created
+[RENDERER] Creating HDR render target: 675x364
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 2 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 2 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[BUFFER] Creating constant buffer, size: 256 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] ✓ Bloom resources created: 675x364 half-res ping-pong targets
+[RENDERER] Creating HDR render target: 675x364
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 3 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[BUFFER] Creating constant buffer, size: 256 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] ✓ Volumetric resources created: 675x364 half-res target
+[ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric)
 [ENGINE] ✓ Bloom SRV re-registered in new srv_uav_heap after resize
 [ENGINE] ✓ Initialization complete
 
@@ -248,13 +273,12 @@ Alkash3D Engine v0.1.0 — Car Demo
 [MAIN_CAR] ✓ 4 бочек (физика Inertial)
 [ENGINE] Mesh added, total meshes: 13
 ✅ Yard props ready
-
-=== RENDER LOOP STARTING ===
-
+[WARMUP] Прогрев PSO перед входом в render loop (первый кадр может занять заметно дольше обычного)...
 [BUFFER] Creating constant buffer ARRAY: 768 slots x 256 bytes = 196608 bytes total
 [BUFFER] Creating constant buffer, size: 196608 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] Shadow constant buffer (re)allocated: 128 slots/(кадр*каскад) x2 x3 каскада = 768 слотов
+[WARMUP] 'shadow' прогрет за 1.2037ms
 [BUFFER] Creating structured buffer, size: 4096 bytes
 [BUFFER] Structured buffer created successfully
 [ENGINE] Light buffer (re)allocated: 64 GPULight слотов (4096 байт)
@@ -264,22 +288,61 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating structured buffer, size: 1024 bytes
 [BUFFER] Structured buffer created successfully
 [ENGINE] Grid entries buffer (re)allocated: 64 слотов (1024 байт)
+[WARMUP] 'main' прогрет за 1.3732ms
+
+=== RENDER LOOP STARTING ===
+
 *** FIRST FRAME COMPLETED ***
 *** 25 ECS entities rendering ***
 
-[ENGINE] Present failed: HRESULT(0x887A0005)
-[ENGINE] Device removed, reason: Error { code: HRESULT(0x887A0006), message: "Графический процессор не будет отвечать на дальнейшие команды — вероятнее всего, потому, что запрашивающим приложением передана недопустимая команда." }
-[DEBUG-LAYER] ===== 3 сообщени(е/й) от D3D12 debug layer =====
-[DEBUG-LAYER] [D3D12_MESSAGE_SEVERITY(2) / D3D12_MESSAGE_CATEGORY([ENGINE] Shutting down...
-9[ENGINE] Signaling fence (value=3)...
-)[ENGINE] Waiting for GPU to finish...
-] [ENGINE] GPU idle
+[INFO] Frame 61 | FPS: 60.7 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=0 pairs=357
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 121 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=11 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 178 | FPS: 57.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=3 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 238 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 287 | FPS: 47.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=2 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 343 | FPS: 55.3 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=11 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 404 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=7 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 465 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=5 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 526 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=11 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 586 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 646 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 707 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 768 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 828 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[ENGINE] WM_CLOSE received - stopping engine loop
+[ENGINE] Shutting down...
+[ENGINE] Signaling fence (value=869)...
+[ENGINE] Waiting for GPU to finish...
+[ENGINE] GPU idle
 [ENGINE] Clearing meshes...
-ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
-[DEBUG-LAYER] [D3D12_MESSAGE_SEVERITY(2) / D3D12_MESSAGE_CATEGORY(9)] ID3D12CommandList::ClearRenderTargetView: The clear values do not match those passed to resource creation. The clear operation is typically slower as a result; but will still clear to the desired value.
-[DEBUG-LAYER] [D3D12_MESSAGE_SEVERITY(1) / D3D12_MESSAGE_CATEGORY(9)] ID3D12Device::RemoveDevice: Device removal has been triggered for the following reason (DXGI_ERROR_DEVICE_HUNG: The Device took an unreasonable amount of time to execute its commands, or the hardware crashed/hung. As a result, the TDR (Timeout Detection and Recovery) mechanism has been triggered. The current Device Context was executing commands when the hang occurred. The application may want to respawn and fallback to less aggressive use of the display hardware).
-[DEBUG-LAYER] ===== конец сообщений =====
-[MAIN_CAR] Render error, stopping: Error { code: HRESULT(0x887A0005), message: "Экземпляр устройства GPU приостановлен. Для определения соответствующего действия используйте GetDeviceRemovedReason." }
 [ENGINE] Releasing resources...
 [ENGINE] Resetting global state...
 [ENGINE] Destroying window...
