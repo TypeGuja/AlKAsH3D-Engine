@@ -155,9 +155,25 @@ impl RenderTexture {
             Flags: D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
         };
 
+        // ИСПРАВЛЕНО (D3D12 debug layer постоянно предупреждал "ClearRenderTargetView:
+        // The clear values do not match those passed to resource creation" в КАЖДОМ
+        // логе диагностики зависания на первых кадрах): было `[0,0,0,1]`, а реальный
+        // per-frame clear-color движка по умолчанию — `AlkashEngine::clear_color` в
+        // engine/lifecycle.rs (`[0.05, 0.05, 0.1, 1.0]`, тёмно-синий "небесный" фон).
+        // Оптимизированный clear value ЗДЕСЬ должен совпадать с тем, что реально
+        // передаётся в `ClearRenderTargetView` в render_frame.rs, иначе GPU не может
+        // использовать быстрый путь очистки (сжатие render target'а рассчитано под
+        // конкретное объявленное значение) и откатывается на медленный — по
+        // документации это влияет только на производительность, не на корректность,
+        // но раз несовпадение попадало в КАЖДЫЙ дамп debug layer'а рядом с
+        // воспроизведённым GPU-зависанием, привести его в соответствие всё равно
+        // стоило того как безопасный, независимо оправданный шаг. `clear_color`
+        // может меняться в рантайме (day/night, см. `set_clear_color` в
+        // lifecycle.rs) — тогда несовпадение неизбежно вернётся, но это уже
+        // некритичный perf-warning, а не рассинхронизация с самого старта.
         let clear_value = D3D12_CLEAR_VALUE {
             Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
-            Anonymous: D3D12_CLEAR_VALUE_0 { Color: [0.0, 0.0, 0.0, 1.0] },
+            Anonymous: D3D12_CLEAR_VALUE_0 { Color: [0.05, 0.05, 0.1, 1.0] },
         };
 
         unsafe {

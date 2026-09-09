@@ -23,9 +23,10 @@
 
 use alkash3d_rs::engine::AlkashEngine;
 use alkash3d_rs::input::keys;
-use alkash3d_rs::math::Vec3;
+use alkash3d_rs::math::{Quat, Vec3};
 use alkash3d_rs::scene::EntityId;
-use alkash3d_rs::car_sim::{CarInput, CarParams, CarState, WallAabb};
+use alkash3d_rs::car_sim::WallAabb;
+use alkash3d_rs::car_physics::{CarInput, CarPhysicsParams, CarPhysicsState};
 use alkash3d_rs::{proc_textures, PhysicsBody, PhysicsConfig};
 use std::f32::consts::FRAC_PI_2;
 use std::time::Instant;
@@ -116,21 +117,61 @@ impl CarDimensions {
     }
 }
 
+/// Кватернион поворота вокруг мировой оси Y на угол `yaw` (радианы) — тот
+/// же порядок компонент (x,y,z,w), что и `PhysicsBody::orientation`.
+/// Используется ТОЛЬКО для начальной ориентации машины при спавне
+/// (`spawn_player_car`) — дальше ориентацию честно считает Fortran-солвер.
+fn yaw_to_quat(yaw: f32) -> [f32; 4] {
+    let half = yaw * 0.5;
+    [0.0, half.sin(), 0.0, half.cos()]
+}
+
 /// FL/FR/RL/RR — порядок, в котором заведены колёса машины (совпадает с
 /// порядком в `spawn_player_car`), используется, чтобы знать, каким
 /// колёсам применять угол руля (передним), а каким — только качение.
+///
+/// ИЗМЕНЕНО (реальная физика через Inertial, см. `car_physics.rs`): машина
+/// больше не кинематическое `CarState` (`car_sim.rs`) — `body_id` это
+/// НАСТОЯЩЕЕ Fortran-тело (box-коллайдер), позиция/ориентация читаются из
+/// него каждый кадр (`cached_position`/`cached_forward` — снимок ПОСЛЕДНЕГО
+/// прочитанного состояния, обновляется раз за кадр в `run_loop` СРАЗУ
+/// после `engine.update()`, используется камерой/UI между кадрами вместо
+/// повторных FFI-вызовов `get_physics_body`).
 struct PlayerCar {
     entity: EntityId,
     wheel_entities: [EntityId; 4],
     dims: CarDimensions,
-    state: CarState,
-    params: CarParams,
+    body_id: i32,
+    wheel_local_positions: [[f32; 3]; 4],
+    /// Примерный радиус охватывающей окружности кузова по XZ (половина
+    /// диагонали `chassis_half`) — для простой "safety net" коллизии со
+    /// стенами гаража/границами площадки (см. `resolve_car_wall_safety` в
+    /// `run_loop`): у Inertial пока нет box-vs-box узкой фазы (только
+    /// box-vs-sphere/box-vs-plane, см. `PhysicsBody::shape_type`), стены
+    /// гаража НЕ физические тела Inertial вообще — то же ограничение,
+    /// что и раньше в `car_sim.rs`, просто теперь применяется к реальному
+    /// физическому телу, а не к кинематической позиции.
+    collision_radius: f32,
+    phys_state: CarPhysicsState,
+    phys_params: CarPhysicsParams,
+    /// Накопленный угол вращения колёс для визуального качения — то же
+    /// самое, что было `CarState::wheel_spin`, но теперь честно считается
+    /// из РЕАЛЬНОЙ продольной скорости физического тела, а не из
+    /// кинематического `speed`.
+    wheel_spin: f32,
+    /// Снимок последнего прочитанного состояния тела — см. комментарий у
+    /// структуры выше.
+    cached_position: Vec3,
+    cached_forward: Vec3,
+    /// Реальная скорость вдоль курса (м/с, для HUD/лога) — проекция
+    /// вектора скорости тела на `cached_forward`.
+    cached_speed: f32,
 }
 
 impl PlayerCar {
     fn distance_xz(&self, pos: Vec3) -> f32 {
-        let dx = self.state.position.x - pos.x;
-        let dz = self.state.position.z - pos.z;
+        let dx = self.cached_position.x - pos.x;
+        let dz = self.cached_position.z - pos.z;
         (dx * dx + dz * dz).sqrt()
     }
 }
@@ -354,6 +395,13 @@ fn setup_barrel_physics(engine: &mut AlkashEngine) {
 /// которого тут просто нет) и меньшей `restitution` (бочка не мячик) — так
 /// бочка падает, пару раз подскакивает/чуть катится и реально
 /// останавливается за разумное время, а не разъезжается по всей площадке.
+/// Радиус физической сферы бочки — совпадает с радиусом визуального
+/// цилиндра-меша (`0.38`, см. `engine.add_cylinder_textured(0.38, ...)` в
+/// точке вызова ниже), а не старым глобальным `IMPLICIT_RADIUS=0.5` —
+/// иначе физическая "сфера" бочки была бы заметно крупнее её видимого
+/// меша.
+const BARREL_PHYSICS_RADIUS: f32 = 0.38;
+
 fn spawn_barrel(engine: &mut AlkashEngine, mesh_index: usize, x: f32, y: f32, z: f32) {
     let body = PhysicsBody {
         position: [x, y, z],
@@ -370,6 +418,13 @@ fn spawn_barrel(engine: &mut AlkashEngine, mesh_index: usize, x: f32, y: f32, z:
         is_static: 0,
         is_asleep: 0,
         orientation: [0.0, 0.0, 0.0, 1.0],
+        // ИСПРАВЛЕНО (E0063 — `PhysicsBody::radius` добавили полем, этот
+        // конструктор не обновили): см. `BARREL_PHYSICS_RADIUS` выше.
+        radius: BARREL_PHYSICS_RADIUS,
+        // ИСПРАВЛЕНО (E0063 — box-коллайдер кузова машины добавил два
+        // новых поля): бочка по-прежнему сфера.
+        shape_type: alkash3d_rs::shape_type::SPHERE,
+        half_extents: [0.0; 3],
     };
     let Some(body_id) = engine.add_physics_body(body) else { return };
     let entity = engine.spawn_mesh_entity(mesh_index);
@@ -449,12 +504,30 @@ fn spawn_player_car(engine: &mut AlkashEngine, start_pos: Vec3, start_yaw: f32) 
     let headlight_mesh = engine.add_cube_colored(0.18, 1.0, 0.95, 0.75, 1.0);
     let taillight_mesh = engine.add_cube_colored(0.16, 0.75, 0.05, 0.03, 1.0);
 
-    let entity = engine.spawn_static_mesh(
-        chassis_mesh,
-        [start_pos.x, dims.root_y, start_pos.z],
-        [0.0, start_yaw, 0.0],
-        [1.0, 1.0, 1.0],
-    );
+    // ИЗМЕНЕНО (реальная физика через Inertial): кузов теперь настоящее
+    // физическое тело (box-коллайдер, `half_extents = dims.chassis_half`),
+    // а не статичная ECS-сущность с ручным `set_entity_transform` каждый
+    // кадр. `spawn_mesh_entity` (БЕЗ фиксированной позиции — в отличие от
+    // `spawn_static_mesh` выше) + ручная привязка к телу через
+    // `physics_links` (тот же механизм, каким пользуется
+    // `spawn_physics_car`/`spawn_physics_sphere`, см. их комментарии в
+    // `engine/physics_bridge.rs`) — дальше позицию/ориентацию сущности на
+    // каждом кадре honestly обновляет `sync_physics_transforms()` внутри
+    // `engine.update()`, а не этот файл.
+    const CAR_MASS: f32 = 950.0; // типичная снаряжённая масса легковушки, кг
+    let entity = engine.spawn_mesh_entity(chassis_mesh);
+    let start_orientation = yaw_to_quat(start_yaw);
+    let body_id = match engine.add_box_body(start_pos.x, dims.root_y, start_pos.z, CAR_MASS, dims.chassis_half) {
+        Some(id) => {
+            engine.set_physics_transform(id, [start_pos.x, dims.root_y, start_pos.z], start_orientation);
+            engine.physics_links.push((id, entity));
+            id
+        }
+        None => {
+            eprintln!("[MAIN_CAR] WARNING: не удалось создать физическое тело машины (физика не инициализирована?) — машина останется неподвижной");
+            -1
+        }
+    };
 
     engine.spawn_child_mesh(
         cabin_mesh,
@@ -512,25 +585,105 @@ fn spawn_player_car(engine: &mut AlkashEngine, start_pos: Vec3, start_yaw: f32) 
         entity,
         wheel_entities,
         dims,
-        state: CarState::new(Vec3::new(start_pos.x, dims.root_y, start_pos.z), start_yaw),
-        params: CarParams {
-            ground_y: dims.root_y,
-            ..CarParams::default()
-        },
+        body_id,
+        wheel_local_positions,
+        collision_radius: (dims.chassis_half[0] * dims.chassis_half[0]
+            + dims.chassis_half[2] * dims.chassis_half[2])
+            .sqrt(),
+        phys_state: CarPhysicsState::default(),
+        phys_params: CarPhysicsParams::default(),
+        wheel_spin: 0.0,
+        cached_position: Vec3::new(start_pos.x, dims.root_y, start_pos.z),
+        cached_forward: Vec3::new(start_yaw.sin(), 0.0, start_yaw.cos()),
+        cached_speed: 0.0,
+    }
+}
+
+/// ДОБАВЛЕНО (реальная физика через Inertial): та же "safety net"
+/// коллизия со стенами гаража/границами площадки, что раньше честно
+/// разрешал `car_sim::resolve_wall_collisions`/`clamp_to_bounds` для
+/// кинематической позиции — здесь применяется к РЕАЛЬНОМУ физическому
+/// телу через `set_physics_transform`/`set_physics_velocity` вместо
+/// прямой записи в кинематическое состояние. У Inertial пока нет
+/// box-vs-box узкой фазы (см. `PhysicsBody::shape_type`), а стены гаража
+/// вообще не физические тела Fortran-солвера — то же архитектурное
+/// ограничение, что и раньше, просто теперь корректирует настоящее тело.
+/// Приблизительная (окружность, не честный OBB) коллизия — тот же
+/// компромисс, что был и в `car_sim.rs` (`collision_radius`).
+fn resolve_car_wall_safety(engine: &mut AlkashEngine, body_id: i32, radius: f32, walls: &[WallAabb], bounds: WallAabb) {
+    let Some(body) = engine.get_physics_body(body_id) else { return };
+    let mut pos = Vec3::from(body.position);
+    let mut vel = Vec3::from(body.velocity);
+    let mut changed = false;
+
+    for wall in walls {
+        let closest_x = pos.x.clamp(wall.min_x, wall.max_x);
+        let closest_z = pos.z.clamp(wall.min_z, wall.max_z);
+        let dx = pos.x - closest_x;
+        let dz = pos.z - closest_z;
+        let dist_sq = dx * dx + dz * dz;
+        if dist_sq >= radius * radius {
+            continue;
+        }
+        let dist = dist_sq.sqrt();
+        let (nx, nz) = if dist > 1e-4 {
+            (dx / dist, dz / dist)
+        } else {
+            // Центр машины уже внутри AABB — выталкиваем по кратчайшей оси
+            // в сторону БЛИЖНЕГО края (тот же фикс направления, что уже
+            // применён в `car_sim::resolve_wall_collisions`, см. его
+            // комментарий).
+            let dist_to_min_x = pos.x - wall.min_x;
+            let dist_to_max_x = wall.max_x - pos.x;
+            let dist_to_min_z = pos.z - wall.min_z;
+            let dist_to_max_z = wall.max_z - pos.z;
+            let push_x = dist_to_min_x.min(dist_to_max_x);
+            let push_z = dist_to_min_z.min(dist_to_max_z);
+            if push_x < push_z {
+                if dist_to_min_x < dist_to_max_x { (-1.0, 0.0) } else { (1.0, 0.0) }
+            } else {
+                if dist_to_min_z < dist_to_max_z { (0.0, -1.0) } else { (0.0, 1.0) }
+            }
+        };
+        let penetration = radius - dist;
+        pos.x += nx * penetration;
+        pos.z += nz * penetration;
+        let vn = vel.x * nx + vel.z * nz;
+        if vn < 0.0 {
+            vel.x -= nx * vn;
+            vel.z -= nz * vn;
+        }
+        changed = true;
+    }
+
+    if pos.x < bounds.min_x { pos.x = bounds.min_x; vel.x = vel.x.max(0.0); changed = true; }
+    else if pos.x > bounds.max_x { pos.x = bounds.max_x; vel.x = vel.x.min(0.0); changed = true; }
+    if pos.z < bounds.min_z { pos.z = bounds.min_z; vel.z = vel.z.max(0.0); changed = true; }
+    else if pos.z > bounds.max_z { pos.z = bounds.max_z; vel.z = vel.z.min(0.0); changed = true; }
+
+    if changed {
+        engine.set_physics_transform(body_id, pos.to_array(), body.orientation);
+        engine.set_physics_velocity(body_id, vel.to_array(), body.angular_velocity);
     }
 }
 
 fn run_loop(engine: &mut AlkashEngine, mut car: PlayerCar, garage_walls: Vec<WallAabb>, world_bounds: WallAabb) {
+    // ДОБАВЛЕНО (фикс воспроизведённого DXGI_ERROR_DEVICE_HUNG на первом
+    // кадре — см. `warm_up_pipelines` в engine/render_frame.rs): сцена уже
+    // полностью собрана (машина, гараж, бочки), так что main/shadow PSO
+    // получат настоящий Draw-вызов и реально прогреются. Вызывается ДО
+    // печати "RENDER LOOP STARTING", чтобы по логам было видно: прогрев
+    // — это ещё не часть игрового цикла.
+    if let Err(e) = engine.warm_up_pipelines() {
+        eprintln!("[MAIN_CAR] WARNING: прогрев PSO не завершился штатно: {:?} — первый кадр игрового цикла может оказаться медленным/нестабильным", e);
+    }
+
     println!("\n=== RENDER LOOP STARTING ===\n");
 
-    // Кэшируем локальные позиции колёс ОДИН раз (они не меняются) — честная
-    // замена `entity_local_pos_unused` выше, см. её комментарий.
-    let wheel_local_positions: [[f32; 3]; 4] = [
-        [-car.dims.wheel_x, car.dims.wheel_y_local, car.dims.wheel_z],
-        [car.dims.wheel_x, car.dims.wheel_y_local, car.dims.wheel_z],
-        [-car.dims.wheel_x, car.dims.wheel_y_local, -car.dims.wheel_z],
-        [car.dims.wheel_x, car.dims.wheel_y_local, -car.dims.wheel_z],
-    ];
+    // Позиции колёс — уже посчитаны один раз в `spawn_player_car` и лежат
+    // в `car.wheel_local_positions` (та же честная причина, что и раньше:
+    // не пересчитывать неизменную величину каждый кадр — просто теперь
+    // это поле структуры, а не локальная переменная run_loop).
 
     let mut frame_count: u64 = 0;
     let mut time = 0.0f32;
@@ -582,10 +735,10 @@ fn run_loop(engine: &mut AlkashEngine, mut car: PlayerCar, garage_walls: Vec<Wal
                 }
                 PlayerMode::Driving => {
                     mode = PlayerMode::Walking;
-                    let right = car.state.forward().cross(Vec3::Y).normalize();
-                    let exit_pos = car.state.position + right * 2.2 + Vec3::new(0.0, EYE_HEIGHT - car.dims.root_y, 0.0);
+                    let right = car.cached_forward.cross(Vec3::Y).normalize();
+                    let exit_pos = car.cached_position + right * 2.2 + Vec3::new(0.0, EYE_HEIGHT - car.dims.root_y, 0.0);
                     engine.camera.position = exit_pos;
-                    engine.camera.target = exit_pos + car.state.forward();
+                    engine.camera.target = exit_pos + car.cached_forward;
                     println!("[MAIN_CAR] 🚶 Вышел из машины");
                 }
             }
@@ -632,6 +785,34 @@ fn run_loop(engine: &mut AlkashEngine, mut car: PlayerCar, garage_walls: Vec<Wal
                 }
             }
             PlayerMode::Driving => {
+                // Довора́чивание взгляда камеры стрелками влево/вправо
+                // вокруг машины — чистый ввод, не зависит от физики, можно
+                // копить и до интегрирования этого кадра.
+                let look_amount = rot_speed * dt;
+                if engine.input.is_down(keys::ARROW_LEFT) { chase_look_offset -= look_amount; }
+                if engine.input.is_down(keys::ARROW_RIGHT) { chase_look_offset += look_amount; }
+                chase_look_offset = chase_look_offset.clamp(-2.2, 2.2);
+            }
+        }
+
+        // ИСПРАВЛЕНО (машина падала в свободном падении, пока игрок не сел
+        // за руль — найдено диагностикой `[DIAG-CAR]`): подвеска ДЕРЖИТ
+        // машину физически, это не часть "управления", доступного только в
+        // Driving — реальная машина стоит на подвеске в гараже сама по
+        // себе, никто не должен сидеть за рулём, чтобы она не провалилась
+        // сквозь землю. Считаем и прикладываем силы КАЖДЫЙ кадр независимо
+        // от режима; газ/руль/ручник — нулевые, пока не Driving (машина
+        // просто стоит на месте на подвеске, как и должна).
+        //
+        // ИЗМЕНЕНО (реальная физика через Inertial, см. `car_physics.rs`):
+        // это только КОПИТ силы подвески/тяги в аккумуляторе физического
+        // тела — реальное интегрирование происходит позже, внутри
+        // `engine.update()` ниже. Позицию/ориентацию сущности после этого
+        // честно обновляет `sync_physics_transforms()` (тоже внутри
+        // `engine.update()`) — руками через `set_entity_transform` здесь
+        // ничего не выставляем, в отличие от старой кинематической версии.
+        if car.body_id >= 0 {
+            let input = if mode == PlayerMode::Driving {
                 let throttle = if engine.input.is_down(keys::W) { 1.0 }
                     else if engine.input.is_down(keys::S) { -1.0 }
                     else { 0.0 };
@@ -639,41 +820,20 @@ fn run_loop(engine: &mut AlkashEngine, mut car: PlayerCar, garage_walls: Vec<Wal
                     else if engine.input.is_down(keys::D) { 1.0 }
                     else { 0.0 };
                 let handbrake = engine.input.is_down(keys::R);
-
-                car.state.step(
-                    CarInput { throttle, steer, handbrake },
-                    &car.params,
-                    dt,
-                    &garage_walls,
-                    world_bounds,
-                );
-
-                engine.set_entity_transform(
-                    car.entity,
-                    [car.state.position.x, car.state.position.y, car.state.position.z],
-                    [car.state.visual_pitch, car.state.yaw, 0.0],
-                );
-
-                for (i, &wheel) in car.wheel_entities.iter().enumerate() {
-                    let steer_here = if i < 2 { car.state.steer_angle } else { 0.0 };
-                    engine.set_entity_transform(wheel, wheel_local_positions[i], [car.state.wheel_spin, steer_here, 0.0]);
-                }
-
-                // Камера "от третьего лица" за машиной — стрелки влево/
-                // вправо чуть довора́чивают взгляд вокруг машины, не
-                // трогая саму симуляцию руления.
-                let look_amount = rot_speed * dt;
-                if engine.input.is_down(keys::ARROW_LEFT) { chase_look_offset -= look_amount; }
-                if engine.input.is_down(keys::ARROW_RIGHT) { chase_look_offset += look_amount; }
-                chase_look_offset = chase_look_offset.clamp(-2.2, 2.2);
-
-                let chase_yaw = car.state.yaw + chase_look_offset;
-                let chase_dir = Vec3::new(chase_yaw.sin(), 0.0, chase_yaw.cos());
-                let chase_distance = 6.0;
-                let chase_height = 2.6;
-                engine.camera.position = car.state.position - chase_dir * chase_distance + Vec3::new(0.0, chase_height, 0.0);
-                engine.camera.target = car.state.position + Vec3::new(0.0, 0.7, 0.0);
-            }
+                CarInput { throttle, steer, handbrake }
+            } else {
+                CarInput::default()
+            };
+            car.phys_state.step(
+                engine,
+                car.body_id,
+                &car.wheel_local_positions,
+                input,
+                &car.phys_params,
+                GROUND_Y,
+                dt,
+            );
+            resolve_car_wall_safety(engine, car.body_id, car.collision_radius, &garage_walls, world_bounds);
         }
 
         let view_proj = engine.camera.projection_matrix() * engine.camera.view_matrix();
@@ -683,6 +843,52 @@ fn run_loop(engine: &mut AlkashEngine, mut car: PlayerCar, garage_walls: Vec<Wal
             [engine.camera.position.x, engine.camera.position.y, engine.camera.position.z],
             view_proj.to_cols_array(),
         );
+
+        // ДОБАВЛЕНО (реальная физика через Inertial): читаем РЕАЛЬНОЕ
+        // состояние тела ПОСЛЕ `engine.update()` выше (там же честно
+        // произошло интегрирование сил, накопленных в Driving-ветке
+        // раньше в этом кадре) — визуал колёс/камера должны опираться на
+        // то, что реально посчитал солвер В ЭТОМ кадре, а не на ввод/
+        // прогноз. `cached_position`/`cached_forward`/`cached_speed`
+        // обновляются здесь ВСЕГДА (не только в Driving) — простой снимок,
+        // который `distance_xz`/выход из машины читают и в Walking-режиме.
+        if car.body_id >= 0 {
+            if let Some(body) = engine.get_physics_body(car.body_id) {
+                let position = Vec3::from(body.position);
+                let orientation = Quat::from_xyzw(body.orientation[0], body.orientation[1], body.orientation[2], body.orientation[3]);
+                let mut forward = orientation * Vec3::Z;
+                forward.y = 0.0;
+                let forward = if forward.length_squared() > 1e-6 { forward.normalize() } else { car.cached_forward };
+                let velocity = Vec3::from(body.velocity);
+
+                car.cached_position = position;
+                car.cached_forward = forward;
+                car.cached_speed = velocity.dot(forward);
+
+                if mode == PlayerMode::Driving {
+                    // Визуальное качение колёс — из РЕАЛЬНОЙ продольной
+                    // скорости тела (не из кинематического `speed`, как
+                    // раньше в `car_sim::CarState`).
+                    if car.dims.wheel_radius > 1e-4 {
+                        car.wheel_spin += (car.cached_speed / car.dims.wheel_radius) * dt;
+                    }
+                    for (i, &wheel) in car.wheel_entities.iter().enumerate() {
+                        let steer_here = if i < 2 { car.phys_state.steer_angle } else { 0.0 };
+                        engine.set_entity_transform(wheel, car.wheel_local_positions[i], [car.wheel_spin, steer_here, 0.0]);
+                    }
+
+                    // Камера "от третьего лица" за машиной — за курс берём
+                    // РЕАЛЬНЫЙ курс тела (atan2 по forward), не отдельно
+                    // хранимый угол.
+                    let chase_yaw = forward.x.atan2(forward.z) + chase_look_offset;
+                    let chase_dir = Vec3::new(chase_yaw.sin(), 0.0, chase_yaw.cos());
+                    let chase_distance = 6.0;
+                    let chase_height = 2.6;
+                    engine.camera.position = position - chase_dir * chase_distance + Vec3::new(0.0, chase_height, 0.0);
+                    engine.camera.target = position + Vec3::new(0.0, 0.7, 0.0);
+                }
+            }
+        }
 
         if let Err(e) = engine.render_frame() {
             eprintln!("[MAIN_CAR] Render error, stopping: {:?}", e);
@@ -702,13 +908,29 @@ fn run_loop(engine: &mut AlkashEngine, mut car: PlayerCar, garage_walls: Vec<Wal
             let mode_str = match mode { PlayerMode::Walking => "walking", PlayerMode::Driving => "driving" };
             println!(
                 "[INFO] Frame {} | FPS: {:.1} | mode={} | speed={:.1} m/s | entities: {}",
-                frame_count, fps, mode_str, car.state.speed, engine.scene_entity_count(),
+                frame_count, fps, mode_str, car.cached_speed, engine.scene_entity_count(),
             );
             if let Some(stats) = engine.physics_stats() {
                 println!(
                     "[PHYS-STATS] bodies={} active={} contacts={} pairs={}",
                     stats.bodies_count, stats.active_bodies, stats.contacts_count, stats.pairs_count
                 );
+            }
+            // ДОБАВЛЕНО (реальная физика машины через Inertial): позиция/
+            // скорость/ориентация кузова раз в секунду — тот же принцип,
+            // что и `[PHYS-STATS]` выше, полезно держать постоянно
+            // (подтверждало точное равновесие подвески и разгон/торможение
+            // о стену при живой проверке этой доработки).
+            if car.body_id >= 0 {
+                if let Some(b) = engine.get_physics_body(car.body_id) {
+                    println!(
+                        "[DIAG-CAR] pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2}) ori=({:.2},{:.2},{:.2},{:.2}) asleep={}",
+                        b.position[0], b.position[1], b.position[2],
+                        b.velocity[0], b.velocity[1], b.velocity[2],
+                        b.orientation[0], b.orientation[1], b.orientation[2], b.orientation[3],
+                        b.is_asleep,
+                    );
+                }
             }
             fps_window_frames = 0;
             fps_window_start = Instant::now();

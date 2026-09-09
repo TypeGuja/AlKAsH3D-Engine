@@ -178,6 +178,20 @@ impl AlkashEngine {
     /// наклонные поверхности (аппаратный slope-scaled bias частично
     /// решает то же самое, но нормаль-based добавка в PS даёт больше
     /// контроля на пологих углах).
+    /// ВРЕМЕННО (диагностика воспроизведённого DXGI_ERROR_DEVICE_HUNG,
+    /// который стабильно ловится именно на ВТОРОМ реальном обращении к
+    /// shadow-проходу — см. DRED-отчёты в истории отладки main_car):
+    /// вызвать сразу после `init()`, чтобы полностью выключить shadow
+    /// mapping (`render_frame()` пропускает весь shadow-блок, если
+    /// `shadow_pipeline_state.is_none()`) и проверить, исчезает ли
+    /// зависание — это либо локализует баг внутри shadow-кода, либо
+    /// опровергнет и эту гипотезу. Удалить вызов (и, по желанию, этот
+    /// метод) после диагностики.
+    pub fn disable_shadows_for_diagnostics(&mut self) {
+        println!("[DIAG] Shadow mapping принудительно отключён для диагностики зависания");
+        self.shadow_pipeline_state = None;
+    }
+
     pub(super) fn create_shadow_pipeline_state(&mut self) -> Result<()> {
         use windows::Win32::Foundation::{FALSE, TRUE};
         use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};

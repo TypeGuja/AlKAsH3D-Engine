@@ -38,6 +38,15 @@ path = "src/bin/main2.rs"
 name = "main_car"
 path = "src/bin/main_car.rs"
 
+# ДОБАВЛЕНО (минимальный пример "с нуля" + бисекция DXGI_ERROR_DEVICE_HUNG,
+# см. шапку example_minimal.rs): специально НЕ трогает main_car.rs — это
+# отдельный, максимально простой бинарник для послойной проверки, какая
+# именно комбинация проходов (shadow/volumetric/bloom) провоцирует
+# воспроизведённое ранее зависание GPU.
+[[bin]]
+name = "example_minimal"
+path = "src/bin/example_minimal.rs"
+
 
 [dependencies]
 # ДОБАВЛЕНО (звуковая подсистема — XAudio2): "Win32_Media_Audio_XAudio2"

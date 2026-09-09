@@ -186,6 +186,19 @@ impl PhysicsPlugin {
     pub fn set_transform(&mut self, id: i32, position: [f32; 3], orientation: [f32; 4]) {
         (self.api.set_transform)(self.instance, id, position.as_ptr(), orientation.as_ptr());
     }
+
+    /// ДОБАВЛЕНО (реальная физика машины — подвеска): копит момент силы
+    /// (Н·м) — та же семантика, что у `apply_force`, только угловая.
+    pub fn apply_torque(&mut self, id: i32, torque: [f32; 3]) {
+        (self.api.apply_torque)(self.instance, id, torque.as_ptr());
+    }
+
+    /// Прикладывает силу в точке `world_point` (не через центр масс) —
+    /// рождает и линейное ускорение, и момент. Ключевая функция для
+    /// честной подвески (сила пружины/демпфера на колесе).
+    pub fn apply_force_at_point(&mut self, id: i32, force: [f32; 3], world_point: [f32; 3]) {
+        (self.api.apply_force_at_point)(self.instance, id, force.as_ptr(), world_point.as_ptr());
+    }
 }
 
 pub struct LightPlugin {

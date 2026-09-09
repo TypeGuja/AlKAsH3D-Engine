@@ -209,6 +209,22 @@ impl AlkashEngine {
                 is_static: if part.mass <= 0.0 { 1 } else { 0 },
                 is_asleep: 0,
                 orientation: [0.0, 0.0, 0.0, 1.0],
+                // ИСПРАВЛЕНО (E0063, тот же паттерн, что у
+                // `add_sphere_body`/`spawn_physics_car` в physics_bridge.rs):
+                // .alasm-формат не хранит явный радиус детали, зато уже
+                // загруженный меш (`mesh_index`) знает свой
+                // `bounding_radius` (та же величина, что использует
+                // frustum-каллинг в render_frame.rs) — деталь спавнится со
+                // scale [1,1,1] (см. `spawn_static_mesh` ниже), поэтому
+                // bounding_radius меша БЕЗ поправки на масштаб — это и есть
+                // физический радиус детали в мировых единицах.
+                radius: self.meshes[mesh_index].bounding_radius,
+                // ИСПРАВЛЕНО (E0063 — box-коллайдер кузова машины добавил
+                // два новых поля): детали `.alasm`-сборки — по-прежнему
+                // сферы (см. комментарий у `radius` выше), `half_extents`
+                // для них не используется.
+                shape_type: crate::plugin::shape_type::SPHERE,
+                half_extents: [0.0; 3],
             };
             let Some(body_id) = self.add_physics_body(body) else {
                 eprintln!("[ENGINE] WARNING: .alasm деталь #{} — add_physics_body отказал (лимит max_bodies?), деталь пропущена", index);

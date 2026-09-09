@@ -253,6 +253,57 @@ impl AlkashEngine {
             is_static: if mass <= 0.0 { 1 } else { 0 },
             is_asleep: 0,
             orientation: [0.0, 0.0, 0.0, 1.0],
+            // ИСПРАВЛЕНО (E0063 — `PhysicsBody::radius` добавили полем
+            // структуры, но забыли обновить конструкторов): `add_sphere_body`
+            // — буквальный конструктор сферы старого (до появления поля)
+            // поведения, когда каждое тело на Fortran-стороне ВСЕГДА было
+            // сферой фиксированного `IMPLICIT_RADIUS = 0.5` (см. комментарий
+            // у поля `radius` в `physics_api.rs`). У функции нет параметра
+            // радиуса — сохраняем именно то старое значение 0.5, а не
+            // произвольную константу: вызывающий код (например
+            // `FLOOR_SPHERE_SPACING`/`SPACING` в main.rs/main_car.rs) уже
+            // жёстко рассчитан на шаг между сферами-полом ИСХОДЯ из радиуса
+            // 0.5 (`< 2*IMPLICIT_RADIUS`) — другое значение здесь молча
+            // рассинхронизировало бы плотность стыковки сфер-пола с этими
+            // константами.
+            radius: 0.5,
+            // ИСПРАВЛЕНО (E0063 — те же два новых поля, добавленные для
+            // box-коллайдера кузова машины): `add_sphere_body` — буквально
+            // сфера, `half_extents` для неё не имеет смысла.
+            shape_type: crate::plugin::shape_type::SPHERE,
+            half_extents: [0.0; 3],
+        };
+        self.add_physics_body(body)
+    }
+
+    /// ДОБАВЛЕНО (реальная физика машины — box-коллайдер кузова, см.
+    /// `PhysicsBody::shape_type`): тот же паттерн, что `add_sphere_body`
+    /// выше, но для коробки — `half_extents` задаёт половинные размеры по
+    /// локальным осям тела (те же оси, что и у визуального
+    /// `Transform.scale`, если меш — единичный куб, см. `add_cube_colored`).
+    /// Момент инерции считается на Fortran-стороне (`compute_local_inertia`
+    /// в `alkash3d-inertial/src/lib.rs`) из `half_extents`, а не из
+    /// `radius` — `radius` здесь не используется совсем (0.0, безопасное
+    /// значение по умолчанию).
+    pub fn add_box_body(&mut self, x: f32, y: f32, z: f32, mass: f32, half_extents: [f32; 3]) -> Option<i32> {
+        let body = PhysicsBody {
+            position: [x, y, z],
+            velocity: [0.0; 3],
+            acceleration: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            angular_acceleration: [0.0; 3],
+            mass,
+            inv_mass: if mass > 0.0 { 1.0 / mass } else { 0.0 },
+            restitution: 0.1,
+            friction: 0.7,
+            linear_damping: 0.05,
+            angular_damping: 0.35,
+            is_static: if mass <= 0.0 { 1 } else { 0 },
+            is_asleep: 0,
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            radius: 0.0,
+            shape_type: crate::plugin::shape_type::BOX,
+            half_extents,
         };
         self.add_physics_body(body)
     }
@@ -288,14 +339,16 @@ impl AlkashEngine {
     /// (СВОЯ, независимая реализация — не копия чужого кода/ассетов, см.
     /// обсуждение подхода с пользователем).
     ///
-    /// Физическое тело ОДНО — это кузов (`add_physics_body`, как и у
-    /// `spawn_physics_sphere`, трактуется плагином как сфера
-    /// фиксированного `IMPLICIT_RADIUS`, см. комментарий в
-    /// `setup_physics` в main.rs — у Inertial нет отдельного "box"-тела,
-    /// только sphere-sphere; для аркадной физики этого достаточно, т.к.
-    /// колёса пока не самостоятельные rigid body — это будущий отдельный
-    /// этап "честной" constraint-физики подвески, который пользователь
-    /// сознательно отложил на потом). Колёса — ЧИСТО визуальные
+    /// Физическое тело ОДНО — это кузов (`add_physics_body`, РЕАЛЬНАЯ
+    /// коробка нужного размера — см. `PhysicsBody::shape_type`, узкая фаза
+    /// понимает box-vs-sphere/box-vs-plane в дополнение к старому
+    /// sphere-sphere). Колёса пока не самостоятельные rigid body — сила
+    /// подвески на каждое колесо прикладывается К КУЗОВУ через
+    /// `apply_physics_force_at_point` в мировой точке колеса (см.
+    /// `wheel_local_positions`/`wheel_radius` в `CarHandle`), честный
+    /// raycast+пружина-демпфер считается игровым кодом (main_car.rs), а не
+    /// этой функцией — она только создаёт тело и визуальную иерархию.
+    /// Колёса — ЧИСТО визуальные
     /// ECS-сущности без своей физики, подвешенные как ДЕТИ кузова через
     /// `Scene::set_parent` — значит их мировая позиция/поворот всегда
     /// автоматически следуют за кузовом через `for_each_world_transform`
@@ -343,6 +396,17 @@ impl AlkashEngine {
             is_static: if mass <= 0.0 { 1 } else { 0 },
             is_asleep: 0,
             orientation: [0.0, 0.0, 0.0, 1.0],
+            // ИСПРАВЛЕНО (реальная физика машины — box-коллайдер, см.
+            // `PhysicsBody::shape_type`): раньше здесь была сфера, ОПИСАННАЯ
+            // вокруг `half_extents`-коробки (диагональ половины коробки) —
+            // приближение, у которого по углам кузов ложно "касался" раньше
+            // геометрической границы. Теперь узкая фаза честно знает про
+            // box-vs-sphere/box-vs-plane (см. `alkash3d-inertial/src/lib.rs`),
+            // так что кузов — РЕАЛЬНАЯ коробка нужного размера, `radius` для
+            // неё не используется вообще (не имеет смысла для box-тела).
+            radius: 0.0,
+            shape_type: crate::plugin::shape_type::BOX,
+            half_extents,
         };
         let body_id = self.add_physics_body(body)?;
 
@@ -383,6 +447,8 @@ impl AlkashEngine {
             body_id,
             chassis_entity,
             wheel_entities,
+            wheel_local_positions,
+            wheel_radius,
         })
     }
 
@@ -583,6 +649,37 @@ impl AlkashEngine {
     pub fn set_physics_transform(&mut self, id: i32, position: [f32; 3], orientation: [f32; 4]) {
         if let Some(p) = self.physics.as_mut() {
             p.set_transform(id, position, orientation);
+        }
+    }
+
+    /// ДОБАВЛЕНО (реальная физика машины — подвеска): читает ТЕКУЩЕЕ
+    /// состояние тела (позиция/скорость/ориентация/угловая скорость) —
+    /// нужно каждый кадр ДО применения сил подвески, чтобы посчитать
+    /// мировые точки крепления колёс и скорость в этих точках (см.
+    /// `apply_physics_force_at_point`). `None`, если физика не
+    /// инициализирована (тот же принцип деградации, что и у прочих
+    /// методов этого файла) — сам плагин на несуществующий/статичный id
+    /// отвечает "нулевым" телом, а не паникует, см. `default_abi_body` в
+    /// alkash3d-inertial.
+    pub fn get_physics_body(&self, id: i32) -> Option<PhysicsBody> {
+        Some(self.physics.as_ref()?.get_body(id))
+    }
+
+    /// ДОБАВЛЕНО (реальная физика машины — подвеска): копит момент силы
+    /// (Н·м) в аккумулятор ДО следующего шага физики.
+    pub fn apply_physics_torque(&mut self, id: i32, torque: [f32; 3]) {
+        if let Some(p) = self.physics.as_mut() {
+            p.apply_torque(id, torque);
+        }
+    }
+
+    /// Прикладывает силу В ТОЧКЕ `world_point` (мировые координаты), а не
+    /// через центр масс — рождает и линейное ускорение, и момент, если
+    /// точка приложения не совпадает с центром масс тела. Ключевая
+    /// функция для честной подвески (сила пружины/демпфера на колесе).
+    pub fn apply_physics_force_at_point(&mut self, id: i32, force: [f32; 3], world_point: [f32; 3]) {
+        if let Some(p) = self.physics.as_mut() {
+            p.apply_force_at_point(id, force, world_point);
         }
     }
 }

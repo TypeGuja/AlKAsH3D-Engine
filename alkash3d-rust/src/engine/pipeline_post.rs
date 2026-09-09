@@ -658,6 +658,17 @@ impl AlkashEngine {
     /// half-res (половина ширины/высоты основного разрешения, минимум
     /// 1x1 — на случай экстремально маленького окна) ping-pong таргеты A/B
     /// + их RTV/SRV дескрипторы + буфер параметров bloom-прохода.
+    /// ВРЕМЕННО (бисекция DXGI_ERROR_DEVICE_HUNG — см. пару
+    /// `disable_shadows_for_diagnostics` в pipeline_shadow.rs, тот же
+    /// приём): `render_frame()` пропускает весь bloom-проход, если
+    /// `bloom_texture_a.is_none()` (проверяется через `if let (Some(bloom_a),
+    /// Some(bloom_b), Some(bloom_srv_heap)) = ...`, обнуления одного
+    /// `bloom_texture_a` достаточно). Вызвать сразу после `init()`.
+    pub fn disable_bloom_for_diagnostics(&mut self) {
+        println!("[DIAG] Bloom-проход принудительно отключён для диагностики зависания");
+        self.bloom_texture_a = None;
+    }
+
     pub(super) fn create_bloom_resources(&mut self) -> Result<()> {
         use windows::Win32::Graphics::Direct3D12::*;
 

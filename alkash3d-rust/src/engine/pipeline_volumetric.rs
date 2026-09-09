@@ -443,6 +443,15 @@ impl AlkashEngine {
     /// и `create_depth_srv_resources` (нужны их результаты — self.shadow_maps,
     /// self.depth_srv_heap — чтобы скопировать соответствующие дескрипторы
     /// в новый смежный heap).
+    /// ВРЕМЕННО (бисекция DXGI_ERROR_DEVICE_HUNG — см. пару
+    /// `disable_shadows_for_diagnostics` в pipeline_shadow.rs, тот же
+    /// приём): `render_frame()` пропускает весь volumetric-проход, если
+    /// `volumetric_texture.is_none()`. Вызвать сразу после `init()`.
+    pub fn disable_volumetric_for_diagnostics(&mut self) {
+        println!("[DIAG] Volumetric-проход принудительно отключён для диагностики зависания");
+        self.volumetric_texture = None;
+    }
+
     pub(super) fn create_volumetric_resources(&mut self) -> Result<()> {
         let vol_width = (self.width / 2).max(1);
         let vol_height = (self.height / 2).max(1);

@@ -119,6 +119,35 @@ impl D3D12Device {
                 }
             }
 
+            // ДОБАВЛЕНО (диагностика воспроизведённого DXGI_ERROR_DEVICE_HUNG
+            // на "кадре 2" — см. `dump_dred_report()` в lib.rs): DRED (Device
+            // Removed Extended Data), в отличие от GPU-Based Validation выше,
+            // ПОЧТИ БЕСПЛАТЕН по кадру (просто ведёт кольцевой журнал команд
+            // на GPU-стороне) — можно и нужно держать включённым ВСЕГДА, а не
+            // только на "безопасных" лёгких демо. Ничего не меняет в
+            // поведении рендера, пока устройство не потеряно; при потере
+            // `GetAutoBreadcrumbsOutput`/`GetPageFaultAllocationOutput` в
+            // `dump_dred_report()` называют КОНКРЕТНУЮ GPU-команду (draw/
+            // barrier/present, по позиции в командном списке) и, при page
+            // fault, конкретный виртуальный адрес — то, чего обычный debug
+            // layer НЕ даёт при зависании (он видел только итоговый
+            // DXGI_ERROR_DEVICE_HUNG без причины, см. `run1_err.log` при
+            // верификации фикса гонки в constant buffer 2026-09-08). Как и
+            // debug layer, включать нужно СТРОГО до создания устройства.
+            let mut dred_settings: Option<ID3D12DeviceRemovedExtendedDataSettings> = None;
+            match D3D12GetDebugInterface(&mut dred_settings) {
+                Ok(()) => {
+                    if let Some(dred_settings) = dred_settings {
+                        dred_settings.SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                        dred_settings.SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                        println!("[DEVICE] ✓ DRED enabled (auto-breadcrumbs + page fault reporting)");
+                    }
+                }
+                Err(e) => {
+                    println!("[DEVICE] DRED недоступен ({:?}) — продолжаем без него", e);
+                }
+            }
+
             println!("[DEVICE] Creating DXGI factory...");
             let dxgi_factory = CreateDXGIFactory1::<IDXGIFactory4>()?;
             println!("[DEVICE] DXGI factory created");

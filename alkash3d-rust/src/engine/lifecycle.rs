@@ -70,6 +70,7 @@ impl AlkashEngine {
             resizing_live: false,
             pending_resize: None,
             frame_fence_values: vec![0, 0],
+            warm_up_mode: false,
             scene: crate::scene::Scene::new(),
             input: InputState::new(),
             light_ambient: None,

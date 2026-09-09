@@ -258,16 +258,101 @@ impl AlkashEngine {
         }
     }
 
+    /// ДОБАВЛЕНО как попытка фикса `DXGI_ERROR_DEVICE_HUNG` на первом кадре
+    /// (см. `warm_up_pipelines` ниже) — НЕ оказалось причиной зависания, но
+    /// оставлено как полезная само по себе вещь. Замер показывал, что первый
+    /// кадр считается на GPU ~2.5с (вплотную к таймауту TDR ~2с), и гипотеза
+    /// была: ШЕСТЬ разных PSO впервые используются все сразу в одном
+    /// `ExecuteCommandLists`, драйвер компилирует их машинный код по факту
+    /// первого использования. Разнесение shadow/main по отдельным
+    /// submission'ам зависание НЕ убрало (настоящая причина — устаревшие
+    /// depth SRV / bloom / volumetric после ресайза окна, см. `handle_resize`
+    /// в window.rs), однако сам по себе разогрев остаётся разумным: он
+    /// действительно снимает первый, самый дорогой кадр с игрового цикла и
+    /// печатает его реальную стоимость.
+    ///
+    /// В обычном кадре (`self.warm_up_mode == false`) — no-op, возвращает
+    /// тот же `cmd_list` без единого лишнего вызова: ноль влияния на
+    /// обычную производительность. В режиме прогрева (только ОДИН раз,
+    /// внутри `warm_up_pipelines`) — закрывает и отправляет накопленный
+    /// `cmd_list` на GPU, дожидается реального завершения (щедрый
+    /// таймаут — сама суть проблемы в том, что первый раз это может
+    /// занять заметно больше обычного кадрового бюджета) и возвращает
+    /// свежий command list на том же аллокаторе, чтобы вызывающий код мог
+    /// продолжить запись следующего прохода как ни в чём не бывало.
+    fn maybe_flush_for_warm_up(
+        &self,
+        cmd_list: ID3D12GraphicsCommandList,
+        allocator: &ID3D12CommandAllocator,
+        label: &str,
+    ) -> Result<ID3D12GraphicsCommandList> {
+        if !self.warm_up_mode {
+            return Ok(cmd_list);
+        }
+        unsafe {
+            cmd_list.Close()?;
+            let queue = crate::get_command_queue()?;
+            let cmd_lists: &[Option<ID3D12CommandList>] = &[Some(cmd_list.into())];
+            queue.ExecuteCommandLists(cmd_lists);
+            let fence = crate::get_fence()?;
+            let fence_value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
+            queue.Signal(&fence, fence_value)?;
+            let t0 = std::time::Instant::now();
+            if let Err(reason) = wait_for_fence(&fence, fence_value, std::time::Duration::from_secs(20)) {
+                eprintln!("[WARMUP] '{}' не прогрелся за 20с: {} (elapsed {:?})", label, reason, t0.elapsed());
+                crate::dump_d3d12_debug_messages();
+                crate::dump_dred_report();
+                return Err(Error::from_hresult(HRESULT(1)));
+            }
+            println!("[WARMUP] '{}' прогрет за {:?}", label, t0.elapsed());
+            allocator.Reset()?;
+            let device = crate::get_device()?;
+            let new_list: ID3D12GraphicsCommandList =
+                device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, None)?;
+            Ok(new_list)
+        }
+    }
+
+    /// Разогрев конвейеров (НЕ фикс DEVICE_HUNG — тот оказался в
+    /// `handle_resize`, см. `maybe_flush_for_warm_up` выше): вызвать РОВНО
+    /// ОДИН раз, после
+    /// того как сцена уже содержит хотя бы один видимый объект (иначе
+    /// main/shadow PSO не получат ни одного реального Draw-вызова и не
+    /// прогреются), и ДО первого обычного вызова `render_frame()` /
+    /// входа в игровой цикл. Технически это просто ОДИН настоящий кадр
+    /// (расходует один `NEXT_FENCE_VALUE`/frame_index как обычно — не
+    /// "лишний" холостой кадр), просто с принудительными точками сброса
+    /// внутри.
+    pub fn warm_up_pipelines(&mut self) -> Result<bool> {
+        println!("[WARMUP] Прогрев PSO перед входом в render loop (первый кадр может занять заметно дольше обычного)...");
+        self.warm_up_mode = true;
+        let result = self.render_frame();
+        self.warm_up_mode = false;
+        result
+    }
+
     pub fn render_frame(&mut self) -> Result<bool> {
         let renderer = self.renderer.as_ref().ok_or_else(|| {
             eprintln!("[ENGINE] ERROR: render_frame() called but renderer is not initialized");
             Error::from_hresult(HRESULT(1))
         })?;
 
-        let frame_index = {
+        let real_back_buffer_index = {
             let state = STATE.lock().unwrap();
             state.frame_index as usize
         };
+        // ИСТОРИЯ (2026-09-08, диагностика DXGI_ERROR_DEVICE_HUNG на main_car):
+        // здесь временно форсировался `frame_index = 0`, чтобы проверить
+        // гипотезу "баг в первом использовании ВТОРОГО double-buffering
+        // слота" — зависание воспроизвелось и так, гипотеза опровергнута.
+        // Настоящая причина найдена позже бисекцией через
+        // `src/bin/example_minimal.rs` и оказалась вообще не здесь:
+        // `handle_resize()` в window.rs пересоздавал только `Renderer`, но не
+        // depth SRV / bloom / volumetric — см. подробный комментарий там.
+        // `real_back_buffer_index` оставлен отдельным именем намеренно: у
+        // back buffer'а и у CPU-side слотов (allocator/constant buffer) РАЗНАЯ
+        // семантика, даже когда индекс численно совпадает.
+        let frame_index = real_back_buffer_index;
 
         if let Some(&target) = self.frame_fence_values.get(frame_index) {
             if target > 0 {
@@ -275,6 +360,7 @@ impl AlkashEngine {
                 if let Err(reason) = wait_for_fence(&fence, target, std::time::Duration::from_secs(5)) {
                     eprintln!("[ENGINE] render_frame: {} — прерываем кадр", reason);
                     crate::dump_d3d12_debug_messages();
+                    crate::dump_dred_report();
                     return Err(Error::from_hresult(HRESULT(1)));
                 }
             }
@@ -289,7 +375,7 @@ impl AlkashEngine {
 
         let device = crate::get_device()?;
 
-        let cmd_list: ID3D12GraphicsCommandList = unsafe {
+        let mut cmd_list: ID3D12GraphicsCommandList = unsafe {
             device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
         };
 
@@ -425,6 +511,8 @@ impl AlkashEngine {
                 }
             }
         }
+
+        cmd_list = self.maybe_flush_for_warm_up(cmd_list, &allocator, "shadow")?;
 
         unsafe {
             cmd_list.OMSetRenderTargets(1, Some(&rtv_handle), false, Some(&dsv_handle));
@@ -734,6 +822,8 @@ impl AlkashEngine {
                 }
             }
 
+            cmd_list = self.maybe_flush_for_warm_up(cmd_list, &allocator, "main")?;
+
             let renderer = self.renderer.as_ref().ok_or_else(|| {
                 eprintln!("[ENGINE] ERROR: render_frame() lost renderer mid-frame (unexpected)");
                 Error::from_hresult(HRESULT(1))
@@ -803,7 +893,27 @@ impl AlkashEngine {
                     self.transform_constants.light_color[2],
                 ];
                 let sun_intensity = self.transform_constants.light_color[3];
-                let vol_intensity = 0.15 * sun_intensity;
+                // ИСПРАВЛЕНО (жалоба "свет стал выцветшим, пропала сочность"):
+                // этот коэффициент технически существовал и раньше, но
+                // НИКОГДА не был по-настоящему проверен глазами — volumetric-
+                // проход сэмплировал `depth_srv_heap`, который до фикса
+                // ресайза в window.rs указывал на давно уничтоженный depth
+                // stencil (см. handle_resize) и практически не мог влиять на
+                // картинку осмысленно. Как только depth SRV стал указывать на
+                // РЕАЛЬНЫЙ буфер глубины, шейдер (см. compile_volumetric_shaders)
+                // начал честно считать густой воздух — а он аддитивный и
+                // ПОЛНОСТЬЮ не зависит от пройденной дистанции/оптической
+                // плотности (нет экстинкции), только от видимости солнца
+                // вдоль луча. Это значит, что почти ВЕСЬ экран (небо и земля
+                // одинаково) получает примерно одинаковую добавку — при
+                // 0.15 она была достаточно большой, чтобы поднять тени/
+                // полутона к белому ДО ACES-тонмаппинга, визуально смывая
+                // контраст и насыщенность через всю сцену. 0.04 — та же
+                // самая формула и тот же множитель по sunFacing/accumulated
+                // (эффект остаётся, слегка ярче по направлению к солнцу),
+                // просто в разумных пределах для аддитивного тумана без
+                // экстинкции.
+                let vol_intensity = 0.04 * sun_intensity;
 
                 #[repr(C)]
                 struct VolumetricParamsGpu {
@@ -1008,7 +1118,7 @@ impl AlkashEngine {
             }
 
             let hdr_resource = &renderer.hdr_target.resource;
-            let back_buffer_resource = &renderer.back_buffers[frame_index].resource;
+            let back_buffer_resource = &renderer.back_buffers[real_back_buffer_index].resource;
 
             let mut barriers_before = Vec::with_capacity(2);
             if !bloom_ran {
@@ -1028,7 +1138,7 @@ impl AlkashEngine {
                 Self::drop_transition_barrier(b);
             }
 
-            let back_buffer_rtv = renderer.render_target_views[frame_index];
+            let back_buffer_rtv = renderer.render_target_views[real_back_buffer_index];
             cmd_list.OMSetRenderTargets(1, Some(&back_buffer_rtv), false, None);
 
             let viewport = D3D12_VIEWPORT {
@@ -1125,6 +1235,11 @@ impl AlkashEngine {
                     eprintln!("[ENGINE] Device removed, reason: {}", reason);
                 }
                 crate::dump_d3d12_debug_messages();
+                // ДОБАВЛЕНО (диагностика "кадр 2" DXGI_ERROR_DEVICE_HUNG,
+                // см. комментарий у `dump_dred_report`): обычный debug
+                // layer выше не называет причину зависания, только сам
+                // факт — DRED называет конкретную GPU-команду/адрес.
+                crate::dump_dred_report();
                 return Err(Error::from_hresult(hr));
             }
         }
@@ -1132,7 +1247,23 @@ impl AlkashEngine {
         let fence = crate::get_fence()?;
         let fence_value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
         unsafe {
-            queue.Signal(&fence, fence_value)?;
+            if let Err(e) = queue.Signal(&fence, fence_value) {
+                // ДОБАВЛЕНО (закрывает пробел в диагностике: до этого
+                // ошибка ЗДЕСЬ пропагировалась голым `?` без единого
+                // eprintln/dump'а — при живой отладке main_car один из
+                // прогонов упал именно тут, тихо, без Present-failed и
+                // без DRED в логе, что затруднило диагностику). Present()
+                // асинхронен и мог УСПЕШНО вернуться, даже если устройство
+                // потерялось буквально сразу после — этот `Signal` часто
+                // первое место, где это станет заметно.
+                eprintln!("[ENGINE] queue.Signal() failed: {:?}", e);
+                if let Some(reason) = crate::device_removed_reason() {
+                    eprintln!("[ENGINE] Device removed, reason: {}", reason);
+                }
+                crate::dump_d3d12_debug_messages();
+                crate::dump_dred_report();
+                return Err(e);
+            }
         }
         if frame_index < self.frame_fence_values.len() {
             self.frame_fence_values[frame_index] = fence_value;

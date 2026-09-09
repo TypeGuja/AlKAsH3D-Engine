@@ -43,9 +43,24 @@ pub struct PhysicsBody {
     /// ДОБАВЛЕНО (код-ревью — per-body радиус столкновения вместо одного
     /// глобального `IMPLICIT_RADIUS=0.5` на все тела без исключения) —
     /// СИММЕТРИЧНО зеркалит новое поле `PhysicsBody::radius` в
-    /// `alkash3d-inertial/src/lib.rs`. ПОСЛЕДНЕЕ поле структуры, та же
-    /// конвенция "только в конец", что и у `orientation` выше.
+    /// `alkash3d-inertial/src/lib.rs`.
     pub radius: f32,
+    /// ДОБАВЛЕНО (реальная физика машины — box-коллайдер кузова):
+    /// СИММЕТРИЧНО зеркалит `shape_type`/`half_extents` в
+    /// `alkash3d-inertial/src/lib.rs` — см. подробный комментарий там.
+    /// `0` (см. `shape_type::SPHERE`) = сфера (использует `radius` выше),
+    /// `1` (`shape_type::BOX`) = коробка (`half_extents` — половинные
+    /// размеры по локальным осям тела). ЭТИ ДВА ПОЛЯ — ПОСЛЕДНИЕ в
+    /// структуре, та же конвенция "только в конец", что и у
+    /// `orientation`/`radius` выше.
+    pub shape_type: i32,
+    pub half_extents: [f32; 3],
+}
+
+/// Дискриминанты `PhysicsBody::shape_type` — см. его комментарий.
+pub mod shape_type {
+    pub const SPHERE: i32 = 0;
+    pub const BOX: i32 = 1;
 }
 
 /// Структура контакта
@@ -248,6 +263,16 @@ pub struct PhysicsAPI {
     /// поддерживается, см. `PlaneDesc`) либо `-1` при null/вырожденной
     /// нормали.
     pub add_plane: extern "C" fn(instance: *mut c_void, desc: *const PlaneDesc) -> i32,
+    // ДОБАВЛЕНО (реальная физика машины — box-коллайдер + подвеска):
+    // строго в конец, ЗЕРКАЛЬНО тем же двум полям (в том же порядке), что
+    // дописаны в конец `PhysicsAPI` в `alkash3d-inertial/src/lib.rs`.
+    /// Копит момент силы (Н·м, мировые координаты). Будит тело. No-op
+    /// для static/несуществующего id.
+    pub apply_torque: extern "C" fn(instance: *mut c_void, id: i32, torque: *const f32),
+    /// Прикладывает силу в точке `world_point` (не через центр масс) —
+    /// рождает и линейное ускорение, и момент. Ключевая функция для
+    /// честной подвески. Будит тело. No-op для static/несуществующего id.
+    pub apply_force_at_point: extern "C" fn(instance: *mut c_void, id: i32, force: *const f32, world_point: *const f32),
 }
 
 /// Статистика физики

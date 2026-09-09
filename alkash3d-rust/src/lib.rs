@@ -50,6 +50,10 @@ pub mod proc_textures;
 /// объяснение в шапке `car_sim.rs` про то, почему аркадная симуляция
 /// написана отдельно от физики Inertial, а не через неё.
 pub mod car_sim;
+// ДОБАВЛЕНО (реальная физика машины через Inertial — box-коллайдер +
+// честная подвеска, см. подробную шапку файла): НЕЗАВИСИМЫЙ от `car_sim`
+// модуль, тот сознательно не тронут и остаётся доступен как есть.
+pub mod car_physics;
 
 mod plugin;
 mod scheduler;
@@ -108,7 +112,7 @@ pub use input::*;
 use std::sync::Mutex;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows_core::{Error, HRESULT};
+use windows_core::{Error, HRESULT, Interface};
 
 pub static STATE: std::sync::LazyLock<Mutex<GlobalState>> =
     std::sync::LazyLock::new(|| Mutex::new(GlobalState::new()));
@@ -353,5 +357,148 @@ pub fn dump_d3d12_debug_messages() {
         }
         eprintln!("[DEBUG-LAYER] ===== конец сообщений =====");
         info_queue.ClearStoredMessages();
+    }
+}
+
+/// Человекочитаемое имя GPU-операции из DRED breadcrumb (см.
+/// `dump_dred_report` ниже) — сверено с `D3D12_AUTO_BREADCRUMB_OP` в
+/// `d3d12.h`. Список НЕ полный (нет редких видео-декодер/ML операций,
+/// которые этот движок не использует) — неизвестный код печатается как
+/// число, этого достаточно, чтобы найти его в документации при надобности.
+fn breadcrumb_op_name(op: D3D12_AUTO_BREADCRUMB_OP) -> String {
+    let name = match op {
+        D3D12_AUTO_BREADCRUMB_OP_SETMARKER => "SetMarker",
+        D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT => "BeginEvent",
+        D3D12_AUTO_BREADCRUMB_OP_ENDEVENT => "EndEvent",
+        D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED => "DrawInstanced",
+        D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED => "DrawIndexedInstanced",
+        D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT => "ExecuteIndirect",
+        D3D12_AUTO_BREADCRUMB_OP_DISPATCH => "Dispatch",
+        D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION => "CopyBufferRegion",
+        D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION => "CopyTextureRegion",
+        D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE => "CopyResource",
+        D3D12_AUTO_BREADCRUMB_OP_COPYTILES => "CopyTiles",
+        D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE => "ResolveSubresource",
+        D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW => "ClearRenderTargetView",
+        D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW => "ClearUnorderedAccessView",
+        D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW => "ClearDepthStencilView",
+        D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER => "ResourceBarrier",
+        D3D12_AUTO_BREADCRUMB_OP_EXECUTEBUNDLE => "ExecuteBundle",
+        D3D12_AUTO_BREADCRUMB_OP_PRESENT => "Present",
+        D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA => "ResolveQueryData",
+        D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION => "BeginSubmission",
+        D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION => "EndSubmission",
+        D3D12_AUTO_BREADCRUMB_OP_WRITEBUFFERIMMEDIATE => "WriteBufferImmediate",
+        D3D12_AUTO_BREADCRUMB_OP_BARRIER => "Barrier",
+        D3D12_AUTO_BREADCRUMB_OP_BEGIN_COMMAND_LIST => "BeginCommandList",
+        _ => "?",
+    };
+    if name == "?" {
+        format!("Op({})", op.0)
+    } else {
+        name.to_string()
+    }
+}
+
+/// Печатает цепочку выделений памяти вокруг адреса page fault (см.
+/// `dump_dred_report` ниже) — `D3D12_DRED_ALLOCATION_NODE` — односвязный
+/// список, обрывается `pNext == null`. Имя (`ObjectNameW`/`ObjectNameA`)
+/// заполнено, только если ресурс был явно назван через `SetName` — этот
+/// движок сейчас не называет GPU-ресурсы, так что реалистично ожидать
+/// "<безымянный>" почти везде; сам `AllocationType` (буфер/текстура/куча
+/// и т.п.) всё равно сужает круг подозреваемых.
+unsafe fn print_dred_allocation_chain(label: &str, mut node_ptr: *const D3D12_DRED_ALLOCATION_NODE) {
+    if node_ptr.is_null() {
+        return;
+    }
+    eprintln!("[DRED]   {}:", label);
+    while !node_ptr.is_null() {
+        let node = &*node_ptr;
+        let name = if !node.ObjectNameW.is_null() {
+            node.ObjectNameW.to_string().unwrap_or_else(|_| "<не UTF-16>".to_string())
+        } else {
+            "<безымянный>".to_string()
+        };
+        eprintln!("[DRED]     - type={:?} name='{}'", node.AllocationType, name);
+        node_ptr = node.pNext;
+    }
+}
+
+/// ДОБАВЛЕНО (диагностика воспроизведённого на живой машине
+/// `DXGI_ERROR_DEVICE_HUNG` на "кадре 2" — см. комментарий про DRED в
+/// `device.rs::D3D12Device::create()`): в отличие от
+/// `dump_d3d12_debug_messages()` выше (ловит только некорректные
+/// ПАРАМЕТРЫ вызовов и не даёт НИЧЕГО, если проблема — тайминг/гонка, а
+/// не неверный аргумент — именно так и было при первой верификации: 3
+/// сообщения debug layer'а были только про сам факт `DEVICE_HUNG`, без
+/// единой зацепки, что его вызвало), DRED называет КОНКРЕТНУЮ GPU-команду
+/// (по позиции в командном списке), на которой GPU завис
+/// (`GetAutoBreadcrumbsOutput`), и при page fault — конкретный
+/// GPU-виртуальный адрес плюс чьё это выделение памяти
+/// (`GetPageFaultAllocationOutput`). Работает, ТОЛЬКО если
+/// `SetAutoBreadcrumbsEnablement`/`SetPageFaultEnablement` были включены
+/// ДО создания устройства — если DRED не был включён (старое устройство/
+/// сборка до этого фикса), `device.cast()` ниже просто вернёт ошибку, и
+/// функция тихо предупредит об этом вместо паники.
+pub fn dump_dred_report() {
+    let device = {
+        let state = STATE.lock().unwrap();
+        state.device.clone()
+    };
+    let Some(device) = device else {
+        eprintln!("[DRED] Устройство недоступно — отчёт невозможен");
+        return;
+    };
+
+    let dred: ID3D12DeviceRemovedExtendedData = match device.cast() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("[DRED] ID3D12DeviceRemovedExtendedData недоступен ({:?}) — DRED не был включён при создании устройства?", e);
+            return;
+        }
+    };
+
+    unsafe {
+        match dred.GetAutoBreadcrumbsOutput() {
+            Ok(output) => {
+                eprintln!("[DRED] ===== Auto-Breadcrumbs =====");
+                let mut node_ptr = output.pHeadAutoBreadcrumbNode;
+                let mut node_index = 0;
+                if node_ptr.is_null() {
+                    eprintln!("[DRED] (пусто — ни один командный список не был отправлен на GPU с момента создания устройства)");
+                }
+                while !node_ptr.is_null() {
+                    let node = &*node_ptr;
+                    eprintln!("[DRED] Command list #{}: всего {} команд в списке", node_index, node.BreadcrumbCount);
+                    if !node.pLastBreadcrumbValue.is_null() && !node.pCommandHistory.is_null() && node.BreadcrumbCount > 0 {
+                        let last = *node.pLastBreadcrumbValue;
+                        let ops = std::slice::from_raw_parts(node.pCommandHistory, node.BreadcrumbCount as usize);
+                        eprintln!("[DRED]   GPU подтвердил выполнение {} из {} команд этого списка", last, ops.len());
+                        let lo = (last as usize).saturating_sub(3);
+                        let hi = ((last as usize) + 3).min(ops.len().saturating_sub(1));
+                        for i in lo..=hi {
+                            let marker = if i == last as usize { "  <== ГРАНИЦА (последняя подтверждённая GPU / первая непонятная)" } else { "" };
+                            eprintln!("[DRED]   [{}] {}{}", i, breadcrumb_op_name(ops[i]), marker);
+                        }
+                    }
+                    node_index += 1;
+                    node_ptr = node.pNext;
+                }
+                eprintln!("[DRED] ===== конец Auto-Breadcrumbs =====");
+            }
+            Err(e) => eprintln!("[DRED] GetAutoBreadcrumbsOutput failed: {:?} (DRED был включён при создании устройства?)", e),
+        }
+
+        match dred.GetPageFaultAllocationOutput() {
+            Ok(output) => {
+                if output.PageFaultVA != 0 {
+                    eprintln!("[DRED] ===== Page Fault: GPU-адрес 0x{:x} =====", output.PageFaultVA);
+                    print_dred_allocation_chain("Существующие выделения рядом с адресом", output.pHeadExistingAllocationNode);
+                    print_dred_allocation_chain("Недавно освобождённые выделения рядом с адресом", output.pHeadRecentFreedAllocationNode);
+                    eprintln!("[DRED] ===== конец Page Fault =====");
+                }
+            }
+            Err(e) => eprintln!("[DRED] GetPageFaultAllocationOutput failed: {:?}", e),
+        }
     }
 }

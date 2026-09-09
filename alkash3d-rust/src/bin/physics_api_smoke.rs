@@ -57,6 +57,13 @@ fn main() {
         is_static: 0,
         is_asleep: 0,
         orientation: [0.0, 0.0, 0.0, 1.0],
+        // ИСПРАВЛЕНО (E0063 — этот файл не в Cargo.toml [[bin]], поэтому
+        // компилировался только по прямому запросу и пропустил и фикс
+        // `radius`, и box-коллайдер этой сессии): сфера радиуса 0.5, тот
+        // же старый `IMPLICIT_RADIUS`.
+        radius: 0.5,
+        shape_type: alkash3d_rs::shape_type::SPHERE,
+        half_extents: [0.0; 3],
     };
     let id = plugin.add_body(&body);
     assert!(id >= 0, "add_body вернул ошибку");
