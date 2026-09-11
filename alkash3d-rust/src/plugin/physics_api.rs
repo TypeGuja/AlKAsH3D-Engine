@@ -61,6 +61,11 @@ pub struct PhysicsBody {
 pub mod shape_type {
     pub const SPHERE: i32 = 0;
     pub const BOX: i32 = 1;
+    /// ДОБАВЛЕНО (полноценная физика — capsule-коллайдер): переиспользует
+    /// `radius` (радиус капсулы) и `half_extents[0]` (полу-высота
+    /// цилиндрической части вдоль ЛОКАЛЬНОЙ оси Y тела) — новых полей ABI
+    /// не добавляет. См. зеркальный комментарий в `alkash3d-inertial/src/lib.rs`.
+    pub const CAPSULE: i32 = 2;
 }
 
 /// Структура контакта

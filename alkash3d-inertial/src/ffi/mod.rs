@@ -217,6 +217,33 @@ extern "C" {
     // ссылке (без `value`) как везде в этом ABI для массивов.
     pub fn box_effective_radius(orientation: *const f32, half_extents: *const f32, normal: *const f32) -> f32;
 
+    // ДОБАВЛЕНО (полноценная физика — capsule-коллайдер, см. narrow_phase.f90):
+    // требует ровно нужную комбинацию shape_type у обоих тел (иначе честно
+    // возвращает 0) — тот же контракт, что у box_box/box_sphere выше.
+    pub fn narrow_phase_capsule_sphere(
+        body_a: *const FortranRigidBody,
+        body_b: *const FortranRigidBody,
+        contact: *mut FortranContact,
+    ) -> i32;
+
+    pub fn narrow_phase_capsule_capsule(
+        body_a: *const FortranRigidBody,
+        body_b: *const FortranRigidBody,
+        contact: *mut FortranContact,
+    ) -> i32;
+
+    pub fn narrow_phase_capsule_box(
+        body_a: *const FortranRigidBody,
+        body_b: *const FortranRigidBody,
+        contact: *mut FortranContact,
+    ) -> i32;
+
+    // support-функция капсулы для `resolve_plane_contacts`, тот же принцип,
+    // что у `box_effective_radius` выше. `half_height`/`radius` — по
+    // значению (`value` на Fortran-стороне), `orientation`/`normal` — по
+    // ссылке (массивы).
+    pub fn capsule_effective_radius(orientation: *const f32, half_height: f32, radius: f32, normal: *const f32) -> f32;
+
     pub fn generate_collision_pairs(
         bodies: *const FortranRigidBody,
         n: i32,

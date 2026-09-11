@@ -104,6 +104,16 @@ pub struct PhysicsBody {
 pub mod shape_type {
     pub const SPHERE: i32 = 0;
     pub const BOX: i32 = 1;
+    // ДОБАВЛЕНО (полноценная физика — capsule-коллайдер, для контроллера
+    // персонажа): НЕ добавляет новых полей в `PhysicsBody`/`rigid_body_c` —
+    // переиспользует уже существующие `radius` (радиус капсулы, тот же
+    // смысл, что у сферы) и `half_extents[0]` (полу-высота ЦИЛИНДРИЧЕСКОЙ
+    // части — расстояние от центра тела до центра каждой полусферы-крышки
+    // вдоль ЛОКАЛЬНОЙ оси Y тела, `half_extents[1]`/`half_extents[2]` для
+    // капсулы не используются). Ось — локальный Y (не X/Z) тем же выбором,
+    // что у большинства движков — "стоящий" капсульный персонаж без
+    // дополнительного поворота.
+    pub const CAPSULE: i32 = 2;
 }
 
 #[repr(C)]
@@ -488,6 +498,23 @@ fn compute_local_inertia(b: &PhysicsBody) -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
             (b.mass / 3.0) * (hx * hx + hz * hz),
             (b.mass / 3.0) * (hx * hx + hy * hy),
         ]
+    } else if b.shape_type == shape_type::CAPSULE {
+        // ИЗВЕСТНОЕ УПРОЩЕНИЕ: приближаем тензор инерции капсулы тензором
+        // СПЛОШНОГО ЦИЛИНДРА той же массы/радиуса/высоты (полусферы-крышки
+        // на тензор не влияют) — честный тензор капсулы (цилиндр + 2
+        // полусферы со сдвигом центра масс каждой полусферы от плоскости
+        // стыка) заметно сложнее и на практике даёт близкий результат для
+        // типичных пропорций capsule-контроллера персонажа (высота
+        // заметно больше радиуса). Ось цилиндра — локальный Y (см.
+        // `shape_type::CAPSULE`), `half_extents[0]` — полувысота
+        // ЦИЛИНДРИЧЕСКОЙ части, `radius` — радиус.
+        let r = b.radius;
+        let full_height = 2.0 * b.half_extents[0];
+        [
+            (b.mass / 12.0) * (3.0 * r * r + full_height * full_height),
+            0.5 * b.mass * r * r,
+            (b.mass / 12.0) * (3.0 * r * r + full_height * full_height),
+        ]
     } else {
         // Сплошная сфера: I = 2/5 * m * r² по всем трём осям (изотропна).
         let i = 0.4 * b.mass * b.radius * b.radius;
@@ -723,9 +750,17 @@ impl PhysicsState {
                 // та же формула ("сумма проекций полуразмеров OBB на
                 // normal"), что раньше считалась здесь через
                 // `quat_rotate_vector` на Rust-стороне.
+                // ДОБАВЛЕНО (capsule-коллайдер): та же идея, что и у box —
+                // `capsule_effective_radius` в narrow_phase.f90 точно (не
+                // приближённо) даёт опорное расстояние капсулы от её
+                // центра вдоль `normal`.
                 let effective_radius = if body.shape_type == shape_type::BOX {
                     unsafe {
                         ffi::box_effective_radius(body.orientation.as_ptr(), body.half_extents.as_ptr(), plane.normal.as_ptr())
+                    }
+                } else if body.shape_type == shape_type::CAPSULE {
+                    unsafe {
+                        ffi::capsule_effective_radius(body.orientation.as_ptr(), body.half_extents[0], body.radius, plane.normal.as_ptr())
                     }
                 } else {
                     body.radius
@@ -1232,20 +1267,40 @@ impl PhysicsState {
             // Fortran, см. `narrow_phase_box_sphere` в narrow_phase.f90):
             // раньше это (и box-vs-plane в `resolve_plane_contacts` ниже)
             // было единственным местом узкой фазы, считавшимся на
-            // Rust-стороне — теперь вся узкая фаза (sphere-sphere/box-box/
-            // box-sphere) честно в Fortran, эта функция только
-            // диспетчеризует по паре shape_type.
+            // Rust-стороне — теперь вся узкая фаза честно в Fortran, эта
+            // функция только диспетчеризует по паре shape_type.
+            //
+            // ДОБАВЛЕНО (capsule-коллайдер): третья форма означает, что
+            // "не sphere-sphere и не box-box" больше НЕ значит однозначно
+            // "box-sphere" (могло бы быть capsule-что-угодно) — диспетчер
+            // теперь явный `match` по обеим формам, а не цепочка if/else с
+            // подразумеваемым "всё остальное".
+            let sa = self.solver.bodies[ia].shape_type;
+            let sb = self.solver.bodies[ib].shape_type;
             let mut contact = FortranContact::default();
-            let hit = if self.solver.bodies[ia].shape_type == shape_type::SPHERE
-                && self.solver.bodies[ib].shape_type == shape_type::SPHERE
-            {
-                unsafe { ffi::narrow_phase_gjk(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) }
-            } else if self.solver.bodies[ia].shape_type == shape_type::BOX
-                && self.solver.bodies[ib].shape_type == shape_type::BOX
-            {
-                unsafe { ffi::narrow_phase_box_box(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) }
-            } else {
-                unsafe { ffi::narrow_phase_box_sphere(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) }
+            let hit = match (sa, sb) {
+                (s, t) if s == shape_type::SPHERE && t == shape_type::SPHERE => unsafe {
+                    ffi::narrow_phase_gjk(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact)
+                },
+                (s, t) if s == shape_type::BOX && t == shape_type::BOX => unsafe {
+                    ffi::narrow_phase_box_box(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact)
+                },
+                (s, t)
+                    if (s == shape_type::BOX && t == shape_type::SPHERE)
+                        || (s == shape_type::SPHERE && t == shape_type::BOX) =>
+                unsafe { ffi::narrow_phase_box_sphere(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) },
+                (s, t) if s == shape_type::CAPSULE && t == shape_type::CAPSULE => unsafe {
+                    ffi::narrow_phase_capsule_capsule(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact)
+                },
+                (s, t)
+                    if (s == shape_type::CAPSULE && t == shape_type::SPHERE)
+                        || (s == shape_type::SPHERE && t == shape_type::CAPSULE) =>
+                unsafe { ffi::narrow_phase_capsule_sphere(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) },
+                (s, t)
+                    if (s == shape_type::CAPSULE && t == shape_type::BOX)
+                        || (s == shape_type::BOX && t == shape_type::CAPSULE) =>
+                unsafe { ffi::narrow_phase_capsule_box(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) },
+                _ => 0,
             };
             if hit != 0 {
                 contact.body_a = ia as i32;

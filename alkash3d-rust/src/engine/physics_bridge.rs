@@ -333,6 +333,35 @@ impl AlkashEngine {
         Some((body_id, entity))
     }
 
+    /// ДОБАВЛЕНО (полноценная физика — capsule-коллайдер, для контроллера
+    /// персонажа): тот же паттерн, что `add_sphere_body`/`add_box_body`
+    /// выше, но для капсулы — `radius` и `half_height` (полувысота
+    /// ЦИЛИНДРИЧЕСКОЙ части вдоль ЛОКАЛЬНОЙ оси Y тела, см.
+    /// `shape_type::CAPSULE`) задают форму напрямую, без промежуточной
+    /// структуры `PhysicsBody` на стороне вызывающего кода.
+    pub fn add_capsule_body(&mut self, x: f32, y: f32, z: f32, mass: f32, radius: f32, half_height: f32) -> Option<i32> {
+        let body = PhysicsBody {
+            position: [x, y, z],
+            velocity: [0.0; 3],
+            acceleration: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            angular_acceleration: [0.0; 3],
+            mass,
+            inv_mass: if mass > 0.0 { 1.0 / mass } else { 0.0 },
+            restitution: 0.1,
+            friction: 0.6,
+            linear_damping: 0.05,
+            angular_damping: 0.35,
+            is_static: if mass <= 0.0 { 1 } else { 0 },
+            is_asleep: 0,
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            radius,
+            shape_type: crate::plugin::shape_type::CAPSULE,
+            half_extents: [half_height, 0.0, 0.0],
+        };
+        self.add_physics_body(body)
+    }
+
     /// ДОБАВЛЕНО (задача #39 плана — модель машины: кузов + 4 колеса):
     /// тот же паттерн "всё-в-одном", что и `spawn_physics_sphere` выше, но
     /// сразу с иерархией "кузов + 4 колеса", по образцу My Summer Car

@@ -341,4 +341,326 @@ contains
                 + abs(half_extents(2) * dot3_nb(axis_y, normal)) &
                 + abs(half_extents(3) * dot3_nb(axis_z, normal))
     end function box_effective_radius
+
+    ! ===================================================================
+    ! ДОБАВЛЕНО (полноценная физика — capsule-коллайдер, см. shape_type::
+    ! CAPSULE в lib.rs/rigid_body.f90): капсула — отрезок ("центральная
+    ! линия" от P0 до P1 вдоль локальной оси Y тела), Минковски-сумма
+    ! которого со сферой радиуса `radius` и даёт саму капсулу. Все три
+    ! пары ниже сводятся к одной и той же идее — найти ближайшую точку(и)
+    ! между центральной линией капсулы и другой формой, дальше это ровно
+    ! sphere-vs-<форма> тест с этой точкой как центром "сферы".
+    ! ===================================================================
+
+    ! Ближайшая точка отрезка [a,b] к точке p.
+    pure function closest_point_on_segment(p, a, b) result(cp)
+        real(c_float), intent(in) :: p(3), a(3), b(3)
+        real(c_float) :: cp(3)
+        real(c_float) :: ab(3), t, len_sq
+        ab = b - a
+        len_sq = dot3_nb(ab, ab)
+        if (len_sq < 1.0e-10) then
+            cp = a
+            return
+        end if
+        t = dot3_nb(p - a, ab) / len_sq
+        t = max(0.0_c_float, min(1.0_c_float, t))
+        cp = a + ab * t
+    end function closest_point_on_segment
+
+    ! Ближайшие точки c1 (на [p1,q1]) и c2 (на [p2,q2]) между двумя
+    ! отрезками — стандартный робастный алгоритм (Ericson, "Real-Time
+    ! Collision Detection", 5.1.9, "ClosestPtSegmentSegment"), включая
+    ! вырожденные случаи нулевой длины и параллельных отрезков.
+    subroutine closest_points_segments(p1, q1, p2, q2, c1, c2)
+        real(c_float), intent(in) :: p1(3), q1(3), p2(3), q2(3)
+        real(c_float), intent(out) :: c1(3), c2(3)
+        real(c_float) :: d1(3), d2(3), r(3)
+        real(c_float) :: a, e, f, s, t, c, b, denom
+        real(c_float), parameter :: SEG_EPS = 1.0e-8
+
+        d1 = q1 - p1
+        d2 = q2 - p2
+        r = p1 - p2
+        a = dot3_nb(d1, d1)
+        e = dot3_nb(d2, d2)
+        f = dot3_nb(d2, r)
+
+        if (a < SEG_EPS .and. e < SEG_EPS) then
+            s = 0.0; t = 0.0
+        else if (a < SEG_EPS) then
+            s = 0.0
+            t = max(0.0_c_float, min(1.0_c_float, f / e))
+        else
+            c = dot3_nb(d1, r)
+            if (e < SEG_EPS) then
+                t = 0.0
+                s = max(0.0_c_float, min(1.0_c_float, -c / a))
+            else
+                b = dot3_nb(d1, d2)
+                denom = a * e - b * b
+                if (denom > SEG_EPS) then
+                    s = max(0.0_c_float, min(1.0_c_float, (b * f - c * e) / denom))
+                else
+                    s = 0.0 ! отрезки почти параллельны — s=0 честная точка старта, t ниже подберётся под неё
+                end if
+                t = (b * s + f) / e
+                if (t < 0.0) then
+                    t = 0.0
+                    s = max(0.0_c_float, min(1.0_c_float, -c / a))
+                else if (t > 1.0) then
+                    t = 1.0
+                    s = max(0.0_c_float, min(1.0_c_float, (b - c) / a))
+                end if
+            end if
+        end if
+
+        c1 = p1 + d1 * s
+        c2 = p2 + d2 * t
+    end subroutine closest_points_segments
+
+    ! Зажимает точку `p_local` (уже в ЛОКАЛЬНЫХ осях коробки) по
+    ! half_extents — та же операция, что `clamped` в `narrow_phase_box_sphere`
+    ! выше, вынесена отдельно, т.к. нужна и `narrow_phase_capsule_box` ниже.
+    pure function closest_point_on_box_local(p_local, he) result(cp)
+        real(c_float), intent(in) :: p_local(3), he(3)
+        real(c_float) :: cp(3)
+        cp(1) = max(-he(1), min(he(1), p_local(1)))
+        cp(2) = max(-he(2), min(he(2), p_local(2)))
+        cp(3) = max(-he(3), min(he(3), p_local(3)))
+    end function closest_point_on_box_local
+
+    ! Квадрат расстояния от МИРОВОЙ точки `p` до коробки — используется
+    ! тернарным поиском в `narrow_phase_capsule_box` (дешевле full-контакта:
+    ! на каждой итерации поиска нужно только само расстояние, не
+    ! normal/point).
+    function dist_sq_point_box(p, center, orientation, he) result(d2)
+        real(c_float), intent(in) :: p(3), center(3), orientation(4), he(3)
+        real(c_float) :: d2
+        real(c_float) :: local_p(3), clamped(3), diff(3)
+        local_p = rotate_vec_by_quat(p - center, quat_conjugate(orientation))
+        clamped = closest_point_on_box_local(local_p, he)
+        diff = local_p - clamped
+        d2 = dot3_nb(diff, diff)
+    end function dist_sq_point_box
+
+    ! Мировые концы центральной линии капсулы.
+    subroutine capsule_segment_world(body, p0, p1)
+        type(rigid_body_c), intent(in) :: body
+        real(c_float), intent(out) :: p0(3), p1(3)
+        real(c_float) :: axis_y(3)
+        axis_y = rotate_vec_by_quat([0.0_c_float, 1.0_c_float, 0.0_c_float], body%orientation)
+        p0 = body%position + axis_y * body%half_extents(1)
+        p1 = body%position - axis_y * body%half_extents(1)
+    end subroutine capsule_segment_world
+
+    function narrow_phase_capsule_sphere(body_a, body_b, contact) result(collides) &
+            bind(c, name="narrow_phase_capsule_sphere")
+        use, intrinsic :: iso_c_binding
+        implicit none
+        type(rigid_body_c), intent(in) :: body_a, body_b
+        type(contact_c), intent(out) :: contact
+        integer(c_int) :: collides
+
+        type(rigid_body_c) :: cap_body, sphere_body
+        logical :: cap_is_a
+        real(c_float) :: p0(3), p1(3), closest(3)
+        real(c_float) :: delta(3), dist, inv_dist, radius_sum, normal_world(3)
+
+        collides = 0
+        contact%body_a = 0; contact%body_b = 0
+        contact%normal = [0.0, 0.0, 0.0]; contact%penetration = 0.0; contact%point = [0.0, 0.0, 0.0]
+
+        if (body_a%shape_type == 2 .and. body_b%shape_type == 0) then
+            cap_body = body_a; sphere_body = body_b; cap_is_a = .true.
+        else if (body_b%shape_type == 2 .and. body_a%shape_type == 0) then
+            cap_body = body_b; sphere_body = body_a; cap_is_a = .false.
+        else
+            return
+        end if
+
+        call capsule_segment_world(cap_body, p0, p1)
+        closest = closest_point_on_segment(sphere_body%position, p0, p1)
+
+        delta = sphere_body%position - closest
+        dist = sqrt(dot3_nb(delta, delta))
+        radius_sum = cap_body%radius + sphere_body%radius
+        if (dist >= radius_sum) return
+
+        if (dist < 1.0e-6) then
+            normal_world = [0.0_c_float, 1.0_c_float, 0.0_c_float] ! вырожденный случай — центры совпали
+        else
+            inv_dist = 1.0 / dist
+            normal_world = delta * inv_dist
+        end if
+
+        collides = 1
+        contact%penetration = radius_sum - dist
+        contact%point = closest + normal_world * cap_body%radius
+        if (cap_is_a) then
+            contact%normal = normal_world
+        else
+            contact%normal = -normal_world
+        end if
+    end function narrow_phase_capsule_sphere
+
+    function narrow_phase_capsule_capsule(body_a, body_b, contact) result(collides) &
+            bind(c, name="narrow_phase_capsule_capsule")
+        use, intrinsic :: iso_c_binding
+        implicit none
+        type(rigid_body_c), intent(in) :: body_a, body_b
+        type(contact_c), intent(out) :: contact
+        integer(c_int) :: collides
+
+        real(c_float) :: p0a(3), p1a(3), p0b(3), p1b(3), ca(3), cb(3)
+        real(c_float) :: delta(3), dist, inv_dist, radius_sum, normal_world(3)
+
+        collides = 0
+        contact%body_a = 0; contact%body_b = 0
+        contact%normal = [0.0, 0.0, 0.0]; contact%penetration = 0.0; contact%point = [0.0, 0.0, 0.0]
+
+        if (body_a%shape_type /= 2 .or. body_b%shape_type /= 2) return
+
+        call capsule_segment_world(body_a, p0a, p1a)
+        call capsule_segment_world(body_b, p0b, p1b)
+        call closest_points_segments(p0a, p1a, p0b, p1b, ca, cb)
+
+        delta = cb - ca ! от A к B — уже правильный контракт нормали
+        dist = sqrt(dot3_nb(delta, delta))
+        radius_sum = body_a%radius + body_b%radius
+        if (dist >= radius_sum) return
+
+        if (dist < 1.0e-6) then
+            normal_world = [0.0_c_float, 1.0_c_float, 0.0_c_float]
+        else
+            inv_dist = 1.0 / dist
+            normal_world = delta * inv_dist
+        end if
+
+        collides = 1
+        contact%normal = normal_world
+        contact%penetration = radius_sum - dist
+        ! Точка контакта — середина отрезка между поверхностями обеих
+        ! капсул вдоль нормали (тот же уровень упрощения, что и у
+        ! `narrow_phase_box_box` — один контакт, не манифолд).
+        contact%point = 0.5 * ((ca + normal_world * body_a%radius) + (cb - normal_world * body_b%radius))
+    end function narrow_phase_capsule_capsule
+
+    function narrow_phase_capsule_box(body_a, body_b, contact) result(collides) &
+            bind(c, name="narrow_phase_capsule_box")
+        use, intrinsic :: iso_c_binding
+        implicit none
+        type(rigid_body_c), intent(in) :: body_a, body_b
+        type(contact_c), intent(out) :: contact
+        integer(c_int) :: collides
+
+        type(rigid_body_c) :: cap_body, box_body
+        logical :: cap_is_a
+        real(c_float) :: p0(3), p1(3), lo, hi, m1, m2, d1, d2, t_best
+        real(c_float) :: seg_point(3), local_p(3), clamped_local(3), box_point(3)
+        real(c_float) :: delta(3), dist, inv_dist, normal_world(3), penetration
+        real(c_float) :: dx, dy, dz, face_dist
+        integer :: iter
+
+        collides = 0
+        contact%body_a = 0; contact%body_b = 0
+        contact%normal = [0.0, 0.0, 0.0]; contact%penetration = 0.0; contact%point = [0.0, 0.0, 0.0]
+
+        if (body_a%shape_type == 2 .and. body_b%shape_type == 1) then
+            cap_body = body_a; box_body = body_b; cap_is_a = .true.
+        else if (body_b%shape_type == 2 .and. body_a%shape_type == 1) then
+            cap_body = body_b; box_body = body_a; cap_is_a = .false.
+        else
+            return
+        end if
+
+        call capsule_segment_world(cap_body, p0, p1)
+
+        ! Тернарный поиск параметра t по отрезку [p0,p1], минимизирующего
+        ! расстояние до коробки — функция ВЫПУКЛАЯ (расстояние до
+        ! выпуклого множества выпукло по позиции, позиция на отрезке
+        ! аффинна по t), поэтому тернарный поиск гарантированно сходится к
+        ! глобальному минимуму. 30 итераций сжимают интервал в (2/3)^30 —
+        ! на порядки точнее любых реалистичных размеров капсулы.
+        lo = 0.0; hi = 1.0
+        do iter = 1, 30
+            m1 = lo + (hi - lo) / 3.0
+            m2 = hi - (hi - lo) / 3.0
+            d1 = dist_sq_point_box(p0 + (p1 - p0) * m1, box_body%position, box_body%orientation, box_body%half_extents)
+            d2 = dist_sq_point_box(p0 + (p1 - p0) * m2, box_body%position, box_body%orientation, box_body%half_extents)
+            if (d1 < d2) then
+                hi = m2
+            else
+                lo = m1
+            end if
+        end do
+        t_best = (lo + hi) * 0.5
+        seg_point = p0 + (p1 - p0) * t_best
+
+        local_p = rotate_vec_by_quat(seg_point - box_body%position, quat_conjugate(box_body%orientation))
+        clamped_local = closest_point_on_box_local(local_p, box_body%half_extents)
+        delta = local_p - clamped_local
+        dist = sqrt(dot3_nb(delta, delta))
+
+        if (dist < 1.0e-6) then
+            ! Ближайшая точка сегмента УЖЕ внутри коробки (сегмент
+            ! "телепортом" провалился внутрь за один слишком быстрый кадр)
+            ! — тот же приём, что и глубокое проникновение в
+            ! `narrow_phase_box_sphere`: выталкиваем по оси наименьшего
+            ! проникновения относительно 6 граней.
+            dx = box_body%half_extents(1) - abs(local_p(1))
+            dy = box_body%half_extents(2) - abs(local_p(2))
+            dz = box_body%half_extents(3) - abs(local_p(3))
+            if (dx <= dy .and. dx <= dz) then
+                face_dist = dx
+                normal_world = rotate_vec_by_quat([sign(1.0_c_float, local_p(1)), 0.0_c_float, 0.0_c_float], box_body%orientation)
+            else if (dy <= dz) then
+                face_dist = dy
+                normal_world = rotate_vec_by_quat([0.0_c_float, sign(1.0_c_float, local_p(2)), 0.0_c_float], box_body%orientation)
+            else
+                face_dist = dz
+                normal_world = rotate_vec_by_quat([0.0_c_float, 0.0_c_float, sign(1.0_c_float, local_p(3))], box_body%orientation)
+            end if
+            ! Та же формула, что у аналогичного случая в
+            ! `narrow_phase_box_sphere` — расстояние до ближайшей грани ПЛЮС
+            ! радиус, а не просто радиус (иначе занижаем глубину
+            ! проникновения для сегмента, ушедшего далеко за грань).
+            penetration = face_dist + cap_body%radius
+            box_point = seg_point ! точка контакта приближённо — сама точка сегмента
+        else
+            if (dist >= cap_body%radius) return ! честно не пересекаются
+            inv_dist = 1.0 / dist
+            normal_world = rotate_vec_by_quat(delta * inv_dist, box_body%orientation) ! delta уже в локальных осях коробки — разворачиваем в мировые
+            box_point = box_body%position + rotate_vec_by_quat(clamped_local, box_body%orientation)
+            penetration = cap_body%radius - dist
+        end if
+
+        collides = 1
+        contact%point = 0.5 * (box_point + (seg_point - normal_world * cap_body%radius))
+        contact%penetration = penetration
+        ! normal_world сейчас "от коробки к капсуле" — контракт "от A к B".
+        if (cap_is_a) then
+            contact%normal = -normal_world
+        else
+            contact%normal = normal_world
+        end if
+    end function narrow_phase_capsule_box
+
+    ! "Насколько далеко капсула выступает в сторону `normal`" —
+    ! support-функция капсулы (отрезок ⊕ сфера), нужная
+    ! `resolve_plane_contacts` в lib.rs — тот же принцип, что и
+    ! `box_effective_radius` выше: `half_height*|axis_y·normal| + radius`
+    ! ТОЧНО (не приближение) равна опорному расстоянию капсулы от её
+    ! центра вдоль `normal`.
+    function capsule_effective_radius(orientation, half_height, radius, normal) result(r) &
+            bind(c, name="capsule_effective_radius")
+        use, intrinsic :: iso_c_binding
+        implicit none
+        real(c_float), intent(in) :: orientation(4), normal(3)
+        real(c_float), intent(in), value :: half_height, radius
+        real(c_float) :: r
+        real(c_float) :: axis_y(3)
+        axis_y = rotate_vec_by_quat([0.0_c_float, 1.0_c_float, 0.0_c_float], orientation)
+        r = abs(half_height * dot3_nb(axis_y, normal)) + radius
+    end function capsule_effective_radius
 end module narrow_phase_mod

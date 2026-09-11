@@ -39,24 +39,20 @@ module rigid_body_mod
         ! причина, что у orientation выше.
         real(c_float) :: radius
         ! ДОБАВЛЕНО (реальная физика машины — box-коллайдер кузова):
-        ! `shape_type` — 0 = сфера (использует `radius` выше, ЕДИНСТВЕННАЯ
-        ! форма, которую честно понимает Fortran-узкая фаза
-        ! `narrow_phase_gjk` в narrow_phase.f90), 1 = коробка (половинные
-        ! размеры в `half_extents`, локальные оси, повёрнутые `orientation`).
-        ! Fortran-солвер (narrow_phase.f90/solve_contacts_vectorized) по-
-        ! прежнему знает ТОЛЬКО сферы — box-vs-sphere/box-vs-plane узкая
-        ! фаза добавлена на Rust-стороне (`alkash3d-inertial/src/lib.rs`,
-        ! рядом с уже существующим `resolve_plane_contacts`, тем же
-        ! приёмом), которая для box-тел готовит normal/penetration/point
-        ! САМА и передаёт их в тот же самый (неизменный) Fortran-солвер
-        ! контактов — так весь риск ABI-изменения ограничен ДОБАВЛЕНИЕМ
-        ! полей в конец структуры, без единой правки уже отлаженного
-        ! Fortran-кода узкой фазы/солвера. `shape_type`/`half_extents`
-        ! добавлены и сюда (bind(c)-структуру), а не только в Rust-ABI,
-        ! потому что этот массив `bodies` — общая память между Rust и
-        ! Fortran (integrate_bodies/solve_contacts_vectorized индексируют
-        ! его напрямую) — layout обязан совпадать побайтово на обеих
-        ! сторонах, даже если сам Fortran-код эти два поля не читает.
+        ! `shape_type` — 0 = сфера (`radius`), 1 = коробка (половинные
+        ! размеры в `half_extents`, локальные оси, повёрнутые
+        ! `orientation`). ВСЯ узкая фаза (sphere-sphere/box-box/box-sphere)
+        ! теперь честно в Fortran — см. narrow_phase.f90 (`narrow_phase_gjk`/
+        ! `narrow_phase_box_box`/`narrow_phase_box_sphere`).
+        !
+        ! ДОБАВЛЕНО (полноценная физика — capsule-коллайдер): 2 = капсула —
+        ! переиспользует `radius` (радиус) и `half_extents(1)` (полу-высота
+        ! ЦИЛИНДРИЧЕСКОЙ части вдоль ЛОКАЛЬНОЙ оси Y тела — сегмент от
+        ! `position - axis_y*half_extents(1)` до `position + axis_y*half_extents(1)`,
+        ! `half_extents(2)`/`half_extents(3)` для капсулы не используются);
+        ! НОВЫХ полей структуры не потребовалось. См.
+        ! `narrow_phase_capsule_sphere`/`narrow_phase_capsule_box`/
+        ! `narrow_phase_capsule_capsule` в narrow_phase.f90.
         integer(c_int) :: shape_type
         real(c_float) :: half_extents(3)
     end type rigid_body_c
