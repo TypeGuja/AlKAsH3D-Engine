@@ -191,6 +191,32 @@ extern "C" {
         contact: *mut FortranContact,
     ) -> i32;
 
+    // ДОБАВЛЕНО (полноценная физика — box-vs-box narrow phase, см.
+    // narrow_phase.f90): 15-осевой SAT-тест. Требует ОБА тела shape_type
+    // == BOX (как и narrow_phase_gjk требует обе SPHERE) — иначе честно
+    // возвращает 0, не пытаясь угадать.
+    pub fn narrow_phase_box_box(
+        body_a: *const FortranRigidBody,
+        body_b: *const FortranRigidBody,
+        contact: *mut FortranContact,
+    ) -> i32;
+
+    // ДОБАВЛЕНО (полноценная физика — box-vs-sphere/box-vs-plane перенесены
+    // в Fortran, см. narrow_phase.f90): те же алгоритмы, что раньше жили в
+    // Rust (lib.rs), теперь честно в Fortran-ядре, как и остальная узкая
+    // фаза. Требует ровно ОДНО из тел BOX (иначе честно возвращает 0).
+    pub fn narrow_phase_box_sphere(
+        body_a: *const FortranRigidBody,
+        body_b: *const FortranRigidBody,
+        contact: *mut FortranContact,
+    ) -> i32;
+
+    // "Насколько далеко коробка выступает в сторону `normal`" — support-
+    // функция OBB, нужная `resolve_plane_contacts` в lib.rs. `orientation`/
+    // `half_extents`/`normal` — по 3-4 float'а каждый, передаются по
+    // ссылке (без `value`) как везде в этом ABI для массивов.
+    pub fn box_effective_radius(orientation: *const f32, half_extents: *const f32, normal: *const f32) -> f32;
+
     pub fn generate_collision_pairs(
         bodies: *const FortranRigidBody,
         n: i32,

@@ -20,7 +20,12 @@
 !! какой стороны подошли).
 module raycast_mod
     use, intrinsic :: iso_c_binding
-    use rigid_body_mod, only: rigid_body_c
+    ! ИЗМЕНЕНО (box-vs-box narrow phase — см. narrow_phase.f90): `rotate_
+    ! vec_by_quat`/`quat_conjugate` переехали в `rigid_body_mod` (см. её
+    ! комментарий) — были определены здесь же ДО того, как понадобились
+    ! ещё и narrow_phase.f90, дублировать их там было бы копией того же
+    ! кода.
+    use rigid_body_mod, only: rigid_body_c, rotate_vec_by_quat, quat_conjugate
     implicit none
 
     real(c_float), parameter :: RC_EPS = 1.0e-8
@@ -34,29 +39,6 @@ contains
         real(c_float) :: d
         d = a(1)*b(1) + a(2)*b(2) + a(3)*b(3)
     end function dot3
-
-    ! Поворот вектора `v` единичным кватернионом `q` (x,y,z,w) — эффективная
-    ! формула без построения полной матрицы поворота: v' = v + 2*w*(qv×v) +
-    ! 2*(qv×(qv×v)), где qv — векторная часть кватерниона.
-    pure function rotate_vec_by_quat(v, q) result(vr)
-        real(c_float), intent(in) :: v(3), q(4)
-        real(c_float) :: vr(3), qv(3), t(3)
-        qv = q(1:3)
-        t(1) = 2.0 * (qv(2)*v(3) - qv(3)*v(2))
-        t(2) = 2.0 * (qv(3)*v(1) - qv(1)*v(3))
-        t(3) = 2.0 * (qv(1)*v(2) - qv(2)*v(1))
-        vr(1) = v(1) + q(4)*t(1) + (qv(2)*t(3) - qv(3)*t(2))
-        vr(2) = v(2) + q(4)*t(2) + (qv(3)*t(1) - qv(1)*t(3))
-        vr(3) = v(3) + q(4)*t(3) + (qv(1)*t(2) - qv(2)*t(1))
-    end function rotate_vec_by_quat
-
-    ! Сопряжённый (= обратный для ЕДИНИЧНОГО) кватернион — переводит вектор
-    ! из мировых координат в локальные оси тела.
-    pure function quat_conjugate(q) result(qc)
-        real(c_float), intent(in) :: q(4)
-        real(c_float) :: qc(4)
-        qc = [-q(1), -q(2), -q(3), q(4)]
-    end function quat_conjugate
 
     ! ===================================================================
     ! ЛУЧ vs СФЕРА

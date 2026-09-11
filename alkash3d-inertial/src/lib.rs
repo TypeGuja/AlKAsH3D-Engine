@@ -451,146 +451,14 @@ static PLUGIN_NAME: &[u8] = b"inertial\0";
 // значение одинаково безобидно, реального столкновения не будет).
 const IMPLICIT_RADIUS: f32 = 0.5;
 
-/// Векторное произведение — используется только кватернионными хелперами
-/// ниже, не стоит заводить ради него внешнюю зависимость.
-fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-/// Сопряжённый кватернион — для ЕДИНИЧНОГО кватерниона (гарантируется
-/// нормализацией в `integrate_orientation`, rigid_body.f90) это то же
-/// самое, что обратный, и переводит из мировых осей в локальные оси тела.
-fn quat_conjugate(q: [f32; 4]) -> [f32; 4] {
-    [-q[0], -q[1], -q[2], q[3]]
-}
-
-/// Поворачивает вектор `v` кватернионом `q` (стандартная формула
-/// `v' = v + 2w*(u×v) + 2u×(u×v)`, где `u = q.xyz`) — используется для
-/// перевода локальных осей box-коллайдера в мировые координаты и обратно
-/// (узкая фаза box-vs-sphere/box-vs-plane ниже). Ни в этом крейте, ни в
-/// движке до box-коллайдера не было ни одного места, где нужно было
-/// повернуть произвольный вектор кватернионом (только сам кватернион
-/// ориентации тела интегрировался как есть) — поэтому такого хелпера
-/// раньше просто не существовало.
-fn quat_rotate_vector(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
-    let u = [q[0], q[1], q[2]];
-    let w = q[3];
-    let uv = cross3(u, v);
-    let uuv = cross3(u, uv);
-    [
-        v[0] + 2.0 * (w * uv[0] + uuv[0]),
-        v[1] + 2.0 * (w * uv[1] + uuv[1]),
-        v[2] + 2.0 * (w * uv[2] + uuv[2]),
-    ]
-}
-
-/// Узкая фаза box-vs-sphere — Fortran-солвер (`narrow_phase.f90`) честно
-/// умеет ТОЛЬКО sphere-sphere (см. `PhysicsBody::shape_type`), поэтому
-/// для пары "коробка+сфера" normal/penetration/point считаются здесь, на
-/// Rust-стороне, а РЕЗУЛЬТАТ (тот же `FortranContact`, что вернул бы
-/// `narrow_phase_gjk`) уходит в ТОТ ЖЕ, ничем не изменённый Fortran-солвер
-/// импульсов/трения (`solve_contacts_vectorized`) — тот код по-прежнему
-/// работает с абстрактным "normal+penetration", ему всё равно, кто их
-/// вычислил.
-///
-/// Алгоритм — стандартный "ближайшая точка на OBB к центру сферы":
-/// переводим центр сферы в локальные оси коробки, зажимаем по
-/// `half_extents`, переводим найденную ближайшую точку обратно в мировые
-/// координаты. `body_a`/`body_b` — ИМЕННО в том порядке, в котором их
-/// передаёт вызывающий код (`update()` ниже, тот же порядок, что и у
-/// `narrow_phase_gjk`) — normal в результате всегда "от body_a к body_b",
-/// каким бы из них ни оказалась коробка, тот же контракт, что и у
-/// sphere-sphere.
-///
-/// ИЗВЕСТНОЕ УПРОЩЕНИЕ: если центр сферы уже глубоко внутри коробки
-/// (расстояние до зажатой точки ~0 — вырожденный случай, сфера "телепортом"
-/// провалилась внутрь за один слишком быстрый кадр), выталкиваем по оси
-/// НАИМЕНЬШЕГО проникновения относительно 6 граней — тот же принцип, что у
-/// честного SAT для box-box, только для одной точки вместо полного
-/// перебора рёбер.
-fn narrow_phase_box_sphere(body_a: &FortranRigidBody, body_b: &FortranRigidBody) -> Option<FortranContact> {
-    let (box_body, sphere_body, box_is_a) = if body_a.shape_type == shape_type::BOX {
-        (body_a, body_b, true)
-    } else if body_b.shape_type == shape_type::BOX {
-        (body_b, body_a, false)
-    } else {
-        return None;
-    };
-
-    let rel = [
-        sphere_body.position[0] - box_body.position[0],
-        sphere_body.position[1] - box_body.position[1],
-        sphere_body.position[2] - box_body.position[2],
-    ];
-    let local_rel = quat_rotate_vector(quat_conjugate(box_body.orientation), rel);
-
-    let clamped = [
-        local_rel[0].clamp(-box_body.half_extents[0], box_body.half_extents[0]),
-        local_rel[1].clamp(-box_body.half_extents[1], box_body.half_extents[1]),
-        local_rel[2].clamp(-box_body.half_extents[2], box_body.half_extents[2]),
-    ];
-    let delta_local = [
-        local_rel[0] - clamped[0],
-        local_rel[1] - clamped[1],
-        local_rel[2] - clamped[2],
-    ];
-    let dist_sq = delta_local[0] * delta_local[0] + delta_local[1] * delta_local[1] + delta_local[2] * delta_local[2];
-
-    let (normal_local, penetration) = if dist_sq < 1.0e-8 {
-        // Центр сферы внутри коробки — см. комментарий выше про упрощение.
-        let dx = box_body.half_extents[0] - local_rel[0].abs();
-        let dy = box_body.half_extents[1] - local_rel[1].abs();
-        let dz = box_body.half_extents[2] - local_rel[2].abs();
-        if dx <= dy && dx <= dz {
-            ([local_rel[0].signum(), 0.0, 0.0], dx + sphere_body.radius)
-        } else if dy <= dz {
-            ([0.0, local_rel[1].signum(), 0.0], dy + sphere_body.radius)
-        } else {
-            ([0.0, 0.0, local_rel[2].signum()], dz + sphere_body.radius)
-        }
-    } else {
-        let dist = dist_sq.sqrt();
-        if dist >= sphere_body.radius {
-            return None;
-        }
-        let inv_dist = 1.0 / dist;
-        (
-            [delta_local[0] * inv_dist, delta_local[1] * inv_dist, delta_local[2] * inv_dist],
-            sphere_body.radius - dist,
-        )
-    };
-
-    let normal_world = quat_rotate_vector(box_body.orientation, normal_local);
-    let closest_world_offset = quat_rotate_vector(box_body.orientation, clamped);
-    let point_world = [
-        box_body.position[0] + closest_world_offset[0],
-        box_body.position[1] + closest_world_offset[1],
-        box_body.position[2] + closest_world_offset[2],
-    ];
-
-    // normal_world сейчас "от коробки к сфере" — контракт солвера
-    // (см. narrow_phase.f90) требует "от body_a к body_b".
-    let final_normal = if box_is_a {
-        normal_world
-    } else {
-        [-normal_world[0], -normal_world[1], -normal_world[2]]
-    };
-
-    Some(FortranContact {
-        body_a: 0,
-        body_b: 0,
-        normal: final_normal,
-        penetration,
-        point: point_world,
-        tangent1: [0.0; 3],
-        tangent2: [0.0; 3],
-        friction_impulse: [0.0; 2],
-    })
-}
+// ИЗМЕНЕНО (полноценная физика — box-vs-sphere/box-vs-plane перенесены в
+// Fortran, см. `narrow_phase_box_sphere`/`box_effective_radius` в
+// narrow_phase.f90): раньше здесь жили Rust-реализации этих двух функций
+// узкой фазы (плюс кватернионные хелперы `cross3`/`quat_conjugate`/
+// `quat_rotate_vector`, нужные только им) — единственное место в крейте,
+// где узкая фаза считалась НЕ в Fortran. Убраны целиком, не оставлены как
+// мёртвый код — вызывающая сторона (`update`/`resolve_plane_contacts`
+// ниже) теперь честно зовёт Fortran-версии через `ffi::`.
 
 /// Диагональный тензор инерции (в ЛОКАЛЬНЫХ осях тела) для сферы или
 /// коробки. ВАЖНО (упрощение, задокументированное честно): этот тензор
@@ -850,14 +718,15 @@ impl PhysicsState {
                 // перебор 8 углов). При normal=(0,1,0) (плоский пол) и
                 // машине строго вертикально это даёт ровно half_extents.y,
                 // как и ожидается.
+                // ИЗМЕНЕНО (полноценная физика — box-vs-plane перенесён в
+                // Fortran, см. `box_effective_radius` в narrow_phase.f90):
+                // та же формула ("сумма проекций полуразмеров OBB на
+                // normal"), что раньше считалась здесь через
+                // `quat_rotate_vector` на Rust-стороне.
                 let effective_radius = if body.shape_type == shape_type::BOX {
-                    let axis_x = quat_rotate_vector(body.orientation, [1.0, 0.0, 0.0]);
-                    let axis_y = quat_rotate_vector(body.orientation, [0.0, 1.0, 0.0]);
-                    let axis_z = quat_rotate_vector(body.orientation, [0.0, 0.0, 1.0]);
-                    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-                    body.half_extents[0] * dot(axis_x, plane.normal).abs()
-                        + body.half_extents[1] * dot(axis_y, plane.normal).abs()
-                        + body.half_extents[2] * dot(axis_z, plane.normal).abs()
+                    unsafe {
+                        ffi::box_effective_radius(body.orientation.as_ptr(), body.half_extents.as_ptr(), plane.normal.as_ptr())
+                    }
                 } else {
                     body.radius
                 };
@@ -1353,25 +1222,30 @@ impl PhysicsState {
             if self.solver.bodies[ia].is_static != 0 && self.solver.bodies[ib].is_static != 0 {
                 continue;
             }
-            // ДОБАВЛЕНО (box-коллайдер кузова машины): Fortran-узкая фаза
-            // честно умеет только sphere-sphere — если ХОТЯ БЫ ОДНО из тел
-            // пары box, считаем контакт на Rust-стороне (см.
-            // `narrow_phase_box_sphere`). box-vs-box пока не реализован
-            // (не нужен ни одному текущему сценарию — единственное
-            // box-тело в сцене это кузов машины, а с другими box-телами
-            // он не сталкивается) — такая пара просто не даёт контакта,
-            // тот же результат, что и раньше (до box-коллайдера этих тел
-            // вообще не существовало).
+            // ИСПРАВЛЕНО (полноценная физика — box-vs-box narrow phase, см.
+            // `narrow_phase_box_box` в narrow_phase.f90): раньше пара из
+            // ДВУХ box-тел не давала контакта вообще (единственное box-тело
+            // в сцене было кузовом машины, который с другими box-телами не
+            // сталкивался) — теперь честный 15-осевой SAT-тест в Fortran,
+            // тот же уровень строгости, что уже есть у sphere-sphere.
+            // ИСПРАВЛЕНО (полноценная физика — box-vs-sphere перенесён в
+            // Fortran, см. `narrow_phase_box_sphere` в narrow_phase.f90):
+            // раньше это (и box-vs-plane в `resolve_plane_contacts` ниже)
+            // было единственным местом узкой фазы, считавшимся на
+            // Rust-стороне — теперь вся узкая фаза (sphere-sphere/box-box/
+            // box-sphere) честно в Fortran, эта функция только
+            // диспетчеризует по паре shape_type.
             let mut contact = FortranContact::default();
             let hit = if self.solver.bodies[ia].shape_type == shape_type::SPHERE
                 && self.solver.bodies[ib].shape_type == shape_type::SPHERE
             {
                 unsafe { ffi::narrow_phase_gjk(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) }
-            } else if let Some(c) = narrow_phase_box_sphere(&self.solver.bodies[ia], &self.solver.bodies[ib]) {
-                contact = c;
-                1
+            } else if self.solver.bodies[ia].shape_type == shape_type::BOX
+                && self.solver.bodies[ib].shape_type == shape_type::BOX
+            {
+                unsafe { ffi::narrow_phase_box_box(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) }
             } else {
-                0
+                unsafe { ffi::narrow_phase_box_sphere(&self.solver.bodies[ia], &self.solver.bodies[ib], &mut contact) }
             };
             if hit != 0 {
                 contact.body_a = ia as i32;
