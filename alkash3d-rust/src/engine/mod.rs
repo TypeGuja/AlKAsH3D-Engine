@@ -181,10 +181,51 @@ pub struct CarHandle {
     pub wheel_radius: f32,
 }
 
+/// ДОБАВЛЕНО (максимальная графика — LOD для мешей): группа уровней
+/// детализации ОДНОГО логического объекта — `mesh_indices[i]` действует,
+/// пока расстояние камера-объект не превышает `distances[i]` (оба массива
+/// параллельны, одинаковой длины, `distances` по возрастанию — см.
+/// `add_lod_group`/`resolve`). Уровни (сама геометрия LOD1/LOD2 —
+/// упрощённые меши) генерируются ЗАРАНЕЕ (оффлайн или процедурно при
+/// старте) вызывающим кодом — этот движок сам не делает runtime-упрощение
+/// геометрии, только выбирает, какой ИЗ УЖЕ СОЗДАННЫХ мешей нарисовать в
+/// этом кадре.
+pub struct LodGroup {
+    mesh_indices: Vec<usize>,
+    distances: Vec<f32>,
+}
+
+impl LodGroup {
+    /// Индекс меша для данного расстояния, либо `None`, если расстояние
+    /// превышает ПОСЛЕДНИЙ (самый большой) порог — вызывающая сторона в
+    /// этом случае объект не рисует вовсе (см. `resolve_lod_mesh_index` в
+    /// render_frame.rs), тот же принцип, что "дальше — LOD2 или culling
+    /// совсем" из плана: передать `f32::MAX` последним порогом, если
+    /// такое полное отсечение по расстоянию не нужно.
+    fn resolve(&self, distance: f32) -> Option<usize> {
+        for (i, &max_dist) in self.distances.iter().enumerate() {
+            if distance <= max_dist {
+                return Some(self.mesh_indices[i]);
+            }
+        }
+        None
+    }
+}
+
 pub struct AlkashEngine {
     pub renderer: Option<Renderer>,
     pub meshes: Vec<Mesh>,
     pub mesh_instances: Vec<MeshInstance>,
+    /// ДОБАВЛЕНО (максимальная графика — LOD): ключ — "логический" индекс
+    /// меша, тот самый, что игровой код передаёт в `MeshInstance::new`/
+    /// `spawn_static_mesh`/т.п. (обычно LOD0, самый детальный уровень) —
+    /// НИЧЕГО в существующем игровом коде менять не нужно, чтобы включить
+    /// LOD для объекта, достаточно ОДИН раз вызвать `add_lod_group` с тем
+    /// же индексом. `render_frame` (см. `resolve_lod_mesh_index`) заменяет
+    /// этот индекс на реально отрисовываемый по расстоянию камера-объект,
+    /// ДО фрустум-каллинга, для main pass И shadow pass одинаково (чтобы
+    /// тень не отставала/не забегала вперёд видимого уровня детализации).
+    pub(super) lod_groups: std::collections::HashMap<usize, LodGroup>,
     pub root_signature: Option<ID3D12RootSignature>,
     pub pipeline_state: Option<ID3D12PipelineState>,
     pub vs: Option<ShaderBlob>,

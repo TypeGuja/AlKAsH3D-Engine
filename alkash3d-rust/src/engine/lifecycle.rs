@@ -42,6 +42,7 @@ impl AlkashEngine {
             renderer: None,
             meshes: Vec::new(),
             mesh_instances: Vec::new(),
+            lod_groups: std::collections::HashMap::new(),
             root_signature: None,
             pipeline_state: None,
             vs: None,

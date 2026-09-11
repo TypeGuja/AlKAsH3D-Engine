@@ -10,7 +10,7 @@
 //! здесь они объединены логически, т.к. обе относятся к одному и тому же
 //! "API геометрии сцены".
 
-use super::{AlkashEngine, Mesh};
+use super::{AlkashEngine, Mesh, LodGroup};
 
 impl AlkashEngine {
     /// Удобный конструктор: создаёт сущность в ECS-сцене и сразу вешает на
@@ -200,6 +200,51 @@ impl AlkashEngine {
     pub fn clear_meshes(&mut self) {
         self.meshes.clear();
         self.mesh_instances.clear();
+        self.lod_groups.clear();
         println!("[ENGINE] All meshes and instances cleared");
+    }
+
+    /// ДОБАВЛЕНО (максимальная графика — LOD для мешей): регистрирует
+    /// группу уровней детализации — `mesh_indices[0]` (LOD0, обычно самый
+    /// детальный) становится "логическим" индексом объекта: везде, где
+    /// игровой код уже передаёт `mesh_indices[0]` в `MeshInstance::new`,
+    /// `spawn_static_mesh` и т.п., `render_frame` теперь САМ подменит его
+    /// на подходящий по расстоянию до камеры уровень (см.
+    /// `resolve_lod_mesh_index` в render_frame.rs) — существующий игровой
+    /// код МЕНЯТЬ НЕ НУЖНО, только один раз вызвать этот метод.
+    ///
+    /// `mesh_indices`/`distances` — параллельные массивы одинаковой длины,
+    /// `distances` СТРОГО по возрастанию (`distances[i]` — максимальное
+    /// расстояние, на котором ещё используется `mesh_indices[i]`). Объект
+    /// дальше `distances[distances.len()-1]` не рисуется вовсе — передай
+    /// `f32::MAX` последним порогом, если такое отсечение не нужно (см.
+    /// `LodGroup::resolve`). Молча ничего не делает (с диагностикой в
+    /// stderr) при пустых/разной длины массивах или индексах вне
+    /// `self.meshes` — тот же принцип "не паникуем на плохом вводе", что и
+    /// у остального публичного API этого файла.
+    pub fn add_lod_group(&mut self, mesh_indices: Vec<usize>, distances: Vec<f32>) {
+        if mesh_indices.is_empty() || mesh_indices.len() != distances.len() {
+            eprintln!(
+                "[ENGINE] add_lod_group: mesh_indices ({}) и distances ({}) должны быть непустыми и одинаковой длины — группа не добавлена",
+                mesh_indices.len(), distances.len()
+            );
+            return;
+        }
+        if let Some(&bad) = mesh_indices.iter().find(|&&i| i >= self.meshes.len()) {
+            eprintln!(
+                "[ENGINE] add_lod_group: индекс меша {} вне диапазона (мешей всего {}) — группа не добавлена",
+                bad, self.meshes.len()
+            );
+            return;
+        }
+        for w in distances.windows(2) {
+            if w[1] <= w[0] {
+                eprintln!("[ENGINE] add_lod_group: distances должны строго возрастать — группа не добавлена");
+                return;
+            }
+        }
+        let key = mesh_indices[0];
+        self.lod_groups.insert(key, LodGroup { mesh_indices, distances });
+        println!("[ENGINE] ✓ LOD-группа добавлена для меша #{}", key);
     }
 }

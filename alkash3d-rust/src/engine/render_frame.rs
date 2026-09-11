@@ -267,6 +267,26 @@ impl AlkashEngine {
         }
     }
 
+    /// ДОБАВЛЕНО (максимальная графика — LOD для мешей): если `mesh_index`
+    /// — ключ зарегистрированной LOD-группы (см. `AlkashEngine::add_lod_group`
+    /// в mesh_api.rs), возвращает индекс уровня детализации, подходящего
+    /// для расстояния от `camera_pos` до мировой позиции объекта (мировая
+    /// origin-точка модельной матрицы — не требует одинаковых
+    /// bounding-сфер у разных уровней, "достаточно точно" для порогов
+    /// LOD), либо `None`, если объект дальше самого дальнего уровня (не
+    /// рисуем вовсе в этом кадре — ни в main pass, ни в shadow pass).
+    /// Для НЕ-LOD мешей (подавляющее большинство — обычный случай) —
+    /// честный no-op, `Some(mesh_index)` без изменений.
+    fn resolve_lod_mesh_index(&self, mesh_index: usize, world: Mat4, camera_pos: Vec3) -> Option<usize> {
+        match self.lod_groups.get(&mesh_index) {
+            Some(group) => {
+                let world_pos = world.transform_point3(Vec3::ZERO);
+                group.resolve((world_pos - camera_pos).length())
+            }
+            None => Some(mesh_index),
+        }
+    }
+
     /// ДОБАВЛЕНО как попытка фикса `DXGI_ERROR_DEVICE_HUNG` на первом кадре
     /// (см. `warm_up_pipelines` ниже) — НЕ оказалось причиной зависания, но
     /// оставлено как полезная само по себе вещь. Замер показывал, что первый
@@ -391,18 +411,31 @@ impl AlkashEngine {
         let rtv_handle = renderer.hdr_rtv;
         let dsv_handle = renderer.depth_stencil_view;
 
+        // ДОБАВЛЕНО (максимальная графика — LOD для мешей): считаем ОДИН
+        // раз на кадр, используется и для shadow_jobs ниже, и для main
+        // pass jobs дальше по функции — LOD выбирается по расстоянию до
+        // КАМЕРЫ (не до источника света) в обоих проходах, чтобы тень
+        // всегда соответствовала уровню детализации видимого объекта, а не
+        // жила своей отдельной жизнью.
+        let camera_pos_for_lod = self.camera.position;
+
         let shadow_jobs: Vec<(usize, Mat4)> = {
             let mut v: Vec<(usize, Mat4)> = Vec::new();
             if !self.mesh_instances.is_empty() {
                 for instance in &self.mesh_instances {
                     if instance.mesh_index < self.meshes.len() {
-                        v.push((instance.mesh_index, instance.transform_matrix()));
+                        let world = instance.transform_matrix();
+                        if let Some(idx) = self.resolve_lod_mesh_index(instance.mesh_index, world, camera_pos_for_lod) {
+                            v.push((idx, world));
+                        }
                     }
                 }
             }
             for (mesh_index, world) in self.scene.collect_renderables() {
                 if mesh_index < self.meshes.len() {
-                    v.push((mesh_index, world));
+                    if let Some(idx) = self.resolve_lod_mesh_index(mesh_index, world, camera_pos_for_lod) {
+                        v.push((idx, world));
+                    }
                 }
             }
             v
@@ -684,10 +717,13 @@ impl AlkashEngine {
             if !self.mesh_instances.is_empty() {
                 for instance in &self.mesh_instances {
                     if instance.mesh_index < self.meshes.len() {
-                        jobs.push(DrawJob {
-                            mesh_index: instance.mesh_index,
-                            transform: DrawTransform::Camera(instance.transform_matrix()),
-                        });
+                        let world = instance.transform_matrix();
+                        if let Some(idx) = self.resolve_lod_mesh_index(instance.mesh_index, world, camera_pos_for_lod) {
+                            jobs.push(DrawJob {
+                                mesh_index: idx,
+                                transform: DrawTransform::Camera(world),
+                            });
+                        }
                     }
                 }
             } else if self.scene.is_empty() {
@@ -698,7 +734,9 @@ impl AlkashEngine {
 
             for (mesh_index, world) in self.scene.collect_renderables() {
                 if mesh_index < self.meshes.len() {
-                    jobs.push(DrawJob { mesh_index, transform: DrawTransform::Camera(world) });
+                    if let Some(idx) = self.resolve_lod_mesh_index(mesh_index, world, camera_pos_for_lod) {
+                        jobs.push(DrawJob { mesh_index: idx, transform: DrawTransform::Camera(world) });
+                    }
                 }
             }
 
