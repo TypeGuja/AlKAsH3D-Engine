@@ -12,7 +12,7 @@ Alkash3D Engine v0.1.0 — Car Demo
   ESC     - выход
 ==========================================
 [ENGINE] Initializing Alkash3D Engine v0.1.0...
-[ENGINE] Window created: HWND=0x3C0850
+[ENGINE] Window created: HWND=0x170852
 [ENGINE] ✓ Window created
 [DEVICE] ========== CREATING D3D12 DEVICE ==========
 [DEVICE] ✓ D3D12 debug layer enabled
@@ -36,7 +36,7 @@ Alkash3D Engine v0.1.0 — Car Demo
 [QUEUE] ✓ Command queue created
 [ENGINE] ✓ Command queue created
 [SWAPCHAIN] ========== CREATING SWAP CHAIN ==========
-[SWAPCHAIN] HWND: 0x3C0850, Width: 1366, Height: 768, Buffer count: 2
+[SWAPCHAIN] HWND: 0x170852, Width: 1366, Height: 768, Buffer count: 2
 [SWAPCHAIN] Command queue obtained
 [SWAPCHAIN] Creating DXGI factory...
 [SWAPCHAIN] DXGI factory created
@@ -109,10 +109,10 @@ Alkash3D Engine v0.1.0 — Car Demo
 [PSO] Blend state created
 [PSO] Creating depth stencil state (ENABLED)...
 [PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL
-[PSO] Root signature: 0xa7c1f3f590
+[PSO] Root signature: 0xdb504ff240
 [PSO] Pipeline state descriptor created
 [PSO] Calling CreateGraphicsPipelineState...
-[PSO] ✓ PSO created successfully! PSO: 0xa7c1f3da48
+[PSO] ✓ PSO created successfully! PSO: 0xdb504fd6c8
 [ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, 4x MSAA)
 [BUFFER] Creating constant buffer ARRAY: 256 slots x 768 bytes = 196608 bytes total
 [BUFFER] Creating constant buffer, size: 196608 bytes
@@ -122,7 +122,7 @@ Alkash3D Engine v0.1.0 — Car Demo
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 772 bytes
 [SHADER] Compiling ps_5_0 - entry: main
-[SHADER] ✓ Compiled successfully, 1640 bytes
+[SHADER] ✓ Compiled successfully, 1768 bytes
 [ENGINE] ✓ Tonemap shaders compiled (ACES + экспозиция)
 [ENGINE] ✓ Tonemap root signature created (SRV table t0 + static sampler s0 + CBV b0)
 [ENGINE] ✓ Tonemap pipeline state created
@@ -182,6 +182,22 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ Volumetric resources created: 683x384 half-res target
+[SHADER] Compiling vs_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 772 bytes
+[SHADER] Compiling ps_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 26500 bytes
+[ENGINE] ✓ SSAO shaders compiled (12 сэмплов, без normal G-buffer/blur-прохода)
+[ENGINE] ✓ SSAO root signature created (SRV table t0 + point sampler s0 + CBV b0)
+[ENGINE] ✓ SSAO pipeline state created
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[BUFFER] Creating constant buffer, size: 256 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] ✓ SSAO resources created: 683x384 half-res target
 [ENGINE] Handling resize: 1350x729
 [RENDERER] ========== CREATING RENDERER ==========
 [RENDERER] Width: 1350, Height: 729, Buffer count: 2
@@ -239,7 +255,14 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ Volumetric resources created: 675x364 half-res target
-[ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric)
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] ✓ SSAO resources created: 675x364 half-res target
+[ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric + SSAO)
 [ENGINE] ✓ Bloom SRV re-registered in new srv_uav_heap after resize
 [ENGINE] ✓ Initialization complete
 
@@ -282,7 +305,7 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating constant buffer, size: 196608 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] Shadow constant buffer (re)allocated: 128 slots/(кадр*каскад) x2 x3 каскада = 768 слотов
-[WARMUP] 'shadow' прогрет за 1.3978ms
+[WARMUP] 'shadow' прогрет за 1.5184ms
 [BUFFER] Creating structured buffer, size: 4096 bytes
 [BUFFER] Structured buffer created successfully
 [ENGINE] Light buffer (re)allocated: 64 GPULight слотов (4096 байт)
@@ -292,94 +315,1959 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating structured buffer, size: 1024 bytes
 [BUFFER] Structured buffer created successfully
 [ENGINE] Grid entries buffer (re)allocated: 64 слотов (1024 байт)
-[WARMUP] 'main' прогрет за 1.4847ms
+[WARMUP] 'main' прогрет за 1.3519ms
 
 === RENDER LOOP STARTING ===
 
 *** FIRST FRAME COMPLETED ***
 *** 25 ECS entities rendering ***
 
-[INFO] Frame 61 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[INFO] Frame 59 | FPS: 58.4 | mode=walking | speed=-0.0 m/s | entities: 25
 [PHYS-STATS] bodies=86 active=4 contacts=0 pairs=357
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 121 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=7 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 181 | FPS: 59.7 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 242 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 119 | FPS: 59.8 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 180 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 240 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
 [PHYS-STATS] bodies=86 active=4 contacts=11 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 302 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 301 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 361 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 422 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 482 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 542 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 603 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 663 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 723 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 779 | FPS: 55.3 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 839 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 899 | FPS: 59.8 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 960 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1020 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1080 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1141 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1202 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1262 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
 [DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 363 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=7 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 424 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 484 | FPS: 59.8 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 545 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 601 | FPS: 54.1 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=6 pairs=376
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 659 | FPS: 57.4 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=376
+[INFO] Frame 1322 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1383 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
 [DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 718 | FPS: 57.6 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 758 | FPS: 38.4 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=13 pairs=376
-[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 820 | FPS: 61.7 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
+[INFO] Frame 1443 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
 [DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[MAIN_CAR] 🔑 Рядом с машиной — E, чтобы сесть за руль
-[MAIN_CAR] 🔑 Рядом с машиной — E, чтобы сесть за руль
-[INFO] Frame 881 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=6 pairs=376
+[INFO] Frame 1504 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1564 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1624 | FPS: 59.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1684 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1745 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1805 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1865 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
 [DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1925 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 1986 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2047 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2108 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2168 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2229 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2290 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2351 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2411 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2471 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2532 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2593 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2654 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2714 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2775 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2835 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2895 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 2956 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3017 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3078 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3139 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3199 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3259 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3319 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3380 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3440 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3501 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3562 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3622 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3682 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3742 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3803 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3864 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3924 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 3985 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4045 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4106 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4166 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4226 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4287 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4347 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4407 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4467 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4528 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4589 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4650 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4710 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4771 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4832 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4892 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 4952 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5013 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5073 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5134 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5194 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5255 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5316 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5377 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5437 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5498 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5558 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5619 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5680 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5741 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5801 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5862 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5923 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 5984 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6045 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6106 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6167 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6227 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6288 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6348 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6409 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6469 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6530 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6591 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6651 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6712 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6772 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6833 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6894 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 6954 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7014 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7074 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7135 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7196 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7257 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7317 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7378 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7439 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7500 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7560 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7621 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7681 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7742 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7803 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7864 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7924 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 7985 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8046 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8106 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8167 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8227 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8287 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8347 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8408 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=5 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8469 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8529 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8589 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8650 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8711 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8771 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8832 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8893 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 8954 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9015 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9075 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9136 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9196 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9257 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9318 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9378 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9439 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9499 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9560 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9620 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9680 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9740 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=5 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9801 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9861 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9922 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 9982 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10043 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10104 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=4 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10164 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10224 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10285 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10346 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10406 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10467 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10528 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10589 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10649 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10709 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10769 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10830 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10890 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 10951 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11012 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11073 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11134 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11195 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11255 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11316 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11377 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11438 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11498 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11559 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11619 | FPS: 59.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11680 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11741 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11801 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11862 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11922 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 11983 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12044 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12104 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12165 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12226 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12287 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12347 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12407 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12468 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12529 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=2 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12590 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12650 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12710 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12771 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12831 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12891 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 12952 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13012 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13072 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13133 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13194 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13255 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13316 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13377 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13438 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13499 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13560 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13621 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13682 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13743 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13803 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13863 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13924 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 13984 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14044 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14105 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14165 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14225 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=5 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14286 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=4 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14346 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14407 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14467 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14528 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14588 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14649 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14710 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14770 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14830 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14890 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 14951 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15011 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15072 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15132 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15193 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15254 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15314 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15375 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15435 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15496 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15557 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15617 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15677 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15738 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15798 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15859 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15920 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 15981 | FPS: 60.2 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16041 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16101 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16162 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16222 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16283 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16343 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16404 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16465 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16526 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16587 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16647 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16708 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16769 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16830 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16890 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 16951 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17011 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17072 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17133 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17193 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17254 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17315 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17375 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17436 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17497 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17557 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17618 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17679 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17740 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17800 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17861 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17921 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 17981 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18042 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18103 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18164 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18225 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18286 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18347 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18407 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18468 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18528 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18589 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18649 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18710 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18771 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18832 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18893 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=0 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 18953 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=4 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19014 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19075 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19136 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19196 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19257 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19317 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19378 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19438 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19499 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19560 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19621 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=4 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19681 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19742 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19803 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19863 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19924 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 19985 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20046 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20106 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20167 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20228 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20289 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20349 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20410 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20470 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20531 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20591 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20651 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20711 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20772 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20832 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20892 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 20952 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21013 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21074 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21135 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21195 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21255 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21315 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21375 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21436 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21497 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21557 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21618 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21678 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21739 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21799 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21860 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21920 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 21980 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22041 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22101 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22162 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22222 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22282 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22343 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22402 | FPS: 59.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22463 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22523 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22584 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22644 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22704 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22764 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22825 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22886 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 22947 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23008 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23068 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23129 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23190 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23250 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23311 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23371 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23432 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23492 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23552 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23612 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23672 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23733 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23793 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23853 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23914 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 23974 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24034 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24095 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24156 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24216 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24277 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24338 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24399 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24459 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24520 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24581 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24641 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24701 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24762 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24823 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24884 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 24945 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25006 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25067 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25128 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25189 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25250 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25310 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25371 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25431 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=0 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25492 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25552 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=4 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25613 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25674 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25734 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25794 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25855 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25916 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 25977 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26038 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26099 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26160 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26221 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26282 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26343 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26403 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26463 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26523 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26584 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26644 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26704 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26764 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26825 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26885 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 26945 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27006 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27067 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27128 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27188 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27248 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27308 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27369 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27429 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27490 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27550 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27610 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27670 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27731 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27792 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27852 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27912 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 27972 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28033 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28093 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28153 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28214 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28275 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28335 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28396 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28456 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28517 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28578 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28638 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28699 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28759 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28820 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28881 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 28941 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29002 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29063 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=2 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29124 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29185 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29245 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29306 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29366 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29426 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=1 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29486 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29546 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29607 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29668 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29729 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29789 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29850 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29911 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 29972 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30033 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30093 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30153 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30214 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30275 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30336 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30397 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30457 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30518 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30578 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30638 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30699 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30760 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30820 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30881 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 30942 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31003 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=1 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31063 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31124 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31184 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=2 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31245 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31305 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31366 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31427 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31488 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31549 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31609 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31670 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31731 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31792 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31853 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31913 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 31973 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32033 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32094 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32154 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32214 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32275 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32335 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32396 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32456 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32517 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32578 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32638 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32698 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32758 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32819 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32879 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 32940 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33001 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33062 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33122 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33182 | FPS: 59.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33243 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33303 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33364 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33425 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33486 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33546 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=6 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33607 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33667 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33728 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33788 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33849 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33910 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 33971 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34031 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34092 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34153 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34213 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34274 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34335 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=5 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34396 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34456 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34517 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=2 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34577 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34637 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34698 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34759 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34820 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34880 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 34941 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35001 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35062 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35123 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35183 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35244 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35304 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35365 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35426 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35487 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35548 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35608 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35669 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35730 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35790 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35851 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35912 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 35973 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36034 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36094 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36154 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36215 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36276 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36337 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36397 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36458 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36518 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36579 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36640 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36701 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=11 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36761 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36822 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36882 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 36943 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37004 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=8 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37065 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37125 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37186 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37247 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37308 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37368 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37429 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37489 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=9 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37550 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37610 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37671 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37732 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37793 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37854 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=2 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37915 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 37975 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38036 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38096 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38157 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38218 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38279 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38339 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38400 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38460 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=10 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38521 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38582 | FPS: 59.9 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[MAIN_CAR] 🔑 Рядом с машиной — E, чтобы сесть за руль
+[INFO] Frame 38642 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
 [MAIN_CAR] 🚗 Сел в машину — WASD: газ/тормоз/руль, R: ручник, E: выйти
-[INFO] Frame 941 | FPS: 60.0 | mode=driving | speed=-2.8 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=10 pairs=376
-[DIAG-CAR] pos=(-0.90,0.79,-0.83) vel=(-2.85,-0.00,0.80) ori=(0.00,0.67,-0.00,0.74) asleep=0
-[INFO] Frame 1001 | FPS: 60.0 | mode=driving | speed=2.5 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=5 pairs=376
-[DIAG-CAR] pos=(-1.56,0.79,-0.84) vel=(2.50,-0.00,0.18) ori=(-0.00,0.66,0.00,0.75) asleep=0
-[INFO] Frame 1062 | FPS: 60.2 | mode=driving | speed=3.1 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=7 pairs=376
-[DIAG-CAR] pos=(1.86,0.79,-1.04) vel=(3.05,-0.00,1.11) ori=(-0.00,0.67,-0.00,0.74) asleep=0
-[INFO] Frame 1122 | FPS: 59.9 | mode=driving | speed=-0.2 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=4 pairs=388
-[DIAG-CAR] pos=(2.49,0.78,-0.78) vel=(-0.20,0.00,-0.12) ori=(0.00,0.60,0.00,0.80) asleep=0
-[INFO] Frame 1182 | FPS: 59.9 | mode=driving | speed=2.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=388
-[DIAG-CAR] pos=(3.22,0.97,-0.34) vel=(1.56,0.14,1.35) ori=(-0.08,0.51,0.02,0.85) asleep=0
-[INFO] Frame 1242 | FPS: 60.0 | mode=driving | speed=1.5 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=388
-[DIAG-CAR] pos=(4.15,1.05,0.87) vel=(0.62,0.06,1.39) ori=(-0.09,0.31,0.01,0.95) asleep=0
-[INFO] Frame 1303 | FPS: 60.0 | mode=driving | speed=0.1 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=388
-[DIAG-CAR] pos=(4.43,1.25,1.92) vel=(-0.02,-0.05,0.08) ori=(-0.11,0.11,-0.06,0.99) asleep=0
-[INFO] Frame 1364 | FPS: 60.0 | mode=driving | speed=2.2 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=7 pairs=415
-[DIAG-CAR] pos=(4.51,1.20,2.81) vel=(0.58,-0.05,2.17) ori=(-0.03,0.09,0.02,1.00) asleep=0
-[INFO] Frame 1425 | FPS: 60.1 | mode=driving | speed=0.4 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=10 pairs=361
-[DIAG-CAR] pos=(4.81,1.27,4.97) vel=(-0.02,-0.14,0.41) ori=(0.08,0.07,0.04,0.99) asleep=0
-[INFO] Frame 1485 | FPS: 60.0 | mode=driving | speed=-0.2 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=361
-[DIAG-CAR] pos=(4.77,1.35,4.82) vel=(-0.04,-0.02,-0.21) ori=(0.10,0.05,0.01,0.99) asleep=0
+[INFO] Frame 38703 | FPS: 60.1 | mode=driving | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=3 contacts=12 pairs=291
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 38764 | FPS: 59.9 | mode=driving | speed=0.9 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=291
+[DIAG-CAR] pos=(1.15,0.79,-0.66) vel=(0.94,0.00,-0.07) ori=(0.01,0.64,0.00,0.77) asleep=0
+[INFO] Frame 38825 | FPS: 60.1 | mode=driving | speed=-1.8 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=7 pairs=291
+[DIAG-CAR] pos=(0.14,0.87,-0.74) vel=(-1.84,-0.08,-0.19) ori=(-0.03,0.56,-0.01,0.83) asleep=0
+[INFO] Frame 38885 | FPS: 60.0 | mode=driving | speed=-3.3 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=12 pairs=264
+[DIAG-CAR] pos=(-2.19,0.78,-1.37) vel=(-3.53,-0.02,-1.24) ori=(0.00,0.37,-0.00,0.93) asleep=0
+[INFO] Frame 38946 | FPS: 60.0 | mode=driving | speed=-3.7 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=246
+[DIAG-CAR] pos=(-6.49,0.79,-3.91) vel=(-1.78,-0.00,-3.30) ori=(-0.00,0.27,0.01,0.96) asleep=0
+[INFO] Frame 39006 | FPS: 60.0 | mode=driving | speed=1.5 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=12 pairs=246
+[DIAG-CAR] pos=(-6.63,0.79,-4.41) vel=(0.63,0.00,1.45) ori=(-0.00,0.33,0.00,0.95) asleep=0
+[INFO] Frame 39067 | FPS: 60.1 | mode=driving | speed=7.4 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=264
+[DIAG-CAR] pos=(-5.47,0.79,-0.02) vel=(2.14,-0.00,7.10) ori=(-0.01,0.14,0.00,0.99) asleep=0
+[INFO] Frame 39127 | FPS: 59.9 | mode=driving | speed=-1.1 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=273
+[DIAG-CAR] pos=(-2.45,0.83,3.64) vel=(-0.87,-0.45,-0.66) ori=(-0.01,0.44,-0.01,0.90) asleep=0
+[INFO] Frame 39188 | FPS: 59.9 | mode=driving | speed=-0.9 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=12 pairs=273
+[DIAG-CAR] pos=(-3.19,0.79,2.98) vel=(-0.77,-0.00,-0.46) ori=(-0.00,0.49,-0.00,0.87) asleep=0
 [MAIN_CAR] ESC pressed - exiting
 [ENGINE] Shutting down...
-[ENGINE] Signaling fence (value=1520)...
+[ENGINE] Signaling fence (value=39205)...
 [ENGINE] Waiting for GPU to finish...
 [ENGINE] GPU idle
 [ENGINE] Clearing meshes...

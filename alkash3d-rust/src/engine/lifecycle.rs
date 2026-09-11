@@ -152,6 +152,18 @@ impl AlkashEngine {
             volumetric_is_srv: false,
             depth_stencil_is_srv: false,
 
+            ssao_vs: None,
+            ssao_ps: None,
+            ssao_root_signature: None,
+            ssao_pipeline_state: None,
+            ssao_texture: None,
+            ssao_rtv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+            ssao_rtv_heap: None,
+            ssao_depth_srv_heap: None,
+            ssao_srv_gpu_depth: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
+            ssao_constant_buffer: None,
+            ssao_is_srv: false,
+
             depth_srv_heap: None,
             depth_srv_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
 
@@ -265,6 +277,11 @@ impl AlkashEngine {
         self.create_volumetric_root_signature()?;
         self.create_volumetric_pipeline_state()?;
         self.create_volumetric_resources()?;
+
+        self.compile_ssao_shaders()?;
+        self.create_ssao_root_signature()?;
+        self.create_ssao_pipeline_state()?;
+        self.create_ssao_resources()?;
 
         unsafe {
             ShowWindow(self.hwnd.unwrap(), SW_SHOW);

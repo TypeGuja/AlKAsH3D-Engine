@@ -69,6 +69,12 @@ impl AlkashEngine {
         // накладывались поверх уже сжатого LDR-изображения (что выглядело
         // бы плоско и не сочеталось по яркости с остальной сценой).
         Texture2D VolumetricSource : register(t2);
+        // ДОБАВЛЕНО (максимальная графика — SSAO, см. engine/pipeline_ssao.rs):
+        // half-res множитель [0,1] контактной окклюзии — применяется к
+        // ОСНОВНОМУ (не bloom/volumetric — те источники света/атмосфера, не
+        // заслоняемая геометрией поверхность) цвету ДО суммы с ними, см.
+        // main() ниже.
+        Texture2D SSAOSource : register(t3);
         SamplerState PointSampler : register(s0);
 
         cbuffer TonemapConstants : register(b0) {
@@ -98,6 +104,14 @@ impl AlkashEngine {
 
         float4 main(PS_INPUT input) : SV_TARGET {
             float3 hdrColor = HDRSource.Sample(PointSampler, input.uv).rgb;
+            // ДОБАВЛЕНО (SSAO): честное разделение "только ambient-член"
+            // потребовало бы depth pre-pass'а (отдельная доработка) — здесь
+            // AO-множитель затемняет ВЕСЬ поверхностный цвет (диффуз +
+            // specular + ambient), не только ambient. Задокументированное
+            // упрощение, тот же уровень, что и у остальных пост-эффектов
+            // этого движка.
+            float3 aoColor = SSAOSource.Sample(PointSampler, input.uv).rgb;
+            hdrColor *= aoColor;
             // BloomSource — half-res текстура, PointSampler здесь всё
             // равно даёт визуально мягкий результат, т.к. само свечение
             // уже размыто предыдущим Gaussian-blur проходом (см.
@@ -148,9 +162,13 @@ impl AlkashEngine {
     pub(super) fn create_tonemap_root_signature(&mut self) -> Result<()> {
         use windows::Win32::Graphics::Direct3D12::*;
 
+        // ИЗМЕНЕНО (максимальная графика — SSAO): 3 -> 4 (t0 HDR, t1 Bloom,
+        // t2 Volumetric, t3 SSAO — см. `renderer.srv_uav_heap`, у него уже
+        // 4 слота, `create_ssao_final_srv` в pipeline_ssao.rs пишет в
+        // слот 3).
         let srv_range = D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-            NumDescriptors: 3,
+            NumDescriptors: 4,
             BaseShaderRegister: 0,
             RegisterSpace: 0,
             OffsetInDescriptorsFromTableStart: 0,

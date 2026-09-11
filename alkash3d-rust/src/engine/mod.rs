@@ -72,6 +72,10 @@ use pipeline_occluder::{SecondaryDepthTarget, SecondaryBuffer};
 // см. engine/pipeline_volumetric.rs.
 mod pipeline_volumetric;
 
+// ДОБАВЛЕНО (максимальная графика — SSAO): контактные тени, см.
+// engine/pipeline_ssao.rs.
+mod pipeline_ssao;
+
 // ВЫНЕСЕНО (Фаза 1 архитектурного рефакторинга): главный проход рендера
 // кадра (`render_frame`) + рост GPU-буферов по требованию — см.
 // engine/render_frame.rs.
@@ -650,6 +654,24 @@ pub struct AlkashEngine {
     /// что depth_stencil уже был возвращён в DEPTH_WRITE предыдущим кадром
     /// (тот же принцип, что и у `shadow_map_is_srv`).
     depth_stencil_is_srv: bool,
+
+    /// ДОБАВЛЕНО (максимальная графика — SSAO, см. engine/pipeline_ssao.rs):
+    /// та же схема ресурсов/трекинга состояния, что у volumetric выше, но
+    /// со СВОИМ depth SRV heap (1 дескриптор — SSAO не читает shadow map,
+    /// в отличие от volumetric) вместо разделяемого heap'а.
+    ssao_vs: Option<ShaderBlob>,
+    ssao_ps: Option<ShaderBlob>,
+    ssao_root_signature: Option<ID3D12RootSignature>,
+    ssao_pipeline_state: Option<ID3D12PipelineState>,
+    ssao_texture: Option<crate::render::RenderTexture>,
+    ssao_rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    ssao_rtv_heap: Option<ID3D12DescriptorHeap>,
+    ssao_depth_srv_heap: Option<ID3D12DescriptorHeap>,
+    ssao_srv_gpu_depth: D3D12_GPU_DESCRIPTOR_HANDLE,
+    ssao_constant_buffer: Option<Buffer>,
+    /// `true` = сейчас PIXEL_SHADER_RESOURCE, `false` = сейчас
+    /// RENDER_TARGET — тот же явный трекер, что и `volumetric_is_srv`.
+    ssao_is_srv: bool,
 
     /// ДОБАВЛЕНО (World Streaming — подключение .alworld к движку):
     /// текущий загруженный мир (метаданные — где какие чанки, размер

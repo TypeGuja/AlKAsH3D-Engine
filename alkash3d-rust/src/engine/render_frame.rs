@@ -1020,23 +1020,150 @@ impl AlkashEngine {
 
                 cmd_list.DrawInstanced(3, 1, 0, 0);
 
-                let depth_back = Self::transition_barrier(
-                    &renderer.depth_stencil.resource,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                );
-                let vol_to_srv = Self::transition_barrier(
+                // ИЗМЕНЕНО (максимальная графика — SSAO): раньше здесь
+                // сразу же возвращали `depth_stencil` обратно в
+                // DEPTH_WRITE — теперь этот переход отложен ДО ПОСЛЕ
+                // SSAO-прохода ниже (он делит с volumetric ОДНО и то же
+                // "depth уже SRV" окно, см. комментарий там), чтобы не
+                // переключать состояние depth_stencil туда-обратно дважды
+                // за кадр. Здесь возвращаем в PSR только сам
+                // `volumetric_texture` — он больше никому в этом кадре не
+                // нужен как RTV.
+                let vol_to_srv = [Self::transition_barrier(
                     &volumetric_texture.resource,
                     D3D12_RESOURCE_STATE_RENDER_TARGET,
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                )];
+                cmd_list.ResourceBarrier(&vol_to_srv);
+                for b in vol_to_srv {
+                    Self::drop_transition_barrier(b);
+                }
+                self.volumetric_is_srv = true;
+            }
+
+            // ДОБАВЛЕНО (максимальная графика — SSAO, см.
+            // engine/pipeline_ssao.rs): делит с volumetric-блоком выше ОДНО
+            // и то же окно "depth_stencil уже PIXEL_SHADER_RESOURCE" —
+            // depth_stencil_is_srv к этому моменту либо УЖЕ true (если
+            // volumetric-блок выше реально выполнился), либо всё ещё false
+            // (если volumetric отключён диагностикой, см.
+            // disable_volumetric_for_diagnostics) — в последнем случае SSAO
+            // сам переводит depth в SRV, как раньше это делал volumetric в
+            // одиночку.
+            if let (Some(ssao_texture), Some(ssao_depth_srv_heap), Some(ssao_cb)) = (
+                &self.ssao_texture,
+                &self.ssao_depth_srv_heap,
+                &self.ssao_constant_buffer,
+            ) {
+                let ao_width = ssao_texture.width;
+                let ao_height = ssao_texture.height;
+
+                let mut barriers = Vec::with_capacity(2);
+                if !self.depth_stencil_is_srv {
+                    barriers.push(Self::transition_barrier(
+                        &renderer.depth_stencil.resource,
+                        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    ));
+                }
+                if self.ssao_is_srv {
+                    barriers.push(Self::transition_barrier(
+                        &ssao_texture.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    ));
+                }
+                if !barriers.is_empty() {
+                    cmd_list.ResourceBarrier(&barriers);
+                    for b in barriers {
+                        Self::drop_transition_barrier(b);
+                    }
+                }
+                self.depth_stencil_is_srv = true;
+                self.ssao_is_srv = false;
+
+                let ao_viewport = D3D12_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: ao_width as f32,
+                    Height: ao_height as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                };
+                let ao_scissor = RECT {
+                    left: 0,
+                    top: 0,
+                    right: ao_width as i32,
+                    bottom: ao_height as i32,
+                };
+                cmd_list.RSSetViewports(&[ao_viewport]);
+                cmd_list.RSSetScissorRects(&[ao_scissor]);
+
+                cmd_list.OMSetRenderTargets(1, Some(&self.ssao_rtv), false, None);
+                cmd_list.SetPipelineState(Some(self.ssao_pipeline_state.as_ref().unwrap()));
+                cmd_list.SetGraphicsRootSignature(Some(self.ssao_root_signature.as_ref().unwrap()));
+                let heaps = [Some(ssao_depth_srv_heap.clone())];
+                cmd_list.SetDescriptorHeaps(&heaps);
+                cmd_list.SetGraphicsRootDescriptorTable(0, self.ssao_srv_gpu_depth);
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                let view_proj = self.camera.projection_matrix() * self.camera.view_matrix();
+                let inv_view_proj = view_proj.inverse();
+
+                #[repr(C)]
+                struct SSAOParamsGpu {
+                    view_proj: [[f32; 4]; 4],
+                    inv_view_proj: [[f32; 4]; 4],
+                    camera_pos: [f32; 3],
+                    radius: f32,
+                    bias: f32,
+                    strength: f32,
+                    _padding0: [f32; 2],
+                }
+                let params = SSAOParamsGpu {
+                    view_proj: view_proj.to_cols_array_2d(),
+                    inv_view_proj: inv_view_proj.to_cols_array_2d(),
+                    camera_pos: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
+                    radius: 0.5,
+                    bias: 0.02,
+                    strength: 1.2,
+                    _padding0: [0.0, 0.0],
+                };
+                let bytes = std::slice::from_raw_parts(
+                    &params as *const SSAOParamsGpu as *const u8,
+                    std::mem::size_of::<SSAOParamsGpu>(),
                 );
-                let barriers = [depth_back, vol_to_srv];
-                cmd_list.ResourceBarrier(&barriers);
-                for b in barriers {
+                let _ = ssao_cb.update_constant_buffer(bytes);
+                cmd_list.SetGraphicsRootConstantBufferView(1, ssao_cb.resource.GetGPUVirtualAddress());
+
+                cmd_list.DrawInstanced(3, 1, 0, 0);
+
+                let ssao_to_srv = [Self::transition_barrier(
+                    &ssao_texture.resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                )];
+                cmd_list.ResourceBarrier(&ssao_to_srv);
+                for b in ssao_to_srv {
+                    Self::drop_transition_barrier(b);
+                }
+                self.ssao_is_srv = true;
+            }
+
+            // Оба прохода выше (volumetric/SSAO) закончили читать depth —
+            // возвращаем его в DEPTH_WRITE ОДИН раз (а не дважды за кадр),
+            // если он реально был переведён в SRV хотя бы одним из них.
+            if self.depth_stencil_is_srv {
+                let depth_back = [Self::transition_barrier(
+                    &renderer.depth_stencil.resource,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                )];
+                cmd_list.ResourceBarrier(&depth_back);
+                for b in depth_back {
                     Self::drop_transition_barrier(b);
                 }
                 self.depth_stencil_is_srv = false;
-                self.volumetric_is_srv = true;
             }
 
             if let (Some(bloom_a), Some(bloom_b), Some(bloom_srv_heap)) =

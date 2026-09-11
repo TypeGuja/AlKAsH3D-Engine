@@ -350,7 +350,16 @@ impl AlkashEngine {
             if let Err(e) = self.create_volumetric_resources() {
                 eprintln!("[ENGINE] WARNING: не удалось пересоздать volumetric-ресурсы после ресайза: {:?}", e);
             }
-            println!("[ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric)");
+            // ДОБАВЛЕНО (максимальная графика — SSAO): та же ловушка, что и
+            // у depth SRV/bloom/volumetric выше (см. подробный комментарий
+            // над этим блоком про воспроизведённый DXGI_ERROR_DEVICE_HUNG) —
+            // `ssao_texture`/её depth SRV — тоже size-dependent ресурсы,
+            // созданные под старый размер renderer'а. Без пересоздания SSAO
+            // сэмплировал бы SRV уже уничтоженного depth-таргета.
+            if let Err(e) = self.create_ssao_resources() {
+                eprintln!("[ENGINE] WARNING: не удалось пересоздать SSAO-ресурсы после ресайза: {:?}", e);
+            }
+            println!("[ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric + SSAO)");
         }
 
         // Регистрация bloom-таргета в heap'е рендерера (слот 1, откуда его
