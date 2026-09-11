@@ -655,13 +655,23 @@ impl AlkashEngine {
             ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
         };
 
+        // ИЗМЕНЕНО (максимальная графика — анизотропная фильтрация):
+        // раньше был обычный трилинейный фильтр — текстуры земли/дороги,
+        // видимые под острым углом (главный случай, где это вообще
+        // заметно — плоскости пола/двора, уходящие к горизонту), мылились
+        // сильнее, чем нужно. 16x — максимум, который гарантированно
+        // поддерживает любое D3D12-совместимое железо (FEATURE_LEVEL_11_0+
+        // требует минимум 16x у ANISOTROPIC), дороже линейной фильтрации
+        // не по числу текселей на пиксель, а по числу samples ПРИ
+        // сэмплировании под углом — на прямой взгляд сверху вниз (как у
+        // MinLOD/MaxLOD выше) практически бесплатно.
         let material_sampler = D3D12_STATIC_SAMPLER_DESC {
-            Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            Filter: D3D12_FILTER_ANISOTROPIC,
             AddressU: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
             AddressV: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
             AddressW: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
             MipLODBias: 0.0,
-            MaxAnisotropy: 1,
+            MaxAnisotropy: 16,
             ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
             BorderColor: D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
             MinLOD: 0.0,
