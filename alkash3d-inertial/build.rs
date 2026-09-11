@@ -41,6 +41,11 @@ fn main() {
         "narrow_phase.f90",
         "solver.f90",
         "kernels_optimized.f90",
+        // ДОБАВЛЕНО (полноценная физика — запрос луча против сцены): зависит
+        // только от rigid_body_mod (см. `use` в raycast.f90), поэтому может
+        // идти в любом месте списка ПОСЛЕ rigid_body.f90 — не зависит от
+        // narrow_phase/solver/kernels_optimized и не зависит от него.
+        "raycast.f90",
     ];
 
     let mut object_files = Vec::new();

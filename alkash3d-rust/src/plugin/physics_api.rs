@@ -168,6 +168,25 @@ impl Default for PlaneDesc {
     }
 }
 
+/// ДОБАВЛЕНО (полноценная физика — запрос луча против сцены): зеркало
+/// `RaycastHit` в `alkash3d-inertial/src/lib.rs` — см. там подробное
+/// обоснование. `hit == 0` означает "ничего не найдено в пределах
+/// max_dist" — остальные поля в этом случае нулевые/недостоверны.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RaycastHit {
+    pub hit: i32,
+    pub distance: f32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+    /// Стабильный handle тела — ТОЛЬКО если `is_plane == 0`, иначе `-1`.
+    pub body: i32,
+    /// Порядковый номер плоскости (см. `PhysicsAPI::add_plane`) — ТОЛЬКО
+    /// если `is_plane != 0`, иначе `-1`.
+    pub plane_index: i32,
+    pub is_plane: i32,
+}
+
 /// Текущее состояние соединения — см. `PhysicsAPI::get_constraint`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -273,6 +292,15 @@ pub struct PhysicsAPI {
     /// рождает и линейное ускорение, и момент. Ключевая функция для
     /// честной подвески. Будит тело. No-op для static/несуществующего id.
     pub apply_force_at_point: extern "C" fn(instance: *mut c_void, id: i32, force: *const f32, world_point: *const f32),
+    // ДОБАВЛЕНО (полноценная физика — запрос луча против сцены): строго в
+    // конец, ЗЕРКАЛЬНО тому же полю (в том же порядке), что дописано в
+    // конец `PhysicsAPI` в `alkash3d-inertial/src/lib.rs`.
+    /// Ближайшее пересечение луча `origin` + `t * normalize(direction)`,
+    /// `t` в `[0, max_dist]`, со ВСЕМИ живыми телами и статичными
+    /// плоскостями сцены. `direction` не обязан быть нормированным заранее.
+    /// `exclude_body` — handle тела, которое нужно пропустить (`-1` — не
+    /// исключать никого).
+    pub raycast: extern "C" fn(instance: *mut c_void, origin: *const f32, direction: *const f32, max_dist: f32, exclude_body: i32) -> RaycastHit,
 }
 
 /// Статистика физики

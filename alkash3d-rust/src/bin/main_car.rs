@@ -27,7 +27,7 @@ use alkash3d_rs::math::{Quat, Vec3};
 use alkash3d_rs::scene::EntityId;
 use alkash3d_rs::car_sim::WallAabb;
 use alkash3d_rs::car_physics::{CarInput, CarPhysicsParams, CarPhysicsState};
-use alkash3d_rs::{proc_textures, PhysicsBody, PhysicsConfig};
+use alkash3d_rs::{proc_textures, PhysicsBody, PhysicsConfig, PlaneDesc};
 use std::f32::consts::FRAC_PI_2;
 use std::time::Instant;
 
@@ -362,6 +362,24 @@ fn setup_barrel_physics(engine: &mut AlkashEngine) {
         return;
     }
     println!("[MAIN_CAR] ✓ Inertial loaded");
+
+    // ДОБАВЛЕНО (полноценная физика — запрос луча против сцены, см.
+    // `car_physics.rs::step`/`AlkashEngine::physics_raycast`): до этого
+    // земля двора была ЧИСТО визуальным мешем (`setup_ground` выше) — ни
+    // один физический raycast её бы не увидел, подвеска машины опиралась
+    // ТОЛЬКО на жёстко зашитый `GROUND_Y`. Бесконечная полупространственная
+    // плоскость (см. `PlaneDesc`) покрывает ВЕСЬ двор одним статичным
+    // коллайдером — в отличие от сеточного "пола" из сфер под бочками ниже
+    // (`BARREL_FLOOR_HALF` — маленькая локальная зона, спроектированная
+    // под конкретно бочки, а не под весь мир, по которому ездит машина).
+    if engine.add_physics_plane(&PlaneDesc {
+        normal: [0.0, 1.0, 0.0],
+        point: [0.0, GROUND_Y, 0.0],
+        friction: 0.8,
+        restitution: 0.0,
+    }).is_none() {
+        eprintln!("[MAIN_CAR] WARNING: не удалось добавить физическую плоскость земли (вырожденная нормаль?) — подвеска машины откатится на приближение GROUND_Y");
+    }
 
     const SPACING: f32 = 0.9; // < 2*IMPLICIT_RADIUS(0.5) — с нахлёстом, без щелей
     let steps = (2.0 * BARREL_FLOOR_HALF / SPACING) as i32;

@@ -217,6 +217,43 @@ impl Default for PlaneDesc {
     }
 }
 
+/// ДОБАВЛЕНО (полноценная физика — запрос луча против сцены, см.
+/// `kernels/raycast.f90`): результат `PhysicsAPI::raycast` — ближайшее
+/// пересечение луча с ЛЮБЫМ живым телом (сфера/коробка, с учётом
+/// ориентации) или статичной плоскостью. `hit == 0` означает "ничего не
+/// найдено в пределах `max_dist`" — остальные поля в этом случае нулевые,
+/// на них нельзя полагаться (тот же принцип, что у `ConstraintInfo` с
+/// `is_broken=0`/`body_a=body_b=-1` при ненайденном handle'е).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RaycastHit {
+    pub hit: i32,
+    pub distance: f32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+    /// Стабильный handle тела (см. `add_body`/`remove_body`) — ТОЛЬКО если
+    /// `is_plane == 0`, иначе `-1`.
+    pub body: i32,
+    /// Порядковый номер плоскости (см. `PhysicsAPI::add_plane`) — ТОЛЬКО
+    /// если `is_plane != 0`, иначе `-1`.
+    pub plane_index: i32,
+    pub is_plane: i32,
+}
+
+impl Default for RaycastHit {
+    fn default() -> Self {
+        Self {
+            hit: 0,
+            distance: 0.0,
+            point: [0.0; 3],
+            normal: [0.0; 3],
+            body: -1,
+            plane_index: -1,
+            is_plane: 0,
+        }
+    }
+}
+
 /// Текущее состояние соединения, возвращаемое `PhysicsAPI::get_constraint`
 /// — для отладочной визуализации и для опроса `is_broken` вручную (в
 /// дополнение к событийному списку `get_broken_constraints`).
@@ -363,6 +400,19 @@ pub struct PhysicsAPI {
     /// колесе применяется именно в точке колеса, не в центре кузова).
     /// Будит тело. No-op для static/несуществующего id.
     pub apply_force_at_point: extern "C" fn(instance: *mut c_void, id: i32, force: *const f32, world_point: *const f32),
+    // ДОБАВЛЕНО (полноценная физика — запрос луча против сцены): строго в
+    // конец, тот же append-only принцип, что и у всех предыдущих полей.
+    // СИММЕТРИЧНО обнови `alkash3d-rust/src/plugin/physics_api.rs` (тем же
+    // полем, в том же порядке) — см. комментарий в шапке того файла.
+    /// Ближайшее пересечение луча `origin` + `t * normalize(direction)`,
+    /// `t` в `[0, max_dist]`, со ВСЕМИ живыми телами (сфера/коробка) и
+    /// статичными плоскостями сцены. `direction` НЕ обязан быть
+    /// нормированным заранее — нормируется на стороне плагина.
+    /// `exclude_body` — handle тела, которое нужно пропустить (`-1` — не
+    /// исключать никого; см. подробное обоснование "почему это нужно" у
+    /// `PhysicsState::raycast` в этом файле). См. `RaycastHit` за
+    /// подробностями результата.
+    pub raycast: extern "C" fn(instance: *mut c_void, origin: *const f32, direction: *const f32, max_dist: f32, exclude_body: i32) -> RaycastHit,
 }
 
 #[repr(u32)]
@@ -850,6 +900,99 @@ impl PhysicsState {
                     }
                 }
             }
+        }
+    }
+
+    /// ДОБАВЛЕНО (полноценная физика — запрос луча против сцены, см.
+    /// `kernels/raycast.f90`): честный raycast против ВСЕХ живых тел
+    /// (сфер и коробок, с учётом текущей ориентации) и статичных
+    /// плоскостей. Нормирует `direction` здесь (не в Fortran), чтобы
+    /// `hit.distance` была честной метрической длиной для любого
+    /// ненулевого вектора направления, переданного вызывающей стороной —
+    /// игровой код не обязан помнить о нормализации сам.
+    ///
+    /// `exclude_body` — стабильный handle тела, которое нужно пропустить
+    /// (например собственный кузов машины при raycast'е подвески вниз —
+    /// иначе точка крепления колеса, лежащая на границе/внутри box-
+    /// коллайдера кузова, почти всегда даёт "попадание в самого себя" на
+    /// нулевой/крошечной дистанции вместо честного попадания в землю) —
+    /// `None` — не исключать никого.
+    fn raycast(&self, origin: [f32; 3], direction: [f32; 3], max_dist: f32, exclude_body: Option<i32>) -> RaycastHit {
+        let len_sq: f32 = direction.iter().map(|c| c * c).sum();
+        let nothing_to_hit = self.solver.bodies.is_empty() && self.planes.is_empty();
+        if len_sq < 1.0e-12 || max_dist <= 0.0 || nothing_to_hit {
+            return RaycastHit::default();
+        }
+        let inv_len = len_sq.sqrt().recip();
+        let dir = [direction[0] * inv_len, direction[1] * inv_len, direction[2] * inv_len];
+        // Handle -> индекс в солвере (та же индирекция, что везде — индексы
+        // двигаются при `remove_body`, handle'ы стабильны), `-1` если
+        // handle не найден (тело уже удалено) ИЛИ исключение не запрошено.
+        let exclude_index = exclude_body
+            .and_then(|h| self.handle_to_index.get(&h))
+            .map(|&idx| idx as i32)
+            .unwrap_or(-1);
+
+        // Fortran-сторона ожидает плоские массивы 3×n_planes (см. `plane_c`-
+        // подобные параметры `raycast_query` в raycast.f90) — собираем их
+        // здесь по требованию, а не храним `self.planes` в этом формате
+        // постоянно (текущая форма — `PlaneRecord` — удобнее для
+        // `resolve_plane_contacts` выше, которому плоские массивы не нужны).
+        let mut plane_normals = Vec::with_capacity(self.planes.len() * 3);
+        let mut plane_points = Vec::with_capacity(self.planes.len() * 3);
+        for p in &self.planes {
+            plane_normals.extend_from_slice(&p.normal);
+            plane_points.extend_from_slice(&p.point);
+        }
+
+        let mut hit_found: i32 = 0;
+        let mut hit_distance: f32 = 0.0;
+        let mut hit_point = [0.0f32; 3];
+        let mut hit_normal = [0.0f32; 3];
+        let mut hit_index: i32 = -1;
+        let mut hit_is_plane: i32 = 0;
+
+        unsafe {
+            ffi::raycast_query(
+                self.solver.bodies.as_ptr(),
+                self.solver.bodies.len() as i32,
+                plane_normals.as_ptr(),
+                plane_points.as_ptr(),
+                self.planes.len() as i32,
+                origin.as_ptr(),
+                dir.as_ptr(),
+                max_dist,
+                exclude_index,
+                &mut hit_found,
+                &mut hit_distance,
+                hit_point.as_mut_ptr(),
+                hit_normal.as_mut_ptr(),
+                &mut hit_index,
+                &mut hit_is_plane,
+            );
+        }
+
+        if hit_found == 0 {
+            return RaycastHit::default();
+        }
+
+        RaycastHit {
+            hit: 1,
+            distance: hit_distance,
+            point: hit_point,
+            normal: hit_normal,
+            // `hit_index` — 0-based ИНДЕКС В СОЛВЕРЕ (не handle) при
+            // попадании в тело — переводим в стабильный handle тем же
+            // способом, что `get_body`/`remove_body` (`index_to_handle`),
+            // потому что вызывающая сторона (движок) знает тела только по
+            // handle'ам, а индексы двигаются при `remove_body` (swap_remove).
+            body: if hit_is_plane == 0 {
+                self.index_to_handle.get(hit_index as usize).copied().unwrap_or(-1)
+            } else {
+                -1
+            },
+            plane_index: if hit_is_plane != 0 { hit_index } else { -1 },
+            is_plane: hit_is_plane,
         }
     }
 
@@ -1638,6 +1781,20 @@ extern "C" fn api_add_plane(instance: *mut c_void, desc: *const PlaneDesc) -> i3
     }
 }
 
+extern "C" fn api_raycast(instance: *mut c_void, origin: *const f32, direction: *const f32, max_dist: f32, exclude_body: i32) -> RaycastHit {
+    if instance.is_null() || origin.is_null() || direction.is_null() {
+        return RaycastHit::default();
+    }
+    let inst = unsafe { &*(instance as *const PhysicsInstance) };
+    let origin = unsafe { read_vec3(origin) };
+    let direction = unsafe { read_vec3(direction) };
+    let exclude_body = if exclude_body >= 0 { Some(exclude_body) } else { None };
+    match inst.state.lock() {
+        Ok(state) => state.raycast(origin, direction, max_dist, exclude_body),
+        Err(_) => RaycastHit::default(),
+    }
+}
+
 static PHYSICS_API: PhysicsAPI = PhysicsAPI {
     add_body: api_add_body,
     remove_body: api_remove_body,
@@ -1661,6 +1818,7 @@ static PHYSICS_API: PhysicsAPI = PhysicsAPI {
     add_plane: api_add_plane,
     apply_torque: api_apply_torque,
     apply_force_at_point: api_apply_force_at_point,
+    raycast: api_raycast,
 };
 
 #[no_mangle]

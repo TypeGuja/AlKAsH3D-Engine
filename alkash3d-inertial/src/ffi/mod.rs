@@ -279,6 +279,36 @@ extern "C" {
         center: *mut f32,
         total_mass: *mut f32,
     );
+
+    // ===================================================================
+    // RAYCAST (запрос луча против сцены — см. kernels/raycast.f90)
+    // ===================================================================
+    // ДОБАВЛЕНО (полноценная физика): честный raycast против сфер, коробок
+    // (с учётом ориентации) и статичных полуплоскостей. `plane_normals`/
+    // `plane_points` — плоские массивы 3×n_planes (см. `plane_c` в
+    // raycast.f90 — там это `real(c_float) :: plane_normals(3, *)`,
+    // Fortran допускает assumed-size массив с явной ведущей размерностью).
+    // `direction` ОБЯЗАН быть нормированным — вызывающая (Rust) сторона
+    // отвечает за это (см. `PhysicsState::raycast` в lib.rs). `exclude_index`
+    // — 0-based индекс тела, которое надо пропустить (`-1` — никого не
+    // исключать), см. подробное обоснование в raycast.f90.
+    pub fn raycast_query(
+        bodies: *const FortranRigidBody,
+        n_bodies: i32,
+        plane_normals: *const f32,
+        plane_points: *const f32,
+        n_planes: i32,
+        origin: *const f32,
+        direction: *const f32,
+        max_dist: f32,
+        exclude_index: i32,
+        hit_found: *mut i32,
+        hit_distance: *mut f32,
+        hit_point: *mut f32,
+        hit_normal: *mut f32,
+        hit_index: *mut i32,
+        hit_is_plane: *mut i32,
+    );
 }
 
 /// Обёртка для безопасного вызова Fortran

@@ -9,7 +9,7 @@
 
 use windows::core::*;
 use windows::Win32::Foundation::*;
-use crate::plugin::{PhysicsPlugin, LightPlugin, PhysicsConfig, LightConfig, GPULight, PhysicsBody, PhysicsContact, PhysicsStats, ConstraintDesc, ConstraintInfo, PlaneDesc, joint_type};
+use crate::plugin::{PhysicsPlugin, LightPlugin, PhysicsConfig, LightConfig, GPULight, PhysicsBody, PhysicsContact, PhysicsStats, ConstraintDesc, ConstraintInfo, PlaneDesc, RaycastHit, joint_type};
 use crate::math::Vec3;
 use crate::audio::AudioEngine;
 use super::{AlkashEngine, CarHandle, quaternion_to_euler_zyx};
@@ -501,6 +501,18 @@ impl AlkashEngine {
         self.physics.as_ref().map(|p| p.get_contacts()).unwrap_or(&[])
     }
 
+    /// ДОБАВЛЕНО (полноценная физика — запрос луча против сцены нуждается
+    /// в РЕАЛЬНОЙ физической земле, не только визуальном меше): обёртка
+    /// над `PhysicsPlugin::add_plane` — статичный полупространственный
+    /// коллайдер (обычно пол/земля), см. `PlaneDesc` за подробностями (в
+    /// т.ч. почему это годится только для бесконечного пола, не для стен
+    /// ограниченного размера). `None`, если физика не инициализирована ИЛИ
+    /// `normal` вырожден — тот же принцип, что и у прочих методов этого
+    /// файла.
+    pub fn add_physics_plane(&mut self, desc: &PlaneDesc) -> Option<i32> {
+        self.physics.as_mut()?.add_plane(desc)
+    }
+
     /// ДОБАВЛЕНО (разборка машины на детали — джойнты/constraint API):
     /// сырой доступ к `PhysicsPlugin::add_constraint` для случаев, не
     /// покрытых удобными `add_ball_joint`/`add_hinge_joint`/
@@ -681,5 +693,21 @@ impl AlkashEngine {
         if let Some(p) = self.physics.as_mut() {
             p.apply_force_at_point(id, force, world_point);
         }
+    }
+
+    /// ДОБАВЛЕНО (полноценная физика — запрос луча против сцены): честный
+    /// raycast против ВСЕХ живых физических тел и статичных плоскостей
+    /// (см. `RaycastHit`/`kernels/raycast.f90` в `alkash3d-inertial`) —
+    /// ключевая функция для подвески машины (`car_physics.rs`), которая
+    /// раньше была вынуждена считать землю жёстко зашитой плоской высотой
+    /// (`ground_y`), полностью игнорируя реальную физическую геометрию.
+    /// `None`, если физика не инициализирована ИЛИ луч ничего не задел в
+    /// пределах `max_dist` (тот же принцип деградации, что и у прочих
+    /// методов этого файла) — вызывающий код сам решает, чем заменить
+    /// отсутствие попадания (например, старым флэт-грунтом как fallback).
+    /// `exclude_body` — handle тела, которое нужно пропустить (обычно
+    /// собственное тело вызывающего — см. `PhysicsPlugin::raycast`).
+    pub fn physics_raycast(&self, origin: [f32; 3], direction: [f32; 3], max_dist: f32, exclude_body: Option<i32>) -> Option<RaycastHit> {
+        self.physics.as_ref()?.raycast(origin, direction, max_dist, exclude_body)
     }
 }

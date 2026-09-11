@@ -199,6 +199,19 @@ impl PhysicsPlugin {
     pub fn apply_force_at_point(&mut self, id: i32, force: [f32; 3], world_point: [f32; 3]) {
         (self.api.apply_force_at_point)(self.instance, id, force.as_ptr(), world_point.as_ptr());
     }
+
+    /// ДОБАВЛЕНО (полноценная физика — запрос луча против сцены): обёртка
+    /// над `PhysicsAPI::raycast` — превращает `RaycastHit::hit == 0` в
+    /// `None`, тот же принцип, что уже применяют `add_constraint`/
+    /// `add_plane` для отрицательного id. `direction` не обязан быть
+    /// нормированным — плагин нормирует его сам. `exclude_body` — handle
+    /// тела, которое нужно пропустить (см. `RaycastHit`/`PhysicsAPI::raycast`
+    /// за подробным обоснованием — как правило, это собственное тело
+    /// вызывающего, например кузов машины при raycast'е её подвески).
+    pub fn raycast(&self, origin: [f32; 3], direction: [f32; 3], max_dist: f32, exclude_body: Option<i32>) -> Option<RaycastHit> {
+        let hit = (self.api.raycast)(self.instance, origin.as_ptr(), direction.as_ptr(), max_dist, exclude_body.unwrap_or(-1));
+        if hit.hit != 0 { Some(hit) } else { None }
+    }
 }
 
 pub struct LightPlugin {
