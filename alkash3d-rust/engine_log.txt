@@ -10,7 +10,7 @@ Alkash3D Engine v0.1.0
   ESC     - выход
 ==========================================
 [ENGINE] Initializing Alkash3D Engine v0.1.0...
-[ENGINE] Window created: HWND=0x5C0BCC
+[ENGINE] Window created: HWND=0xE08F8
 [ENGINE] ✓ Window created
 [DEVICE] ========== CREATING D3D12 DEVICE ==========
 [DEVICE] ✓ D3D12 debug layer enabled
@@ -34,7 +34,7 @@ Alkash3D Engine v0.1.0
 [QUEUE] ✓ Command queue created
 [ENGINE] ✓ Command queue created
 [SWAPCHAIN] ========== CREATING SWAP CHAIN ==========
-[SWAPCHAIN] HWND: 0x5C0BCC, Width: 1366, Height: 768, Buffer count: 2
+[SWAPCHAIN] HWND: 0xE08F8, Width: 1366, Height: 768, Buffer count: 2
 [SWAPCHAIN] Command queue obtained
 [SWAPCHAIN] Creating DXGI factory...
 [SWAPCHAIN] DXGI factory created
@@ -72,17 +72,19 @@ Alkash3D Engine v0.1.0
 [RENDERER] Back buffer 1 resource obtained
 [RENDERER] ✓ RTV 1 created
 [RENDERER] Creating depth stencil...
-[RENDERER] Creating depth stencil: 1366x768
+[RENDERER] Creating depth stencil: 1366x768 (4x MSAA)
 [RENDERER] ✓ Depth stencil created
 [RENDERER] ✓ Depth stencil created
 [RENDERER] Creating HDR target...
-[RENDERER] Creating HDR render target: 1366x768
+[RENDERER] Creating HDR render target: 1366x768 (4x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
+[RENDERER] Creating HDR render target: 1366x768 (1x MSAA)
+[RENDERER] ✓ HDR render target created
 [HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
-[RENDERER] ✓ HDR target + RTV + SRV created
+[RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created
 [RENDERER] ✓ Renderer created successfully
 [ENGINE] ✓ Renderer created
 [SHADER] Compiling vs_5_0 - entry: main
@@ -105,11 +107,11 @@ Alkash3D Engine v0.1.0
 [PSO] Blend state created
 [PSO] Creating depth stencil state (ENABLED)...
 [PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL
-[PSO] Root signature: 0x2d0c2feef8
+[PSO] Root signature: 0x40faeff0f0
 [PSO] Pipeline state descriptor created
 [PSO] Calling CreateGraphicsPipelineState...
-[PSO] ✓ PSO created successfully! PSO: 0x2d0c2fd318
-[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target)
+[PSO] ✓ PSO created successfully! PSO: 0x40faefd548
+[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, 4x MSAA)
 [BUFFER] Creating constant buffer ARRAY: 256 slots x 768 bytes = 196608 bytes total
 [BUFFER] Creating constant buffer, size: 196608 bytes
 [BUFFER] Constant buffer created successfully
@@ -118,7 +120,7 @@ Alkash3D Engine v0.1.0
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 772 bytes
 [SHADER] Compiling ps_5_0 - entry: main
-[SHADER] ✓ Compiled successfully, 1640 bytes
+[SHADER] ✓ Compiled successfully, 1768 bytes
 [ENGINE] ✓ Tonemap shaders compiled (ACES + экспозиция)
 [ENGINE] ✓ Tonemap root signature created (SRV table t0 + static sampler s0 + CBV b0)
 [ENGINE] ✓ Tonemap pipeline state created
@@ -132,9 +134,9 @@ Alkash3D Engine v0.1.0
 [ENGINE] ✓ Bloom shaders compiled (extract + separable Gaussian blur)
 [ENGINE] ✓ Bloom root signature created (SRV table t0 + static sampler s0 + CBV b0)
 [ENGINE] ✓ Bloom pipeline states created (extract + blur)
-[RENDERER] Creating HDR render target: 683x384
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[RENDERER] Creating HDR render target: 683x384
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
@@ -165,11 +167,11 @@ Alkash3D Engine v0.1.0
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 772 bytes
 [SHADER] Compiling ps_5_0 - entry: main
-[SHADER] ✓ Compiled successfully, 4348 bytes
+[SHADER] ✓ Compiled successfully, 4428 bytes
 [ENGINE] ✓ Volumetric shaders compiled (screen-space raymarch, 24 шагов)
 [ENGINE] ✓ Volumetric root signature created (SRV table t0/t1 + point sampler s0 + comparison sampler s1 + CBV b0)
 [ENGINE] ✓ Volumetric pipeline state created
-[RENDERER] Creating HDR render target: 683x384
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -178,6 +180,22 @@ Alkash3D Engine v0.1.0
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ Volumetric resources created: 683x384 half-res target
+[SHADER] Compiling vs_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 772 bytes
+[SHADER] Compiling ps_5_0 - entry: main
+[SHADER] ✓ Compiled successfully, 26500 bytes
+[ENGINE] ✓ SSAO shaders compiled (12 сэмплов, без normal G-buffer/blur-прохода)
+[ENGINE] ✓ SSAO root signature created (SRV table t0 + point sampler s0 + CBV b0)
+[ENGINE] ✓ SSAO pipeline state created
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[BUFFER] Creating constant buffer, size: 256 bytes
+[BUFFER] Constant buffer created successfully
+[ENGINE] ✓ SSAO resources created: 683x384 half-res target
 [ENGINE] Handling resize: 1350x729
 [RENDERER] ========== CREATING RENDERER ==========
 [RENDERER] Width: 1350, Height: 729, Buffer count: 2
@@ -197,25 +215,27 @@ Alkash3D Engine v0.1.0
 [RENDERER] Back buffer 1 resource obtained
 [RENDERER] ✓ RTV 1 created
 [RENDERER] Creating depth stencil...
-[RENDERER] Creating depth stencil: 1350x729
+[RENDERER] Creating depth stencil: 1350x729 (4x MSAA)
 [RENDERER] ✓ Depth stencil created
 [RENDERER] ✓ Depth stencil created
 [RENDERER] Creating HDR target...
-[RENDERER] Creating HDR render target: 1350x729
+[RENDERER] Creating HDR render target: 1350x729 (4x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
+[RENDERER] Creating HDR render target: 1350x729 (1x MSAA)
+[RENDERER] ✓ HDR render target created
 [HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
-[RENDERER] ✓ HDR target + RTV + SRV created
+[RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created
 [RENDERER] ✓ Renderer created successfully
 [ENGINE] ✓ Renderer recreated after resize: 1350x729
 [HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
 [ENGINE] ✓ Depth SRV created (для volumetric raymarch)
-[RENDERER] Creating HDR render target: 675x364
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[RENDERER] Creating HDR render target: 675x364
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
@@ -224,7 +244,7 @@ Alkash3D Engine v0.1.0
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ Bloom resources created: 675x364 half-res ping-pong targets
-[RENDERER] Creating HDR render target: 675x364
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -233,7 +253,14 @@ Alkash3D Engine v0.1.0
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ Volumetric resources created: 675x364 half-res target
-[ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric)
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] ✓ RTV heap created
+[HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] ✓ SSAO resources created: 675x364 half-res target
+[ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric + SSAO)
 [ENGINE] ✓ Bloom SRV re-registered in new srv_uav_heap after resize
 [ENGINE] ✓ Initialization complete
 
@@ -247,6 +274,8 @@ Alkash3D Engine v0.1.0
 [MAIN] Setting up scene...
 [ENGINE] Mesh added, total meshes: 1
 [ENGINE] Mesh added, total meshes: 2
+[ENGINE] ✓ LOD-группа добавлена для меша #0
+[ENGINE] Mesh added, total meshes: 3
 ✅ Scene ready: 945 плиток пола + 20 столбов-фонарей (965 ECS-сущностей всего)
 
 [MAIN] Loading Inertial physics plugin...
@@ -254,7 +283,7 @@ Alkash3D Engine v0.1.0
 [ENGINE] ✓ Physics plugin loaded from '../alkash3d-inertial/target/x86_64-pc-windows-gnu/release/inertial.dll'
 [MAIN] ✓ Inertial loaded
 [MAIN] ✓ Физический пол: 116 опорных сфер вдоль улицы
-[ENGINE] Mesh added, total meshes: 3
+[ENGINE] Mesh added, total meshes: 4
 [MAIN] ✓ Физика готова: пол + 5 падающих сфер
 [MAIN] ✓ Опора под demo_world объектом создана (32.0, 0.0, 32.0)
 
@@ -271,20 +300,25 @@ Alkash3D Engine v0.1.0
 [MAIN] ✓ 3D-гудение фонаря запущено (позиция x=-50.0)
 
 [MAIN] Setting up scripting (Python/Lua/Native)...
-[ENGINE] Mesh added, total meshes: 4
-[MAIN] ✓ Python-скрипт 'examples_scripts/bobber.py' загружен (жёлтый куб)
 [ENGINE] Mesh added, total meshes: 5
+[MAIN] ✓ Python-скрипт 'examples_scripts/bobber.py' загружен (жёлтый куб)
+[ENGINE] Mesh added, total meshes: 6
 [ENGINE] '../alkash3d-luascript/target/release/alkash3d_luascript.dll' не найден, пробую запасной путь '../alkash3d-luascript/target/release\deps\alkash3d_luascript.dll' (Cargo не скопировал .dll из deps/)
 [ENGINE] Failed to load Lua script plugin '../alkash3d-luascript/target/release\deps\alkash3d_luascript.dll': Plugin not found: ../alkash3d-luascript/target/release\deps\alkash3d_luascript.dll
-[MAIN] WARNING: Lua-плагин '../alkash3d-luascript/target/release/alkash3d_luascript.dll' не загружен: Error { code: HRESULT(0x00000001), message: "Неверная функция." }[ENGINE] Mesh added, total meshes: 6
- — проверь, что alkash3d-luascript собран (cargo build --release из папки alkash3d-luascript)
+[MAIN] WARNING: Lua-плагин '../alkash3d-luascript/target/release/alkash3d_luascript.dll' не загружен: Error { code: HRESULT(0x00000001), message: "Неверная функция." } — проверь, что alkash3d-luascript собран (cargo build --release из папки alkash3d-luascript)
+[ENGINE] Mesh added, total meshes: 7
 [ENGINE] '../alkash3d-examplescript/target/release/alkash3d_examplescript.dll' не найден, пробую запасной путь '../alkash3d-examplescript/target/release\deps\alkash3d_examplescript.dll' (Cargo не скопировал .dll из deps/)
 [ENGINE] Failed to load script plugin '../alkash3d-examplescript/target/release\deps\alkash3d_examplescript.dll': Plugin not found: ../alkash3d-examplescript/target/release\deps\alkash3d_examplescript.dll
-
+[MAIN] WARNING: Native-плагин '../alkash3d-examplescript/target/release/alkash3d_examplescript.dll' не загружен: Error { code
 === RENDER LOOP STARTING ===
 
-[MAIN] WARNING: Native-плагин '../alkash3d-examplescript/target/release/alkash3d_examplescript.dll' не загружен: Error { code: HRESULT(0x00000001), message: "Неверная функция." } — проверь, что alkash3d-examplescript собран (cargo build --release из папки alkash3d-examplescript)
+: HRESULT(0x00000001), message: "Неверная функция." } — проверь, что alkash3d-examplescript собран (cargo build --release из папки alkash3d-examplescript)
 [ENGINE] World streaming: +32 чанков поставлено в очередь загрузки, +0 в очередь выгрузки
+[ENGINE] WARNING: пул фоновой загрузки занят (CPU-бюджет исчерпан) — чанк 48 загружается синхронно
+[ENGINE] Mesh added, total meshes: 8
+[ENGINE] WARNING: пул фоновой загрузки занят (CPU-бюджет исчерпан) — чанк 37 загружается синхронно
+[ENGINE] WARNING: пул фоновой загрузки занят (CPU-бюджет исчерпан) — чанк 23 загружается синхронно
+[ENGINE] WARNING: пул фоновой загрузки занят (CPU-бюджет исчерпан) — чанк 13 загружается синхронно
 [BUFFER] Creating constant buffer ARRAY: 24576 slots x 256 bytes = 6291456 bytes total
 [BUFFER] Creating constant buffer, size: 6291456 bytes
 [BUFFER] Constant buffer created successfully
@@ -307,1256 +341,193 @@ Alkash3D Engine v0.1.0
 [ENGINE] Constant buffer (re)allocated: 1024 slots/кадр x2 = 2048 слотов
 *** FIRST FRAME COMPLETED ***
 *** Camera pos: (-8.00, 1.60, 1.00) ***
-*** 973 ECS entities rendering ***
+*** 977 ECS entities rendering ***
 
-[ENGINE] Mesh added, total meshes: 7
-[INFO] Frame 54 | FPS: 53.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=5.0ms | worst render_frame()=29.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=0 pairs=74 | broad=0.01ms narrow=0.00ms solver=0.96ms
-[UPDATE-BREAKDOWN] physics=2.4ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.6ms light_cull=1.8ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.09,1.55,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-6.61,1.11,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.00,1.51,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.50,2.71,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.00,3.91,1.50)
-[INFO] Frame 115 | FPS: 60.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=21.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=1 pairs=76 | broad=0.02ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.38,0.92,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.26,0.98,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.13,1.71,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.91,2.03,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.68,1.44,1.50)
-[INFO] Frame 174 | FPS: 58.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=20.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.09ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.32,0.95,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.66,0.90,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.87,0.92,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.87,0.93,1.50)
-[INFO] Frame 234 | FPS: 59.2 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
+[INFO] Frame 57 | FPS: 56.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
+[TIMING] worst update()=5.7ms | worst render_frame()=47.9ms
+[PHYS-STATS] bodies=123 active=6 contacts=0 pairs=74 | broad=0.01ms narrow=0.00ms solver=0.70ms
+[UPDATE-BREAKDOWN] physics=2.2ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.9ms light_cull=2.5ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.10,1.54,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-6.61,1.10,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.00,1.54,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.50,2.74,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.00,3.94,1.50)
+[INFO] Frame 116 | FPS: 58.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
+[TIMING] worst update()=44.4ms | worst render_frame()=19.0ms
+[PHYS-STATS] bodies=123 active=6 contacts=0 pairs=76 | broad=0.02ms narrow=0.00ms solver=0.87ms
+[UPDATE-BREAKDOWN] physics=42.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.9ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.40,0.90,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.27,0.98,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.14,1.79,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.89,2.00,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.65,1.44,1.50)
+[INFO] Frame 172 | FPS: 55.3 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
+[TIMING] worst update()=30.7ms | worst render_frame()=30.9ms
+[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.15ms
+[UPDATE-BREAKDOWN] physics=15.4ms sync_physics=1.6ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.1ms world_streaming=0.0ms chunk_io=0.0ms light_cull=27.3ms audio=0.0ms
 [PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
 [PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.90,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 287 | FPS: 49.3 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=122.2ms | worst render_frame()=90.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.02ms narrow=0.00ms solver=120.99ms
-[UPDATE-BREAKDOWN] physics=121.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.87,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.91,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.87,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.87,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.91,1.50)
-[INFO] Frame 337 | FPS: 49.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=31.8ms | worst render_frame()=59.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.27ms
-[UPDATE-BREAKDOWN] physics=30.2ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.87,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.87,0.92,1.50)
-[INFO] Frame 393 | FPS: 55.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=4.2ms | worst render_frame()=21.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.34ms
-[UPDATE-BREAKDOWN] physics=3.2ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 453 | FPS: 59.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=23.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=2.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 514 | FPS: 60.5 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=20.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.19ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.66,0.90,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 574 | FPS: 59.5 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=21.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.08ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 634 | FPS: 59.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.26ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 695 | FPS: 60.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.16ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 754 | FPS: 58.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.3ms | worst render_frame()=21.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.15ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 815 | FPS: 60.5 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.2ms | worst render_frame()=20.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 872 | FPS: 56.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=6.7ms | worst render_frame()=21.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.43ms
-[UPDATE-BREAKDOWN] physics=5.2ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 912 | FPS: 39.5 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=5.6ms | worst render_frame()=44.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.12ms
-[UPDATE-BREAKDOWN] physics=4.1ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.7ms audio=0.1ms
+[PHYS-DEBUG] sphere[2] pos=(-5.57,0.93,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.81,0.92,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.81,0.95,1.50)
+[INFO] Frame 230 | FPS: 57.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
+[TIMING] worst update()=25.2ms | worst render_frame()=20.2ms
+[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.15ms
+[UPDATE-BREAKDOWN] physics=24.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=2.0ms audio=0.1ms
 [PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
 [PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
 [PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.90,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.87,0.93,1.50)
-[INFO] Frame 952 | FPS: 39.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=4.7ms | worst render_frame()=170.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=76 | broad=0.02ms narrow=0.01ms solver=1.11ms
-[UPDATE-BREAKDOWN] physics=3.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
+[INFO] Frame 266 | FPS: 35.9 | ECS entities: 1005 | cam=(-10.5,1.6,0.5)
+[TIMING] worst update()=158.0ms | worst render_frame()=44.1ms
+[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.02ms narrow=0.00ms solver=1.77ms
+[UPDATE-BREAKDOWN] physics=157.0ms sync_physics=0.0ms native_scripts=0.1ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.36,0.90,1.50)
 [PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
 [PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
 [PHYS-DEBUG] sphere[3] pos=(-3.87,0.90,1.50)
 [PHYS-DEBUG] sphere[4] pos=(-2.87,0.93,1.50)
-[INFO] Frame 1010 | FPS: 57.1 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.8ms | worst render_frame()=23.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.12ms
-[UPDATE-BREAKDOWN] physics=2.2ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.90,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1071 | FPS: 60.2 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.6ms | worst render_frame()=21.4ms
+[INFO] Frame 323 | FPS: 56.8 | ECS entities: 1005 | cam=(-10.5,1.6,0.5)
+[TIMING] worst update()=11.5ms | worst render_frame()=21.8ms
 [PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1128 | FPS: 56.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=21.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.12ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1187 | FPS: 58.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.7ms | worst render_frame()=20.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.12ms
-[UPDATE-BREAKDOWN] physics=2.1ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.5ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.8ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 1248 | FPS: 60.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=5 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.3ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 1309 | FPS: 60.3 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.7ms | worst render_frame()=19.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.07ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 1367 | FPS: 57.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.50ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1427 | FPS: 59.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.0ms | worst render_frame()=24.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.16ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1485 | FPS: 58.0 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.26ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1546 | FPS: 60.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.6ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.24ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.1ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.8ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1605 | FPS: 57.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.2ms | worst render_frame()=23.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.14ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1664 | FPS: 58.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=21.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.59ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1721 | FPS: 56.5 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.6ms | worst render_frame()=32.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=2.01ms
-[UPDATE-BREAKDOWN] physics=2.1ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.88,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.92,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.88,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.88,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.92,1.50)
-[INFO] Frame 1776 | FPS: 54.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.2ms | worst render_frame()=27.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.30ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 1835 | FPS: 58.0 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=22.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.08ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 1895 | FPS: 59.5 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.0ms | worst render_frame()=20.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.70ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.1ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 1955 | FPS: 59.5 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=23.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.15ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.7ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2014 | FPS: 59.0 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.4ms | worst render_frame()=21.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.11ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2075 | FPS: 60.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.2ms | worst render_frame()=20.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.09ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2136 | FPS: 59.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.6ms | worst render_frame()=22.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.28ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2197 | FPS: 60.1 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.22ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.1ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2257 | FPS: 59.3 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=23.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.12ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2318 | FPS: 60.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=22.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.18ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2378 | FPS: 59.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.09ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2439 | FPS: 60.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=20.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.17ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2498 | FPS: 58.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.0ms | worst render_frame()=19.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.29ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2559 | FPS: 60.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=20.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.31ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 2618 | FPS: 58.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=24.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.20ms
-[UPDATE-BREAKDOWN] physics=1.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2675 | FPS: 56.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.3ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=1.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.8ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2735 | FPS: 59.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.5ms | worst render_frame()=22.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2793 | FPS: 57.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.7ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.20ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2850 | FPS: 56.1 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=22.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.19ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2907 | FPS: 56.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.11ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 2958 | FPS: 50.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=19.2ms | worst render_frame()=49.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.35ms
-[UPDATE-BREAKDOWN] physics=17.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
+[UPDATE-BREAKDOWN] physics=10.5ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=3.0ms audio=0.0ms
 [PHYS-DEBUG] sphere[0] pos=(-8.36,0.89,1.50)
 [PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
 [PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.86,0.90,1.50)
 [PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3012 | FPS: 53.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.3ms | worst render_frame()=31.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.17ms
-[UPDATE-BREAKDOWN] physics=1.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3073 | FPS: 60.2 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.7ms | worst render_frame()=22.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.34ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3133 | FPS: 59.4 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.7ms | worst render_frame()=25.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.17ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3193 | FPS: 59.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.7ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.21ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3254 | FPS: 60.1 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.7ms | worst render_frame()=23.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.26ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3314 | FPS: 59.3 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=20.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.25ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3370 | FPS: 55.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=32.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.21ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3430 | FPS: 59.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.6ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.40ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3487 | FPS: 56.7 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.9ms | worst render_frame()=26.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.22ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3543 | FPS: 55.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.3ms | worst render_frame()=27.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.11ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.7ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3600 | FPS: 56.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=4.0ms | worst render_frame()=43.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.24ms
-[UPDATE-BREAKDOWN] physics=2.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3661 | FPS: 60.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=20.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.22ms
-[UPDATE-BREAKDOWN] physics=1.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 3722 | FPS: 60.1 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.1ms | worst render_frame()=19.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.30ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 3782 | FPS: 59.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.0ms | worst render_frame()=22.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.28ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 3841 | FPS: 58.9 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.18ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3903 | FPS: 61.2 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.6ms | worst render_frame()=19.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.35ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 3962 | FPS: 58.6 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.6ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=0.9ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4021 | FPS: 59.0 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=23.2ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=5 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.23ms
-[UPDATE-BREAKDOWN] physics=22.1ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4081 | FPS: 59.0 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=3.3ms | worst render_frame()=22.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.57ms
-[UPDATE-BREAKDOWN] physics=2.3ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4138 | FPS: 56.8 | ECS entities: 1005 | cam=(-8.0,1.6,1.0)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.08ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4199 | FPS: 60.6 | ECS entities: 1005 | cam=(-9.2,1.6,0.3)
-[TIMING] worst update()=2.8ms | worst render_frame()=19.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.31ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 4259 | FPS: 59.9 | ECS entities: 1005 | cam=(-13.0,1.6,-1.9)
-[TIMING] worst update()=3.5ms | worst render_frame()=20.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.38ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 4317 | FPS: 57.4 | ECS entities: 1005 | cam=(-10.9,1.6,-2.5)
-[TIMING] worst update()=3.0ms | worst render_frame()=21.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.68ms
-[UPDATE-BREAKDOWN] physics=1.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.5ms day_night=0.1ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4369 | FPS: 51.1 | ECS entities: 1005 | cam=(-9.8,1.6,-1.8)
-[TIMING] worst update()=16.3ms | worst render_frame()=25.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.14ms
-[UPDATE-BREAKDOWN] physics=14.6ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.5ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4422 | FPS: 52.3 | ECS entities: 1005 | cam=(-11.4,1.6,-2.5)
-[TIMING] worst update()=3.1ms | worst render_frame()=27.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.20ms
-[UPDATE-BREAKDOWN] physics=2.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4477 | FPS: 54.8 | ECS entities: 1005 | cam=(-13.3,1.6,-2.5)
-[TIMING] worst update()=3.6ms | worst render_frame()=24.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.36ms
-[UPDATE-BREAKDOWN] physics=2.1ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4534 | FPS: 56.3 | ECS entities: 1005 | cam=(-11.8,1.6,-2.1)
-[TIMING] worst update()=2.8ms | worst render_frame()=23.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.35ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 4591 | FPS: 56.9 | ECS entities: 1005 | cam=(-9.5,1.6,-2.7)
-[TIMING] worst update()=3.0ms | worst render_frame()=20.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=5 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.32ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 4647 | FPS: 55.3 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=3.3ms | worst render_frame()=21.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.30ms
-[UPDATE-BREAKDOWN] physics=1.4ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4708 | FPS: 60.2 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.6ms | worst render_frame()=20.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.26ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4769 | FPS: 60.1 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.8ms | worst render_frame()=20.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.42ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 4829 | FPS: 59.8 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=3.1ms | worst render_frame()=22.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 4890 | FPS: 60.5 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=3.8ms | worst render_frame()=22.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=2.3ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 4950 | FPS: 60.0 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.8ms | worst render_frame()=22.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.39ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 5011 | FPS: 59.9 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.7ms | worst render_frame()=21.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.60ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5072 | FPS: 59.7 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=3.2ms | worst render_frame()=20.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5131 | FPS: 58.2 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=3.4ms | worst render_frame()=23.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.14ms
-[UPDATE-BREAKDOWN] physics=2.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.8ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5192 | FPS: 60.3 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.09ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.1ms world_streaming=0.0ms chunk_io=0.0ms light_cull=0.9ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 5252 | FPS: 59.4 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.8ms | worst render_frame()=23.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.28ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5313 | FPS: 60.6 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.7ms | worst render_frame()=23.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5374 | FPS: 60.0 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.7ms | worst render_frame()=19.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.17ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=0.9ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 5432 | FPS: 57.7 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=20.2ms | worst render_frame()=38.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.07ms
-[UPDATE-BREAKDOWN] physics=19.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5493 | FPS: 60.3 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.9ms | worst render_frame()=21.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.37ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5552 | FPS: 58.9 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.8ms | worst render_frame()=20.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.09ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5612 | FPS: 59.1 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=2.7ms | worst render_frame()=21.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.20ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5671 | FPS: 58.6 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=3.0ms | worst render_frame()=19.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.11ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 5728 | FPS: 56.8 | ECS entities: 1005 | cam=(-10.2,1.6,-1.5)
-[TIMING] worst update()=3.0ms | worst render_frame()=21.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.16ms
-[UPDATE-BREAKDOWN] physics=2.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.1ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 5788 | FPS: 59.7 | ECS entities: 1005 | cam=(-8.3,1.6,-0.7)
-[TIMING] worst update()=3.0ms | worst render_frame()=20.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.37ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 5848 | FPS: 60.0 | ECS entities: 1005 | cam=(-8.3,1.6,-0.6)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.09ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 5901 | FPS: 52.5 | ECS entities: 1005 | cam=(-9.0,1.6,-1.3)
-[TIMING] worst update()=54.1ms | worst render_frame()=22.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.15ms
-[UPDATE-BREAKDOWN] physics=43.1ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=10.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.36,0.90,1.50)
+[INFO] Frame 377 | FPS: 53.6 | ECS entities: 1005 | cam=(-10.5,1.6,0.5)
+[TIMING] worst update()=46.5ms | worst render_frame()=62.2ms
+[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.10ms
+[UPDATE-BREAKDOWN] physics=43.5ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.5ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=3.0ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.36,0.89,1.50)
 [PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
 [PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
 [PHYS-DEBUG] sphere[3] pos=(-3.86,0.90,1.50)
 [PHYS-DEBUG] sphere[4] pos=(-2.87,0.93,1.50)
-[INFO] Frame 5960 | FPS: 58.9 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=3.0ms | worst render_frame()=20.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.33ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
+[INFO] Frame 438 | FPS: 60.0 | ECS entities: 1005 | cam=(-10.5,1.6,0.5)
+[TIMING] worst update()=5.8ms | worst render_frame()=21.2ms
+[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=76 | broad=0.01ms narrow=0.00ms solver=2.36ms
+[UPDATE-BREAKDOWN] physics=4.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=2.0ms audio=0.0ms
 [PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
 [PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
+[INFO] Frame 499 | FPS: 60.3 | ECS entities: 1005 | cam=(-10.5,1.6,0.5)
+[TIMING] worst update()=3.8ms | worst render_frame()=24.0ms
+[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.04ms narrow=0.00ms solver=1.24ms
+[UPDATE-BREAKDOWN] physics=2.3ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
+[INFO] Frame 559 | FPS: 59.7 | ECS entities: 1005 | cam=(-10.5,1.6,0.5)
+[TIMING] worst update()=3.1ms | worst render_frame()=21.4ms
+[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.14ms
+[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.7ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
+[INFO] Frame 620 | FPS: 60.2 | ECS entities: 1005 | cam=(-10.5,1.6,0.5)
+[TIMING] worst update()=2.6ms | worst render_frame()=21.1ms
+[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.04ms
+[UPDATE-BREAKDOWN] physics=1.4ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
+[INFO] Frame 680 | FPS: 60.0 | ECS entities: 1005 | cam=(-7.2,1.6,1.2)
+[TIMING] worst update()=2.7ms | worst render_frame()=19.6ms
+[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.02ms narrow=0.00ms solver=1.35ms
+[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
+[INFO] Frame 741 | FPS: 60.2 | ECS entities: 1005 | cam=(-3.0,1.6,3.7)
+[TIMING] worst update()=3.9ms | worst render_frame()=22.2ms
+[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.11ms
+[UPDATE-BREAKDOWN] physics=3.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
+[INFO] Frame 801 | FPS: 60.0 | ECS entities: 1005 | cam=(0.6,1.6,3.0)
+[TIMING] worst update()=2.7ms | worst render_frame()=21.8ms
+[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.09ms
+[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
+[INFO] Frame 861 | FPS: 59.9 | ECS entities: 1005 | cam=(0.6,1.6,3.0)
+[TIMING] worst update()=3.0ms | worst render_frame()=20.5ms
+[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.12ms
+[UPDATE-BREAKDOWN] physics=1.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
+[INFO] Frame 921 | FPS: 59.9 | ECS entities: 1005 | cam=(2.1,1.6,3.4)
+[TIMING] worst update()=2.8ms | worst render_frame()=19.1ms
+[PHYS-STATS] bodies=123 active=6 contacts=11 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.12ms
+[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
+[INFO] Frame 981 | FPS: 59.8 | ECS entities: 1005 | cam=(4.8,1.6,3.1)
+[TIMING] worst update()=3.9ms | worst render_frame()=22.5ms
+[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.84ms
+[UPDATE-BREAKDOWN] physics=2.4ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
+[INFO] Frame 1027 | FPS: 45.5 | ECS entities: 1005 | cam=(1.6,1.6,3.6)
+[TIMING] worst update()=134.6ms | worst render_frame()=36.0ms
+[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.58ms
+[UPDATE-BREAKDOWN] physics=133.6ms sync_physics=0.1ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=4.8ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.36,0.90,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
+[PHYS-DEBUG] sphere[2] pos=(-5.65,0.90,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.86,0.90,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
+[INFO] Frame 1085 | FPS: 57.5 | ECS entities: 1005 | cam=(-1.9,1.6,1.4)
+[TIMING] worst update()=31.5ms | worst render_frame()=21.7ms
+[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.67ms
+[UPDATE-BREAKDOWN] physics=30.4ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=2.9ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.36,0.89,1.50)
+[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
 [PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
 [PHYS-DEBUG] sphere[3] pos=(-3.86,0.90,1.50)
 [PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 6021 | FPS: 60.8 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=2.6ms | worst render_frame()=21.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.02ms narrow=0.01ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.94,1.50)
-[INFO] Frame 6081 | FPS: 59.8 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=2.7ms | worst render_frame()=21.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.18ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6141 | FPS: 59.1 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=7.0ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.06ms
-[UPDATE-BREAKDOWN] physics=5.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.1ms light_cull=1.5ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6200 | FPS: 59.0 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=3.6ms | worst render_frame()=21.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.19ms
-[UPDATE-BREAKDOWN] physics=2.1ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 6260 | FPS: 59.7 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=2.7ms | worst render_frame()=22.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.43ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6319 | FPS: 58.8 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=2.9ms | worst render_frame()=22.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=5 pairs=75 | broad=0.01ms narrow=0.01ms solver=1.12ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 6379 | FPS: 59.7 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=2.6ms | worst render_frame()=20.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.32ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 6439 | FPS: 59.4 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=2.7ms | worst render_frame()=23.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.19ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.2ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.90,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6500 | FPS: 60.2 | ECS entities: 1005 | cam=(-9.9,1.6,-2.7)
-[TIMING] worst update()=2.9ms | worst render_frame()=22.5ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.17ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.4ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 6559 | FPS: 58.2 | ECS entities: 1005 | cam=(-8.5,1.6,-1.7)
-[TIMING] worst update()=3.1ms | worst render_frame()=20.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.08ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6619 | FPS: 59.5 | ECS entities: 1005 | cam=(-6.9,1.6,-0.7)
-[TIMING] worst update()=2.6ms | worst render_frame()=21.6ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.15ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 6680 | FPS: 60.5 | ECS entities: 1005 | cam=(-6.9,1.6,-0.7)
-[TIMING] worst update()=2.8ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.26ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6740 | FPS: 59.9 | ECS entities: 1005 | cam=(-6.9,1.6,-0.7)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.22ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.1ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6801 | FPS: 60.1 | ECS entities: 1005 | cam=(-5.4,1.6,-1.4)
-[TIMING] worst update()=3.0ms | worst render_frame()=20.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.12ms
-[UPDATE-BREAKDOWN] physics=2.0ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6861 | FPS: 59.2 | ECS entities: 1005 | cam=(-1.3,1.6,-1.4)
-[TIMING] worst update()=2.5ms | worst render_frame()=20.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6922 | FPS: 60.5 | ECS entities: 1005 | cam=(-0.9,1.6,-1.5)
-[TIMING] worst update()=3.2ms | worst render_frame()=20.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.24ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 6982 | FPS: 59.9 | ECS entities: 1005 | cam=(1.3,1.6,-1.3)
-[TIMING] worst update()=3.3ms | worst render_frame()=21.0ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.26ms
-[UPDATE-BREAKDOWN] physics=1.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7040 | FPS: 57.2 | ECS entities: 1005 | cam=(0.9,1.6,-1.3)
-[TIMING] worst update()=4.0ms | worst render_frame()=22.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.33ms
-[UPDATE-BREAKDOWN] physics=2.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.6ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7101 | FPS: 60.2 | ECS entities: 1005 | cam=(0.6,1.6,-2.9)
-[TIMING] worst update()=3.3ms | worst render_frame()=21.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.26ms
-[UPDATE-BREAKDOWN] physics=2.1ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7161 | FPS: 59.3 | ECS entities: 1005 | cam=(0.5,1.6,-4.1)
-[TIMING] worst update()=3.1ms | worst render_frame()=23.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.30ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.5ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7222 | FPS: 60.1 | ECS entities: 1005 | cam=(-0.9,1.6,-3.1)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.27ms
-[UPDATE-BREAKDOWN] physics=1.6ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7283 | FPS: 60.2 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.62ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7343 | FPS: 59.9 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=3.2ms | worst render_frame()=21.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.31ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.2ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.8ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7404 | FPS: 60.2 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.47ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.2ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7462 | FPS: 57.4 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=24.5ms | worst render_frame()=23.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.18ms
-[UPDATE-BREAKDOWN] physics=22.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
+[INFO] Frame 1137 | FPS: 51.8 | ECS entities: 1005 | cam=(2.5,1.6,2.4)
+[TIMING] worst update()=137.2ms | worst render_frame()=43.8ms
+[PHYS-STATS] bodies=123 active=6 contacts=6 pairs=76 | broad=0.01ms narrow=0.00ms solver=1.27ms
+[UPDATE-BREAKDOWN] physics=135.9ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.1ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.7ms audio=0.0ms
+[PHYS-DEBUG] sphere[0] pos=(-8.36,0.89,1.50)
 [PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.86,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7522 | FPS: 59.6 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.7ms | worst render_frame()=19.2ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.41ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.3ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 7581 | FPS: 58.7 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.8ms | worst render_frame()=20.1ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.15ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7640 | FPS: 58.5 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.7ms
-[PHYS-STATS] bodies=123 active=6 contacts=9 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.16ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7700 | FPS: 60.0 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.9ms | worst render_frame()=21.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.45ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7760 | FPS: 59.1 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.6ms | worst render_frame()=20.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=10 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.15ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.0ms
-[PHYS-DEBUG] sphere[0] pos=(-8.35,0.89,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.35,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7820 | FPS: 59.8 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=3.0ms | worst render_frame()=20.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.24ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.4ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.36,0.90,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.36,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 7880 | FPS: 59.8 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.8ms | worst render_frame()=20.8ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.02ms narrow=0.00ms solver=1.18ms
-[UPDATE-BREAKDOWN] physics=1.7ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.2ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.37,0.90,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.37,0.93,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.85,0.93,1.50)
-[INFO] Frame 7934 | FPS: 53.0 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=5.6ms | worst render_frame()=26.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.13ms
-[UPDATE-BREAKDOWN] physics=4.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.38,0.90,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.38,0.92,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.66,0.90,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 7995 | FPS: 60.4 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.6ms | worst render_frame()=19.3ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.10ms
-[UPDATE-BREAKDOWN] physics=1.5ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.39,0.91,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.39,0.92,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 8055 | FPS: 59.8 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.8ms | worst render_frame()=20.9ms
-[PHYS-STATS] bodies=123 active=6 contacts=7 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.20ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.1ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.40,0.91,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.40,0.91,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[INFO] Frame 8116 | FPS: 60.3 | ECS entities: 1005 | cam=(-0.7,1.6,-3.2)
-[TIMING] worst update()=2.7ms | worst render_frame()=20.4ms
-[PHYS-STATS] bodies=123 active=6 contacts=8 pairs=75 | broad=0.01ms narrow=0.00ms solver=1.09ms
-[UPDATE-BREAKDOWN] physics=1.8ms sync_physics=0.0ms native_scripts=0.0ms python_scripts=0.3ms day_night=0.0ms world_streaming=0.0ms chunk_io=0.0ms light_cull=1.0ms audio=0.1ms
-[PHYS-DEBUG] sphere[0] pos=(-8.41,0.92,1.50)
-[PHYS-DEBUG] sphere[1] pos=(-7.42,0.91,1.50)
-[PHYS-DEBUG] sphere[2] pos=(-5.65,0.89,1.50)
-[PHYS-DEBUG] sphere[3] pos=(-3.85,0.89,1.50)
-[PHYS-DEBUG] sphere[4] pos=(-2.86,0.93,1.50)
-[ENGINE] WM_CLOSE received - stopping engine loop
+[PHYS-DEBUG] sphere[2] pos=(-5.67,0.90,1.50)
+[PHYS-DEBUG] sphere[3] pos=(-3.87,0.90,1.50)
+[PHYS-DEBUG] sphere[4] pos=(-2.87,0.93,1.50)
+[MAIN] ESC pressed - exiting
 
-=== RENDER LOOP STOPPED (frames rendered: 8119) ===
+=== RENDER LOOP STOPPED (frames rendered: 1153) ===
 [ENGINE] Shutting down...
-[ENGINE] Signaling fence (value=8121)...
+[ENGINE] Signaling fence (value=1155)...
 [ENGINE] Waiting for GPU to finish...
 [ENGINE] GPU idle
 [ENGINE] Clearing meshes...

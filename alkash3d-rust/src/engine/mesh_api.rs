@@ -135,6 +135,14 @@ impl AlkashEngine {
         self.add_mesh(mesh)
     }
 
+    /// См. `Mesh::tile` — плоская "верхняя грань куба", 2 треугольника
+    /// вместо 12. Типичный дешёвый LOD1-уровень для `add_cube_colored`
+    /// того же `size` (см. `add_lod_group`).
+    pub fn add_tile(&mut self, size: f32, r: f32, g: f32, b: f32, a: f32) -> usize {
+        let mesh = Mesh::tile(size, r, g, b, a).unwrap();
+        self.add_mesh(mesh)
+    }
+
     /// ДОБАВЛЕНО (My Summer Car-like демо — текстуры): `Mesh::box_textured`
     /// + назначение материала (albedo SRV из `create_texture_rgba`, PBR
     /// скаляры) одним вызовом — тот же паттерн, что у `add_cube_colored`
