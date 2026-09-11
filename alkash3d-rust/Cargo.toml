@@ -47,6 +47,15 @@ path = "src/bin/main_car.rs"
 name = "example_minimal"
 path = "src/bin/example_minimal.rs"
 
+# ДОБАВЛЕНО: замер производительности (avg/min/max/1% low FPS) на
+# масштабируемой по нагрузке сцене (кубы-инстансы + опционально физика
+# Inertial), самозавершающийся кадровым бюджетом — см. подробности в шапке
+# benchmark.rs, в т.ч. про то, почему GBV сознательно не трогается по
+# умолчанию.
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
 
 [dependencies]
 # ДОБАВЛЕНО (звуковая подсистема — XAudio2): "Win32_Media_Audio_XAudio2"
