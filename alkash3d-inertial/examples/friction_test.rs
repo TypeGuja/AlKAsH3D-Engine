@@ -19,9 +19,14 @@
 //! Запуск:
 //!   cargo run --release --example friction_test
 
-use inertial::{get_plugin_api, PhysicsAPI, PhysicsBody, PhysicsConfig};
+use inertial::{get_plugin_api, shape_type, PhysicsAPI, PhysicsBody, PhysicsConfig};
 use std::ffi::c_void;
 
+// ИСПРАВЛЕНО: пример бит-рот — не обновляли, когда `PhysicsBody` получил
+// `radius`/`shape_type`/`half_extents` (per-body радиус + box-коллайдер).
+// Оба хелпера ниже всегда делали сферу старого implicit-радиуса 0.5 (см.
+// шапку файла — геометрия теста намеренно завязана именно на 0.5), явно
+// сохраняем то же поведение.
 fn static_body(x: f32, y: f32, z: f32, friction: f32) -> PhysicsBody {
     PhysicsBody {
         position: [x, y, z],
@@ -38,6 +43,9 @@ fn static_body(x: f32, y: f32, z: f32, friction: f32) -> PhysicsBody {
         is_static: 1,
         is_asleep: 0,
         orientation: [0.0, 0.0, 0.0, 1.0],
+        radius: 0.5,
+        shape_type: shape_type::SPHERE,
+        half_extents: [0.0; 3],
     }
 }
 
@@ -57,6 +65,9 @@ fn dynamic_body(x: f32, y: f32, z: f32, mass: f32, friction: f32) -> PhysicsBody
         is_static: 0,
         is_asleep: 0,
         orientation: [0.0, 0.0, 0.0, 1.0],
+        radius: 0.5,
+        shape_type: shape_type::SPHERE,
+        half_extents: [0.0; 3],
     }
 }
 

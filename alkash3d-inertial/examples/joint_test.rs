@@ -11,9 +11,12 @@
 //! Запуск:
 //!   cargo run --release --example joint_test
 
-use inertial::{get_plugin_api, joint_type, ConstraintDesc, PhysicsAPI, PhysicsBody, PhysicsConfig};
+use inertial::{get_plugin_api, joint_type, shape_type, ConstraintDesc, PhysicsAPI, PhysicsBody, PhysicsConfig};
 use std::ffi::c_void;
 
+// ИСПРАВЛЕНО: пример бит-рот — не обновляли, когда `PhysicsBody` получил
+// `radius`/`shape_type`/`half_extents`. Оба хелпера — сферы старого
+// implicit-радиуса 0.5, явно сохраняем то же поведение.
 fn static_body(x: f32, y: f32, z: f32) -> PhysicsBody {
     PhysicsBody {
         position: [x, y, z],
@@ -30,6 +33,9 @@ fn static_body(x: f32, y: f32, z: f32) -> PhysicsBody {
         is_static: 1,
         is_asleep: 0,
         orientation: [0.0, 0.0, 0.0, 1.0],
+        radius: 0.5,
+        shape_type: shape_type::SPHERE,
+        half_extents: [0.0; 3],
     }
 }
 
@@ -49,6 +55,9 @@ fn dynamic_body(x: f32, y: f32, z: f32, mass: f32) -> PhysicsBody {
         is_static: 0,
         is_asleep: 0,
         orientation: [0.0, 0.0, 0.0, 1.0],
+        radius: 0.5,
+        shape_type: shape_type::SPHERE,
+        half_extents: [0.0; 3],
     }
 }
 
@@ -201,8 +210,13 @@ fn test_break_under_load() {
         if count > 0 {
             saw_break_event = true;
             break_event_count += count;
-            let ptr = (h.api.get_broken_constraints)(h.instance);
-            let handles = unsafe { std::slice::from_raw_parts(ptr, count as usize) };
+            // ИСПРАВЛЕНО: пример бит-рот — `get_broken_constraints` с тех
+            // пор берёт `count_out` под тем же локом, что и указатель (см.
+            // комментарий в physics_api.rs), сигнатура выросла на один
+            // параметр.
+            let mut count_out: i32 = 0;
+            let ptr = (h.api.get_broken_constraints)(h.instance, &mut count_out);
+            let handles = unsafe { std::slice::from_raw_parts(ptr, count_out.max(0) as usize) };
             assert_eq!(handles, &[c], "сломавшийся handle не совпадает с ожидаемым");
         }
     }

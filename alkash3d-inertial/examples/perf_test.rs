@@ -13,7 +13,7 @@
 //! ВАЖНО: обязательно `--release` — без оптимизаций (-O3 у Fortran,
 //! LTO у Rust) числа будут не показательны, разница может быть в разы.
 
-use inertial::{get_plugin_api, PhysicsAPI, PhysicsBody, PhysicsConfig};
+use inertial::{get_plugin_api, shape_type, PhysicsAPI, PhysicsBody, PhysicsConfig};
 use std::ffi::c_void;
 use std::time::Instant;
 
@@ -36,6 +36,13 @@ fn make_body(x: f32, y: f32, z: f32, mass: f32) -> PhysicsBody {
         // поле `orientation` (кватернион вращения кузова) — единичный
         // кватернион (0,0,0,1) = без поворота, как и везде в движке.
         orientation: [0.0, 0.0, 0.0, 1.0],
+        // ИСПРАВЛЕНО: пример не обновили, когда `PhysicsBody` получил
+        // `radius`/`shape_type`/`half_extents` (per-body радиус + box-
+        // коллайдер) — этот хелпер всегда делал сферу старого implicit-
+        // радиуса 0.5, сохраняем то же поведение явно.
+        radius: 0.5,
+        shape_type: shape_type::SPHERE,
+        half_extents: [0.0; 3],
     }
 }
 
