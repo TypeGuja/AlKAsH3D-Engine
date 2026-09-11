@@ -12,7 +12,7 @@ Alkash3D Engine v0.1.0 — Car Demo
   ESC     - выход
 ==========================================
 [ENGINE] Initializing Alkash3D Engine v0.1.0...
-[ENGINE] Window created: HWND=0xD0476
+[ENGINE] Window created: HWND=0x3C0850
 [ENGINE] ✓ Window created
 [DEVICE] ========== CREATING D3D12 DEVICE ==========
 [DEVICE] ✓ D3D12 debug layer enabled
@@ -36,7 +36,7 @@ Alkash3D Engine v0.1.0 — Car Demo
 [QUEUE] ✓ Command queue created
 [ENGINE] ✓ Command queue created
 [SWAPCHAIN] ========== CREATING SWAP CHAIN ==========
-[SWAPCHAIN] HWND: 0xD0476, Width: 1366, Height: 768, Buffer count: 2
+[SWAPCHAIN] HWND: 0x3C0850, Width: 1366, Height: 768, Buffer count: 2
 [SWAPCHAIN] Command queue obtained
 [SWAPCHAIN] Creating DXGI factory...
 [SWAPCHAIN] DXGI factory created
@@ -74,17 +74,19 @@ Alkash3D Engine v0.1.0 — Car Demo
 [RENDERER] Back buffer 1 resource obtained
 [RENDERER] ✓ RTV 1 created
 [RENDERER] Creating depth stencil...
-[RENDERER] Creating depth stencil: 1366x768
+[RENDERER] Creating depth stencil: 1366x768 (4x MSAA)
 [RENDERER] ✓ Depth stencil created
 [RENDERER] ✓ Depth stencil created
 [RENDERER] Creating HDR target...
-[RENDERER] Creating HDR render target: 1366x768
+[RENDERER] Creating HDR render target: 1366x768 (4x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
+[RENDERER] Creating HDR render target: 1366x768 (1x MSAA)
+[RENDERER] ✓ HDR render target created
 [HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
-[RENDERER] ✓ HDR target + RTV + SRV created
+[RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created
 [RENDERER] ✓ Renderer created successfully
 [ENGINE] ✓ Renderer created
 [SHADER] Compiling vs_5_0 - entry: main
@@ -107,11 +109,11 @@ Alkash3D Engine v0.1.0 — Car Demo
 [PSO] Blend state created
 [PSO] Creating depth stencil state (ENABLED)...
 [PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL
-[PSO] Root signature: 0x767d31f060
+[PSO] Root signature: 0xa7c1f3f590
 [PSO] Pipeline state descriptor created
 [PSO] Calling CreateGraphicsPipelineState...
-[PSO] ✓ PSO created successfully! PSO: 0x767d31d548
-[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target)
+[PSO] ✓ PSO created successfully! PSO: 0xa7c1f3da48
+[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, 4x MSAA)
 [BUFFER] Creating constant buffer ARRAY: 256 slots x 768 bytes = 196608 bytes total
 [BUFFER] Creating constant buffer, size: 196608 bytes
 [BUFFER] Constant buffer created successfully
@@ -134,9 +136,9 @@ Alkash3D Engine v0.1.0 — Car Demo
 [ENGINE] ✓ Bloom shaders compiled (extract + separable Gaussian blur)
 [ENGINE] ✓ Bloom root signature created (SRV table t0 + static sampler s0 + CBV b0)
 [ENGINE] ✓ Bloom pipeline states created (extract + blur)
-[RENDERER] Creating HDR render target: 683x384
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[RENDERER] Creating HDR render target: 683x384
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
@@ -167,11 +169,11 @@ Alkash3D Engine v0.1.0 — Car Demo
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 772 bytes
 [SHADER] Compiling ps_5_0 - entry: main
-[SHADER] ✓ Compiled successfully, 4348 bytes
+[SHADER] ✓ Compiled successfully, 4428 bytes
 [ENGINE] ✓ Volumetric shaders compiled (screen-space raymarch, 24 шагов)
 [ENGINE] ✓ Volumetric root signature created (SRV table t0/t1 + point sampler s0 + comparison sampler s1 + CBV b0)
 [ENGINE] ✓ Volumetric pipeline state created
-[RENDERER] Creating HDR render target: 683x384
+[RENDERER] Creating HDR render target: 683x384 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -199,25 +201,27 @@ Alkash3D Engine v0.1.0 — Car Demo
 [RENDERER] Back buffer 1 resource obtained
 [RENDERER] ✓ RTV 1 created
 [RENDERER] Creating depth stencil...
-[RENDERER] Creating depth stencil: 1350x729
+[RENDERER] Creating depth stencil: 1350x729 (4x MSAA)
 [RENDERER] ✓ Depth stencil created
 [RENDERER] ✓ Depth stencil created
 [RENDERER] Creating HDR target...
-[RENDERER] Creating HDR render target: 1350x729
+[RENDERER] Creating HDR render target: 1350x729 (4x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
+[RENDERER] Creating HDR render target: 1350x729 (1x MSAA)
+[RENDERER] ✓ HDR render target created
 [HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
-[RENDERER] ✓ HDR target + RTV + SRV created
+[RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created
 [RENDERER] ✓ Renderer created successfully
 [ENGINE] ✓ Renderer recreated after resize: 1350x729
 [HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
 [ENGINE] ✓ Depth SRV created (для volumetric raymarch)
-[RENDERER] Creating HDR render target: 675x364
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[RENDERER] Creating HDR render target: 675x364
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
@@ -226,7 +230,7 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ Bloom resources created: 675x364 half-res ping-pong targets
-[RENDERER] Creating HDR render target: 675x364
+[RENDERER] Creating HDR render target: 675x364 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -278,7 +282,7 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating constant buffer, size: 196608 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] Shadow constant buffer (re)allocated: 128 slots/(кадр*каскад) x2 x3 каскада = 768 слотов
-[WARMUP] 'shadow' прогрет за 1.5312ms
+[WARMUP] 'shadow' прогрет за 1.3978ms
 [BUFFER] Creating structured buffer, size: 4096 bytes
 [BUFFER] Structured buffer created successfully
 [ENGINE] Light buffer (re)allocated: 64 GPULight слотов (4096 байт)
@@ -288,81 +292,94 @@ Alkash3D Engine v0.1.0 — Car Demo
 [BUFFER] Creating structured buffer, size: 1024 bytes
 [BUFFER] Structured buffer created successfully
 [ENGINE] Grid entries buffer (re)allocated: 64 слотов (1024 байт)
-[WARMUP] 'main' прогрет за 1.3534ms
+[WARMUP] 'main' прогрет за 1.4847ms
 
 === RENDER LOOP STARTING ===
 
 *** FIRST FRAME COMPLETED ***
 *** 25 ECS entities rendering ***
 
-[INFO] Frame 61 | FPS: 60.6 | mode=walking | speed=-0.0 m/s | entities: 25
+[INFO] Frame 61 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
 [PHYS-STATS] bodies=86 active=4 contacts=0 pairs=357
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,-0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 118 | FPS: 49.8 | mode=walking | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=3 pairs=376
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 173 | FPS: 54.5 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 234 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,-0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 121 | FPS: 60.0 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=7 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 181 | FPS: 59.7 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 242 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
 [PHYS-STATS] bodies=86 active=4 contacts=11 pairs=376
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 285 | FPS: 48.1 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=0 pairs=376
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
-[INFO] Frame 347 | FPS: 61.5 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=12 pairs=376
-[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
-[MAIN_CAR] 🔑 Рядом с машиной — E, чтобы сесть за руль
-[INFO] Frame 408 | FPS: 60.2 | mode=walking | speed=0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=4 contacts=13 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 302 | FPS: 59.9 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 363 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=7 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 424 | FPS: 60.1 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 484 | FPS: 59.8 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 545 | FPS: 60.0 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
 [DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 601 | FPS: 54.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=6 pairs=376
+[DIAG-CAR] pos=(0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 659 | FPS: 57.4 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=10 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 718 | FPS: 57.6 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=9 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 758 | FPS: 38.4 | mode=walking | speed=0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=13 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(0.00,0.00,-0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[INFO] Frame 820 | FPS: 61.7 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=8 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,0.00) ori=(-0.00,0.71,0.00,0.71) asleep=1
+[MAIN_CAR] 🔑 Рядом с машиной — E, чтобы сесть за руль
+[MAIN_CAR] 🔑 Рядом с машиной — E, чтобы сесть за руль
+[INFO] Frame 881 | FPS: 60.1 | mode=walking | speed=-0.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=4 contacts=6 pairs=376
+[DIAG-CAR] pos=(-0.00,0.79,-1.00) vel=(-0.00,0.00,-0.00) ori=(0.00,0.71,0.00,0.71) asleep=1
 [MAIN_CAR] 🚗 Сел в машину — WASD: газ/тормоз/руль, R: ручник, E: выйти
-[INFO] Frame 468 | FPS: 59.9 | mode=driving | speed=0.4 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=11 pairs=376
-[DIAG-CAR] pos=(0.02,0.79,-1.00) vel=(0.38,0.00,0.08) ori=(-0.00,0.71,0.00,0.71) asleep=0
-[INFO] Frame 528 | FPS: 60.0 | mode=driving | speed=0.7 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=376
-[DIAG-CAR] pos=(1.56,0.88,-0.51) vel=(0.64,-0.01,0.22) ori=(-0.03,0.58,-0.03,0.82) asleep=0
-[INFO] Frame 588 | FPS: 59.0 | mode=driving | speed=-2.7 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=376
-[DIAG-CAR] pos=(0.60,0.78,-1.03) vel=(-2.56,-0.02,-1.41) ori=(0.01,0.65,0.00,0.76) asleep=0
-[INFO] Frame 649 | FPS: 60.0 | mode=driving | speed=-3.6 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=348
-[DIAG-CAR] pos=(-3.26,0.79,-1.66) vel=(-3.72,-0.00,-0.06) ori=(-0.00,0.59,-0.00,0.81) asleep=0
-[INFO] Frame 710 | FPS: 60.0 | mode=driving | speed=-4.7 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=13 pairs=330
-[DIAG-CAR] pos=(-6.90,0.79,-2.98) vel=(-4.65,0.00,-2.54) ori=(0.00,0.28,-0.00,0.96) asleep=0
-[INFO] Frame 771 | FPS: 60.0 | mode=driving | speed=-3.6 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=12 pairs=330
-[DIAG-CAR] pos=(-9.37,0.79,-6.88) vel=(-0.99,0.00,-3.42) ori=(-0.00,0.14,0.00,0.99) asleep=0
-[INFO] Frame 832 | FPS: 60.0 | mode=driving | speed=2.3 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=330
-[DIAG-CAR] pos=(-9.55,0.79,-7.18) vel=(0.90,0.00,2.17) ori=(-0.00,0.11,0.00,0.99) asleep=0
-[INFO] Frame 892 | FPS: 59.8 | mode=driving | speed=7.4 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=13 pairs=330
-[DIAG-CAR] pos=(-6.45,0.79,-3.19) vel=(5.56,0.00,5.01) ori=(0.00,0.36,0.01,0.93) asleep=0
-[INFO] Frame 953 | FPS: 60.1 | mode=driving | speed=-0.9 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=13 pairs=348
-[DIAG-CAR] pos=(-2.04,0.85,-0.68) vel=(-0.87,-0.54,-0.17) ori=(0.00,0.52,0.00,0.85) asleep=0
-[INFO] Frame 1014 | FPS: 60.0 | mode=driving | speed=1.3 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=12 pairs=348
-[DIAG-CAR] pos=(-2.42,0.79,-0.88) vel=(1.36,0.00,0.30) ori=(-0.00,0.52,0.00,0.85) asleep=0
-[INFO] Frame 1075 | FPS: 60.0 | mode=driving | speed=2.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=376
-[DIAG-CAR] pos=(-0.94,0.79,-0.68) vel=(1.88,0.19,0.50) ori=(-0.01,0.60,0.00,0.80) asleep=0
-[INFO] Frame 1135 | FPS: 60.0 | mode=driving | speed=0.9 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=376
-[DIAG-CAR] pos=(0.85,0.96,0.15) vel=(0.93,0.04,0.19) ori=(-0.02,0.51,-0.02,0.86) asleep=0
-[INFO] Frame 1195 | FPS: 59.8 | mode=driving | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=376
-[DIAG-CAR] pos=(0.92,0.98,0.16) vel=(-0.02,-0.04,0.00) ori=(-0.01,0.50,-0.00,0.87) asleep=0
-[INFO] Frame 1256 | FPS: 60.2 | mode=driving | speed=-0.0 m/s | entities: 25
-[PHYS-STATS] bodies=86 active=5 contacts=14 pairs=376
-[DIAG-CAR] pos=(0.90,0.99,0.15) vel=(-0.02,-0.11,-0.01) ori=(-0.01,0.50,-0.01,0.87) asleep=0
+[INFO] Frame 941 | FPS: 60.0 | mode=driving | speed=-2.8 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=10 pairs=376
+[DIAG-CAR] pos=(-0.90,0.79,-0.83) vel=(-2.85,-0.00,0.80) ori=(0.00,0.67,-0.00,0.74) asleep=0
+[INFO] Frame 1001 | FPS: 60.0 | mode=driving | speed=2.5 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=5 pairs=376
+[DIAG-CAR] pos=(-1.56,0.79,-0.84) vel=(2.50,-0.00,0.18) ori=(-0.00,0.66,0.00,0.75) asleep=0
+[INFO] Frame 1062 | FPS: 60.2 | mode=driving | speed=3.1 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=7 pairs=376
+[DIAG-CAR] pos=(1.86,0.79,-1.04) vel=(3.05,-0.00,1.11) ori=(-0.00,0.67,-0.00,0.74) asleep=0
+[INFO] Frame 1122 | FPS: 59.9 | mode=driving | speed=-0.2 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=4 pairs=388
+[DIAG-CAR] pos=(2.49,0.78,-0.78) vel=(-0.20,0.00,-0.12) ori=(0.00,0.60,0.00,0.80) asleep=0
+[INFO] Frame 1182 | FPS: 59.9 | mode=driving | speed=2.0 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=388
+[DIAG-CAR] pos=(3.22,0.97,-0.34) vel=(1.56,0.14,1.35) ori=(-0.08,0.51,0.02,0.85) asleep=0
+[INFO] Frame 1242 | FPS: 60.0 | mode=driving | speed=1.5 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=388
+[DIAG-CAR] pos=(4.15,1.05,0.87) vel=(0.62,0.06,1.39) ori=(-0.09,0.31,0.01,0.95) asleep=0
+[INFO] Frame 1303 | FPS: 60.0 | mode=driving | speed=0.1 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=388
+[DIAG-CAR] pos=(4.43,1.25,1.92) vel=(-0.02,-0.05,0.08) ori=(-0.11,0.11,-0.06,0.99) asleep=0
+[INFO] Frame 1364 | FPS: 60.0 | mode=driving | speed=2.2 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=7 pairs=415
+[DIAG-CAR] pos=(4.51,1.20,2.81) vel=(0.58,-0.05,2.17) ori=(-0.03,0.09,0.02,1.00) asleep=0
+[INFO] Frame 1425 | FPS: 60.1 | mode=driving | speed=0.4 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=10 pairs=361
+[DIAG-CAR] pos=(4.81,1.27,4.97) vel=(-0.02,-0.14,0.41) ori=(0.08,0.07,0.04,0.99) asleep=0
+[INFO] Frame 1485 | FPS: 60.0 | mode=driving | speed=-0.2 m/s | entities: 25
+[PHYS-STATS] bodies=86 active=5 contacts=9 pairs=361
+[DIAG-CAR] pos=(4.77,1.35,4.82) vel=(-0.04,-0.02,-0.21) ori=(0.10,0.05,0.01,0.99) asleep=0
 [MAIN_CAR] ESC pressed - exiting
 [ENGINE] Shutting down...
-[ENGINE] Signaling fence (value=1287)...
+[ENGINE] Signaling fence (value=1520)...
 [ENGINE] Waiting for GPU to finish...
 [ENGINE] GPU idle
 [ENGINE] Clearing meshes...

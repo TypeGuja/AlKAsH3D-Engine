@@ -15,6 +15,17 @@ pub struct RenderTexture {
     pub height: u32,
     pub format: DXGI_FORMAT,
     pub mip_levels: u32,
+    /// ДОБАВЛЕНО (максимальная графика — MSAA): число сэмплов ресурса
+    /// (`SampleDesc.Count`, см. `MSAA_SAMPLES` в engine/mod.rs) — 1 для
+    /// ВСЕХ текстур этого типа, кроме `Renderer::hdr_target`/`depth_stencil`
+    /// (основной цветовой/depth-таргет). `create_dsv`/`create_depth_srv`
+    /// читают это поле, чтобы выбрать TEXTURE2D vs TEXTURE2DMS вид — тот
+    /// же ресурс `RenderTexture` используется и для MSAA, и для обычных
+    /// (shadow map, back buffer, bloom/volumetric таргеты) текстур, а вид
+    /// ОБЯЗАН совпадать с реальным числом сэмплов ресурса, иначе
+    /// `CreateShaderResourceView`/`CreateDepthStencilView` падает с
+    /// ошибкой валидации D3D12.
+    pub sample_count: u32,
 }
 
 impl RenderTexture {
@@ -35,8 +46,14 @@ impl RenderTexture {
     /// отдельный от `create_shadow_srv`, хотя оба идентичны по содержимому,
     /// т.к. семантически это разные ресурсы с разным временем жизни и было
     /// бы запутывающим переиспользовать один метод под "любой depth SRV").
-    pub fn create_depth_stencil(width: u32, height: u32) -> Result<Self> {
-        println!("[RENDERER] Creating depth stencil: {}x{}", width, height);
+    /// ИЗМЕНЕНО (максимальная графика — MSAA): `sample_count` — 1 для
+    /// старого поведения, >1 когда этот depth-таргет должен совпадать по
+    /// числу сэмплов с MSAA-таргетом основного цветового прохода (см.
+    /// `MSAA_SAMPLES`/`sample_count` на `RenderTexture` выше — D3D12
+    /// требует, чтобы RTV и DSV одного draw call'а совпадали по
+    /// SampleDesc).
+    pub fn create_depth_stencil(width: u32, height: u32, sample_count: u32) -> Result<Self> {
+        println!("[RENDERER] Creating depth stencil: {}x{} ({}x MSAA)", width, height, sample_count);
 
         // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()`.
         let device = crate::get_device()?;
@@ -57,7 +74,7 @@ impl RenderTexture {
             DepthOrArraySize: 1,
             MipLevels: 1,
             Format: DXGI_FORMAT_R32_TYPELESS,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC { Count: sample_count, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
         };
@@ -93,6 +110,7 @@ impl RenderTexture {
                 // сами подставляют конкретный формат для своего вида.
                 format: DXGI_FORMAT_R32_TYPELESS,
                 mip_levels: 1,
+                sample_count,
             })
         }
     }
@@ -102,20 +120,41 @@ impl RenderTexture {
     /// шейдере) — по содержимому идентичен `create_shadow_srv`, но
     /// оставлен отдельным методом (см. подробное обоснование у
     /// `create_depth_stencil` выше).
+    ///
+    /// ИЗМЕНЕНО (максимальная графика — MSAA): при `sample_count > 1`
+    /// (основной depth-таргет с MSAA, см. `Renderer::depth_stencil`)
+    /// создаётся `TEXTURE2DMS`-вид, а не обычный `TEXTURE2D` —D3D12 не
+    /// разрешает обратное (SRV на многосэмпловый ресурс ОБЯЗАН быть
+    /// `Texture2DMS` и в дескрипторе, и в шейдере, см.
+    /// `compile_volumetric_shaders` — `DepthBuffer` там объявлен как
+    /// `Texture2DMS<float>`, читает сэмпл 0 через `.Load`, не `.Sample`).
+    /// `D3D12_TEX2DMS_SRV` не несёт полей (нет mip/plane — многосэмпловые
+    /// ресурсы всегда 1 mip, 1 plane) в отличие от `D3D12_TEX2D_SRV`.
     pub fn create_depth_srv(&self, handle: D3D12_CPU_DESCRIPTOR_HANDLE) -> Result<()> {
         let device = crate::get_device()?;
-        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-            Format: DXGI_FORMAT_R32_FLOAT,
-            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
-            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-                Texture2D: D3D12_TEX2D_SRV {
-                    MostDetailedMip: 0,
-                    MipLevels: 1,
-                    PlaneSlice: 0,
-                    ResourceMinLODClamp: 0.0,
+        let desc = if self.sample_count > 1 {
+            D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_R32_FLOAT,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2DMS,
+                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2DMS: D3D12_TEX2DMS_SRV::default(),
                 },
-            },
+            }
+        } else {
+            D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_R32_FLOAT,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                        PlaneSlice: 0,
+                        ResourceMinLODClamp: 0.0,
+                    },
+                },
+            }
         };
         unsafe {
             device.CreateShaderResourceView(&self.resource, Some(&desc), handle);
@@ -129,8 +168,20 @@ impl RenderTexture {
     /// buffer'а (создаётся через swap_chain.GetBuffer — тот всегда LDR,
     /// формат навязан DXGI), эта текстура выделяется явно, с плавающей
     /// точкой, специально чтобы НЕ терять яркость выше 1.0 до тонмаппинга.
-    pub fn create_hdr_target(width: u32, height: u32) -> Result<Self> {
-        println!("[RENDERER] Creating HDR render target: {}x{}", width, height);
+    /// ИЗМЕНЕНО (максимальная графика — MSAA): `sample_count`/`initial_state`
+    /// параметры — `Renderer::new` вызывает это ДВАЖДЫ: с
+    /// `(MSAA_SAMPLES, RENDER_TARGET)` для `hdr_target` (то, во что реально
+    /// рисует основной цветовой проход каждый кадр) и с
+    /// `(1, PIXEL_SHADER_RESOURCE)` для `hdr_resolved` (одноимпловая копия
+    /// после `ResolveSubresource`, см. `render_frame`). `hdr_resolved`
+    /// специально СОЗДАЁТСЯ сразу в состоянии `PIXEL_SHADER_RESOURCE` (том
+    /// же, в котором он гарантированно оказывается КАЖДЫЙ раз к концу
+    /// resolve-шага любого предыдущего кадра) — так `render_frame`
+    /// переводит его в `RESOLVE_DEST` ОДНИМ и тем же переходом на любом
+    /// кадре, включая первый, без отдельной ветки "это первый кадр,
+    /// состояние другое".
+    pub fn create_hdr_target(width: u32, height: u32, sample_count: u32, initial_state: D3D12_RESOURCE_STATES) -> Result<Self> {
+        println!("[RENDERER] Creating HDR render target: {}x{} ({}x MSAA)", width, height, sample_count);
 
         let device = crate::get_device()?;
 
@@ -150,7 +201,7 @@ impl RenderTexture {
             DepthOrArraySize: 1,
             MipLevels: 1,
             Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC { Count: sample_count, Quality: 0 },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
         };
@@ -182,11 +233,13 @@ impl RenderTexture {
                 &heap_properties,
                 D3D12_HEAP_FLAG_NONE,
                 &resource_desc,
-                // ВАЖНО: изначальное состояние — RENDER_TARGET, так как
-                // draw pass рисует в неё как в RTV сразу с первого кадра
-                // (в отличие от, например, upload-текстур, которым нужен
-                // COMMON/GENERIC_READ до первой записи).
-                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                // ВАЖНО: `initial_state` — RENDER_TARGET для `hdr_target`
+                // (draw pass рисует в неё как в RTV сразу с первого кадра,
+                // как и раньше), PIXEL_SHADER_RESOURCE для `hdr_resolved`
+                // (см. подробное обоснование в комментарии у сигнатуры
+                // выше — вместо, например, COMMON/GENERIC_READ до первой
+                // записи).
+                initial_state,
                 Some(&clear_value),
                 &mut resource,
             )?;
@@ -203,6 +256,7 @@ impl RenderTexture {
                 height,
                 format: DXGI_FORMAT_R16G16B16A16_FLOAT,
                 mip_levels: 1,
+                sample_count,
             })
         }
     }
@@ -305,22 +359,43 @@ impl RenderTexture {
                 // typeless-ресурса это было бы неверно).
                 format: DXGI_FORMAT_R32_TYPELESS,
                 mip_levels: 1,
+                // Shadow map ВСЕГДА одноимпловая — независимо от MSAA
+                // основного цветового/depth-таргета (см. `MSAA_SAMPLES`),
+                // это отдельный, самостоятельный ресурс.
+                sample_count: 1,
             })
         }
     }
 
     /// Создаёт DSV-вид (для записи глубины) поверх TYPELESS-ресурса —
-    /// используется shadow map'ом (см. `create_shadow_map` выше), где
+    /// используется и shadow map'ом (см. `create_shadow_map` выше), и
+    /// основным depth-таргетом (`Renderer::depth_stencil`) — у обоих
     /// `self.format` — R32_TYPELESS, а не сам по себе валидный DSV-формат.
+    ///
+    /// ИЗМЕНЕНО (максимальная графика — MSAA): при `sample_count > 1`
+    /// (основной depth-таргет с MSAA) создаётся `TEXTURE2DMS`-вид — тот же
+    /// принцип и то же обоснование, что у `create_depth_srv` выше (D3D12
+    /// требует вид, совпадающий с реальным числом сэмплов ресурса).
     pub fn create_dsv(&self, handle: D3D12_CPU_DESCRIPTOR_HANDLE) -> Result<()> {
         let device = crate::get_device()?;
-        let desc = D3D12_DEPTH_STENCIL_VIEW_DESC {
-            Format: DXGI_FORMAT_D32_FLOAT,
-            ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
-            Flags: D3D12_DSV_FLAG_NONE,
-            Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
-                Texture2D: D3D12_TEX2D_DSV { MipSlice: 0 },
-            },
+        let desc = if self.sample_count > 1 {
+            D3D12_DEPTH_STENCIL_VIEW_DESC {
+                Format: DXGI_FORMAT_D32_FLOAT,
+                ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2DMS,
+                Flags: D3D12_DSV_FLAG_NONE,
+                Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                    Texture2DMS: D3D12_TEX2DMS_DSV::default(),
+                },
+            }
+        } else {
+            D3D12_DEPTH_STENCIL_VIEW_DESC {
+                Format: DXGI_FORMAT_D32_FLOAT,
+                ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+                Flags: D3D12_DSV_FLAG_NONE,
+                Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_DSV { MipSlice: 0 },
+                },
+            }
         };
         unsafe {
             device.CreateDepthStencilView(&self.resource, Some(&desc), handle);
@@ -435,6 +510,16 @@ pub struct Renderer {
     /// shader-visible, SRV должен быть в отдельном виде heap).
     pub srv_uav_heap: ID3D12DescriptorHeap,
     pub hdr_srv_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
+    /// ДОБАВЛЕНО (максимальная графика — MSAA): `hdr_target` выше теперь
+    /// многосэмпловый (`MSAA_SAMPLES`, см. `engine::MSAA_SAMPLES`) — сам
+    /// по себе он больше НЕ читается шейдером напрямую (SRV на
+    /// многосэмпловый ресурс требует `Texture2DMS` в шейдере, а bloom/
+    /// tonemap написаны под обычный `Texture2D`). `hdr_resolved` —
+    /// ОДНОИМПЛОВАЯ копия, в которую `render_frame` пишет через
+    /// `ResolveSubresource` сразу после основного цветового прохода — её
+    /// SRV (`hdr_srv_gpu` выше) и читают bloom/volumetric/tonemap, как
+    /// раньше читали `hdr_target` напрямую.
+    pub hdr_resolved: RenderTexture,
 }
 
 impl Renderer {
@@ -473,6 +558,11 @@ impl Renderer {
                 height,
                 format: DXGI_FORMAT_R8G8B8A8_UNORM,
                 mip_levels: 1,
+                // Back buffer — всегда одноимпловый: DXGI не поддерживает
+                // MSAA-таргеты swap chain'а напрямую (отсюда и вся эта
+                // MSAA-схема — рисуем в отдельный MSAA-таргет и разрешаем
+                // ДО composite/tonemap-прохода, который уже пишет сюда).
+                sample_count: 1,
             };
             println!("[RENDERER] Back buffer {} resource obtained", i);
 
@@ -487,7 +577,7 @@ impl Renderer {
         }
 
         println!("[RENDERER] Creating depth stencil...");
-        let depth_stencil = RenderTexture::create_depth_stencil(width, height)?;
+        let depth_stencil = RenderTexture::create_depth_stencil(width, height, crate::engine::MSAA_SAMPLES)?;
         let depth_stencil_view = crate::heap::DescriptorHeap::get_cpu_handle(&dsv_heap, 0, dsv_size);
         // ОБНОВЛЕНО (Фаза 8 плана по реализму/фонарям — volumetric-
         // подсветка): раньше здесь стоял `device.CreateDepthStencilView(
@@ -511,12 +601,26 @@ impl Renderer {
         // существовал в heap.rs, но не был подключён нигде в движке до
         // этой фазы).
         println!("[RENDERER] Creating HDR target...");
-        let hdr_target = RenderTexture::create_hdr_target(width, height)?;
+        let hdr_target = RenderTexture::create_hdr_target(width, height, crate::engine::MSAA_SAMPLES, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
         let hdr_rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(1)?;
         let hdr_rtv = crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 0, rtv_size);
         unsafe {
+            // `None` desc — рантайм выводит вид из resource_desc самого
+            // ресурса, ВКЛЮЧАЯ его SampleDesc (см. `create_hdr_target`) —
+            // для MSAA-ресурса это автоматически создаёт корректный
+            // `RTV_DIMENSION_TEXTURE2DMS`-вид, никакого явного desc не
+            // требуется (в отличие от DSV/SRV на depth-таргете выше/ниже,
+            // где формат TYPELESS и вид всегда приходится указывать явно).
             device.CreateRenderTargetView(&hdr_target.resource, None, hdr_rtv);
         }
+
+        // ДОБАВЛЕНО (максимальная графика — MSAA): одноимпловая копия
+        // `hdr_target` — см. подробное обоснование у поля
+        // `Renderer::hdr_resolved`. Создаётся сразу в состоянии
+        // PIXEL_SHADER_RESOURCE (см. `create_hdr_target`) — `render_frame`
+        // переводит её в RESOLVE_DEST перед КАЖДЫМ (включая первый) кадром
+        // одним и тем же переходом.
+        let hdr_resolved = RenderTexture::create_hdr_target(width, height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
 
         let srv_uav_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(4)?;
         let cbv_srv_uav_size = {
@@ -525,8 +629,11 @@ impl Renderer {
         };
         let hdr_srv_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&srv_uav_heap, 0, cbv_srv_uav_size);
         let hdr_srv_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_uav_heap, 0, cbv_srv_uav_size);
-        hdr_target.create_srv(hdr_srv_cpu)?;
-        println!("[RENDERER] ✓ HDR target + RTV + SRV created");
+        // ИЗМЕНЕНО (MSAA): SRV теперь на `hdr_resolved` (одноимпловая,
+        // обычный Texture2D — то, что и ожидают bloom/tonemap-шейдеры), а
+        // не на многосэмпловый `hdr_target` напрямую.
+        hdr_resolved.create_srv(hdr_srv_cpu)?;
+        println!("[RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created");
 
         // ВАЖНО: дескрипторный хип (`hdr_rtv_heap`) должен пережить весь
         // срок жизни любого дескриптора, выданного из него — иначе хип
@@ -552,6 +659,7 @@ impl Renderer {
             hdr_rtv_heap,
             srv_uav_heap,
             hdr_srv_gpu,
+            hdr_resolved,
         })
     }
 }

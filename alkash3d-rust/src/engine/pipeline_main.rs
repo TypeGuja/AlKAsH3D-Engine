@@ -833,10 +833,11 @@ impl AlkashEngine {
             Vertex::STRIDE,
             windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
             windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
+            super::MSAA_SAMPLES,
         )?;
 
         self.pipeline_state = Some(pso);
-        println!("[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target)");
+        println!("[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, {}x MSAA)", super::MSAA_SAMPLES);
         Ok(())
     }
 }

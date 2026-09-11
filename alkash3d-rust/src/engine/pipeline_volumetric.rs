@@ -80,7 +80,18 @@ impl AlkashEngine {
         "#;
 
         let ps_source = r#"
-        Texture2D DepthBuffer : register(t0);
+        // ИЗМЕНЕНО (максимальная графика — MSAA): основной depth-таргет
+        // (`Renderer::depth_stencil`) теперь многосэмпловый (см.
+        // MSAA_SAMPLES) — SRV на такой ресурс ОБЯЗАН быть Texture2DMS, а
+        // не обычный Texture2D (иначе ошибка валидации D3D12 при создании
+        // SRV, см. `RenderTexture::create_depth_srv`). Читаем ТОЛЬКО
+        // сэмпл 0 (через .Load, Texture2DMS не поддерживает .Sample) —
+        // не честное разрешение (average/min по всем сэмплам), а
+        // сознательное упрощение: этот проход и так уже работает в
+        // half-res с point-сэмплированием (см. шапку файла), небольшая
+        // потеря точности глубины на границах геометрии в god ray
+        // раймарче незаметна на фоне уже применяемых упрощений.
+        Texture2DMS<float> DepthBuffer : register(t0);
         Texture2D ShadowMap : register(t1);
         SamplerState PointSampler : register(s0);
         SamplerComparisonState ShadowSampler : register(s1);
@@ -122,7 +133,14 @@ impl AlkashEngine {
         static const int NUM_STEPS = 24;
 
         float4 main(PS_INPUT input) : SV_TARGET {
-            float depth = DepthBuffer.Sample(PointSampler, input.uv).r;
+            // Texture2DMS.Load адресуется ЦЕЛЫМИ пиксельными координатами
+            // исходного (полноразмерного) depth-таргета, не [0,1] UV —
+            // GetDimensions даёт его реальный размер (может отличаться от
+            // размера ЭТОГО, half-res, render target'а).
+            uint depthW, depthH, depthSamples;
+            DepthBuffer.GetDimensions(depthW, depthH, depthSamples);
+            int2 depthCoord = int2(input.uv * float2(depthW, depthH));
+            float depth = DepthBuffer.Load(depthCoord, 0).r;
 
             // depth == 1.0 (дальняя плоскость очистки, см.
             // create_depth_stencil::clear_value) означает "нет геометрии в
@@ -456,7 +474,11 @@ impl AlkashEngine {
         let vol_width = (self.width / 2).max(1);
         let vol_height = (self.height / 2).max(1);
 
-        let texture = crate::render::RenderTexture::create_hdr_target(vol_width, vol_height)?;
+        // ИЗМЕНЕНО (максимальная графика — MSAA, см. `create_hdr_target` в
+        // render.rs): volumetric-таргет — одноимпловый обычный render
+        // target, как и раньше; этот вызов не связан с MSAA основного
+        // цветового прохода.
+        let texture = crate::render::RenderTexture::create_hdr_target(vol_width, vol_height, 1, windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET)?;
 
         let rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(1)?;
         let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(3)?;

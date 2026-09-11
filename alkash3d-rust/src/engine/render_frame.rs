@@ -838,6 +838,72 @@ impl AlkashEngine {
                 Error::from_hresult(HRESULT(1))
             })?;
 
+            // ДОБАВЛЕНО (максимальная графика — MSAA): основной цветовой
+            // проход выше рисовал в `renderer.hdr_target` — многосэмпловый
+            // (см. MSAA_SAMPLES) render target. Ни один downstream-проход
+            // (bloom/volumetric-composite/tonemap) не умеет читать
+            // многосэмпловый Texture2D напрямую (они написаны под обычный
+            // Texture2D, см. их шейдеры) — разрешаем ОДИН РАЗ здесь, сразу
+            // после main pass, в одноимпловую `renderer.hdr_resolved`,
+            // чью SRV (`renderer.hdr_srv_gpu`) все downstream-проходы и
+            // читают дальше НИЧЕГО не зная про MSAA — тот же путь, что и
+            // раньше, только источник теперь разрешённая копия, а не
+            // `hdr_target` напрямую.
+            //
+            // Состояния: `hdr_target` каждый кадр приходит сюда в
+            // RENDER_TARGET (main pass только что в неё рисовал) и
+            // ОБЯЗАН уйти отсюда обратно в RENDER_TARGET — следующий кадр
+            // начинает с `ClearRenderTargetView`/`OMSetRenderTargets` на
+            // неё же, ожидая именно этого состояния (см. выше по кадру).
+            // `hdr_resolved` создаётся сразу в PIXEL_SHADER_RESOURCE (см.
+            // `RenderTexture::create_hdr_target` в render.rs) и НИГДЕ,
+            // кроме как здесь, не меняет состояние — то есть гарантированно
+            // приходит сюда в PIXEL_SHADER_RESOURCE на КАЖДОМ кадре,
+            // включая первый, без отдельной ветки под "первый кадр".
+            {
+                let to_resolve = [
+                    Self::transition_barrier(
+                        &renderer.hdr_target.resource,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                    ),
+                    Self::transition_barrier(
+                        &renderer.hdr_resolved.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                    ),
+                ];
+                cmd_list.ResourceBarrier(&to_resolve);
+                for b in to_resolve {
+                    Self::drop_transition_barrier(b);
+                }
+
+                cmd_list.ResolveSubresource(
+                    &renderer.hdr_resolved.resource,
+                    0,
+                    &renderer.hdr_target.resource,
+                    0,
+                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                );
+
+                let after_resolve = [
+                    Self::transition_barrier(
+                        &renderer.hdr_target.resource,
+                        D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    ),
+                    Self::transition_barrier(
+                        &renderer.hdr_resolved.resource,
+                        D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    ),
+                ];
+                cmd_list.ResourceBarrier(&after_resolve);
+                for b in after_resolve {
+                    Self::drop_transition_barrier(b);
+                }
+            }
+
             if let (Some(volumetric_texture), Some(volumetric_srv_heap), Some(volumetric_cb)) = (
                 &self.volumetric_texture,
                 &self.volumetric_srv_heap,
@@ -973,11 +1039,9 @@ impl AlkashEngine {
                 self.volumetric_is_srv = true;
             }
 
-            let mut bloom_ran = false;
             if let (Some(bloom_a), Some(bloom_b), Some(bloom_srv_heap)) =
                 (&self.bloom_texture_a, &self.bloom_texture_b, &self.bloom_srv_heap)
             {
-                bloom_ran = true;
                 let bloom_a_resource = &bloom_a.resource;
                 let bloom_b_resource = &bloom_b.resource;
                 let bloom_width = bloom_a.width;
@@ -1005,28 +1069,28 @@ impl AlkashEngine {
                 cmd_list.SetDescriptorHeaps(&heaps);
                 cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-                let hdr_to_srv = Self::transition_barrier(
-                    &renderer.hdr_target.resource,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                );
+                // ИЗМЕНЕНО (MSAA — см. resolve-шаг сразу после main pass
+                // выше): раньше здесь был переход `hdr_target` RENDER_TARGET
+                // -> PIXEL_SHADER_RESOURCE — теперь не нужен, `hdr_target`
+                // уже вернулась в RENDER_TARGET сразу после resolve, а то,
+                // что реально читает bloom-extract (`renderer.hdr_srv_gpu`),
+                // указывает на `hdr_resolved`, УЖЕ находящуюся в
+                // PIXEL_SHADER_RESOURCE к этому моменту.
                 let a_before = if self.bloom_a_is_srv {
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
                 } else {
                     D3D12_RESOURCE_STATE_RENDER_TARGET
                 };
-                let mut barriers = Vec::with_capacity(2);
-                barriers.push(hdr_to_srv);
                 if a_before != D3D12_RESOURCE_STATE_RENDER_TARGET {
-                    barriers.push(Self::transition_barrier(
+                    let barriers = [Self::transition_barrier(
                         bloom_a_resource,
                         a_before,
                         D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    ));
-                }
-                cmd_list.ResourceBarrier(&barriers);
-                for b in barriers {
-                    Self::drop_transition_barrier(b);
+                    )];
+                    cmd_list.ResourceBarrier(&barriers);
+                    for b in barriers {
+                        Self::drop_transition_barrier(b);
+                    }
                 }
                 self.bloom_a_is_srv = false;
 
@@ -1126,22 +1190,19 @@ impl AlkashEngine {
                 self.bloom_a_is_srv = true;
             }
 
-            let hdr_resource = &renderer.hdr_target.resource;
+            // ИЗМЕНЕНО (MSAA): раньше здесь условно (если bloom не рисовал)
+            // переводили `hdr_target` в PIXEL_SHADER_RESOURCE для tonemap-
+            // прохода — не нужно, tonemap читает `hdr_resolved`
+            // (`renderer.hdr_srv_gpu`), которая уже в PIXEL_SHADER_RESOURCE
+            // после resolve-шага в начале кадра, независимо от того, бежал
+            // ли bloom.
             let back_buffer_resource = &renderer.back_buffers[real_back_buffer_index].resource;
 
-            let mut barriers_before = Vec::with_capacity(2);
-            if !bloom_ran {
-                barriers_before.push(Self::transition_barrier(
-                    hdr_resource,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                ));
-            }
-            barriers_before.push(Self::transition_barrier(
+            let barriers_before = [Self::transition_barrier(
                 back_buffer_resource,
                 D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
-            ));
+            )];
             cmd_list.ResourceBarrier(&barriers_before);
             for b in barriers_before {
                 Self::drop_transition_barrier(b);
@@ -1191,16 +1252,18 @@ impl AlkashEngine {
             cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             cmd_list.DrawInstanced(3, 1, 0, 0);
 
+            // ИЗМЕНЕНО (MSAA): `hdr_target` больше не транзитится здесь —
+            // она уже вернулась в RENDER_TARGET сразу после resolve-шага
+            // в начале кадра (см. его комментарий) и с тех пор не
+            // трогалась вообще; `hdr_resolved` НИКОГДА не покидает
+            // PIXEL_SHADER_RESOURCE после resolve-шага (и не должна —
+            // именно в этом состоянии её ожидает начало СЛЕДУЮЩЕГО
+            // кадра).
             let mut barriers_after = vec![
                 Self::transition_barrier(
                     back_buffer_resource,
                     D3D12_RESOURCE_STATE_RENDER_TARGET,
                     D3D12_RESOURCE_STATE_PRESENT,
-                ),
-                Self::transition_barrier(
-                    hdr_resource,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
                 ),
             ];
             for cascade in 0..NUM_CASCADES {

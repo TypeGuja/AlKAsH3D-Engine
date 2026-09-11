@@ -675,8 +675,13 @@ impl AlkashEngine {
         let bloom_width = (self.width / 2).max(1);
         let bloom_height = (self.height / 2).max(1);
 
-        let texture_a = crate::render::RenderTexture::create_hdr_target(bloom_width, bloom_height)?;
-        let texture_b = crate::render::RenderTexture::create_hdr_target(bloom_width, bloom_height)?;
+        // ИЗМЕНЕНО (максимальная графика — MSAA, см. `create_hdr_target` в
+        // render.rs): bloom-таргеты — ВСЕГДА одноимпловые обычные
+        // render target'ы (RENDER_TARGET initial state, как и раньше) —
+        // ЭТОТ вызов не имеет отношения к MSAA основного цветового
+        // прохода, просто переиспользует тот же формат-хелпер (R16G16B16A16_FLOAT).
+        let texture_a = crate::render::RenderTexture::create_hdr_target(bloom_width, bloom_height, 1, windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        let texture_b = crate::render::RenderTexture::create_hdr_target(bloom_width, bloom_height, 1, windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET)?;
 
         let rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(2)?;
         let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(2)?;

@@ -8,6 +8,13 @@ use crate::{STATE, ShaderBlob};
 pub struct PipelineState;
 
 impl PipelineState {
+    /// ИЗМЕНЕНО (максимальная графика — MSAA): `sample_count` параметр —
+    /// ЕДИНСТВЕННЫЙ вызывающий (`pipeline_main.rs::create_pipeline_state`,
+    /// основной цветовой проход) передаёт `MSAA_SAMPLES`; PSO ОБЯЗАН
+    /// совпадать по `SampleDesc` с реальными RTV/DSV, в которые рисует
+    /// (`Renderer::hdr_target`/`depth_stencil`) — иначе `DrawInstanced`
+    /// падает с ошибкой валидации D3D12 ("device removed"-класса, не
+    /// просто предупреждением).
     pub fn create_graphics(
         vs: &ShaderBlob,
         ps: &ShaderBlob,
@@ -15,6 +22,7 @@ impl PipelineState {
         _vertex_stride: u32,
         render_target_format: DXGI_FORMAT,
         depth_format: DXGI_FORMAT,
+        sample_count: u32,
     ) -> Result<ID3D12PipelineState> {
         println!("[PSO] ========== CREATING GRAPHICS PIPELINE STATE ==========");
         println!("[PSO] VS size: {} bytes", vs.size());
@@ -119,7 +127,14 @@ impl PipelineState {
             DepthBiasClamp: 0.0,
             SlopeScaledDepthBias: 0.0,
             DepthClipEnable: TRUE,
-            MultisampleEnable: FALSE,
+            // ИЗМЕНЕНО (максимальная графика — MSAA): TRUE при
+            // sample_count>1 — стандартная практика для MSAA render
+            // target'ов (влияет на то, как растеризатор трактует частичное
+            // покрытие пикселя гранью треугольника при многосэмпловом
+            // рендере). Само по себе сэмплирование управляется SampleDesc
+            // PSO/RTV/DSV, этот флаг — дополнительная, но общепринятая
+            // настройка растеризатора под MSAA конкретно.
+            MultisampleEnable: if sample_count > 1 { TRUE } else { FALSE },
             AntialiasedLineEnable: FALSE,
             ForcedSampleCount: 0,
             ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
@@ -201,7 +216,7 @@ impl PipelineState {
             NumRenderTargets: 1,
             RTVFormats: [render_target_format, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN],
             DSVFormat: depth_format,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC { Count: sample_count, Quality: 0 },
             NodeMask: 0,
             CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
             Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
