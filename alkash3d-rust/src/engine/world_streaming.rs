@@ -380,6 +380,23 @@ impl AlkashEngine {
         Ok(())
     }
 
+    /// ДОБАВЛЕНО (точка спавна игрока — по прямому запросу пользователя):
+    /// позиция и угол поворота по Y (yaw, радианы), если в загруженном
+    /// мире есть отмеченный `GlobalObject` — см. подробное объяснение у
+    /// `alworld_format::GLOBAL_OBJECT_FLAG_SPAWN_POINT`. `None`, если мир
+    /// не загружен вообще, или загружен, но без точки спавна (например,
+    /// `create_and_save_demo_world` её не кладёт) — вызывающий код сам
+    /// решает, каким запасным значением пользоваться в этом случае (см.
+    /// `main.rs`/`main_car.rs`, где раньше начальная позиция камеры была
+    /// жёстко захардкожена, а теперь используется как fallback).
+    pub fn world_spawn_point(&self) -> Option<(crate::math::Vec3, f32)> {
+        let world = self.world.as_ref()?;
+        let spawn = world.world_file.global_objects.iter()
+            .find(|g| g.flags & crate::alworld_format::GLOBAL_OBJECT_FLAG_SPAWN_POINT != 0)?;
+        let m = &spawn.transform;
+        Some((crate::math::Vec3::new(m[12], m[13], m[14]), spawn.lod_distances[0]))
+    }
+
     /// ДОБАВЛЕНО (World Streaming — подключение к движку): создаёт
     /// небольшой демонстрационный мир на диске (см.
     /// `AlworldFile::create_and_save_demo_world`) и сразу загружает его

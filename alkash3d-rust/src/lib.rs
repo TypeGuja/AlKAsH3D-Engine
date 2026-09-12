@@ -18,7 +18,18 @@ mod utils;
 pub mod texture;
 mod shader;
 mod pso;
-mod altex_format;
+// ИСПРАВЛЕНО (alkash3d-editorapp: `Transform` неоднозначен между
+// altex_format::Transform и math::Transform, оба реэкспортируются здесь
+// через `pub use X::*` в один и тот же корень крейта): внешний код не может
+// написать `alkash3d_rs::Transform` — компилятор просто отказывается
+// выбирать между двумя одноимёнными типами ("`Transform` is ambiguous").
+// Сам модуль был приватным (`mod altex_format;`), так что и путь
+// `alkash3d_rs::altex_format::Transform` тоже был недоступен снаружи —
+// никакого способа сослаться на нужный тип не существовало вообще. `pub
+// mod` открывает путь через модуль, ничего не меняя в поведении и не
+// трогая существующий `pub use altex_format::*` ниже (тот остаётся для
+// кода ВНУТРИ этого крейта и для случаев, где имя не конфликтует).
+pub mod altex_format;
 mod alfar_format;
 mod alcar_format;
 // ДОБАВЛЕНО (разборка машины/двигателя/коробки на детали): граф физически
@@ -59,6 +70,13 @@ mod plugin;
 mod scheduler;
 pub mod engine;  // engine зависит от Plugin и Sheduler
 
+// ДОБАВЛЕНО (синхронизация alkash3d-execfile с текущим движком): плоский
+// C-ABI слой поверх глобального STATE — см. подробное объяснение архитектуры
+// в шапке capi.rs. Функции экспортируются через #[no_mangle] сами по себе,
+// им не нужен `pub use capi::*` — модуль просто должен попасть в дерево
+// компиляции этого cdylib.
+mod capi;
+
 /// 3D Modules
 pub mod math;
 pub mod camera;
@@ -93,6 +111,16 @@ pub use scheduler::*;
 pub use altex_format::*;
 pub use alfar_format::*;
 pub use alcar_format::*;
+// ИСПРАВЛЕНО (alkash3d-editorapp не мог использовать AlasmFile как
+// библиотечную зависимость): все остальные *_format.rs модули
+// реэкспортируются здесь через `pub use X::*`, у alasm_format этой строки
+// не было — сам модуль объявлен как `mod alasm_format;` (приватный), так
+// что без реэкспорта `AlasmFile`/`PartRecord`/`AssemblyCategory`/`NONE_ID`
+// были недостижимы даже как `alkash3d_rs::alasm_format::...` для внешнего
+// крейта (не то что как `alkash3d_rs::AlasmFile`, по аналогии с остальными
+// форматами). Чисто аддитивное исправление — публичный API движка
+// расширяется, ничего существующего не меняется.
+pub use alasm_format::*;
 pub use alroute_format::*;
 pub use alworld_format::*;
 pub use almat_format::*;

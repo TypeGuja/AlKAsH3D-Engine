@@ -191,6 +191,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ESC     - выход");
     println!("==========================================");
 
+    // ДОБАВЛЕНО (точка спавна игрока — "Play my world"): первый аргумент
+    // командной строки — необязательный путь к СВОЕМУ `.alworld`,
+    // экспортированному из alkash3d-editorapp (File > Export > Scene to
+    // .alworld). Без аргумента поведение НЕ МЕНЯЕТСЯ ни на бит — грузится
+    // тот же автогенерируемый `demo_world`, что и раньше (см.
+    // `setup_world_streaming` ниже). ВАЖНО: этот бинарник — фиксированная
+    // демо-сцена (уличные фонари/плитки пола из `setup_lights`/
+    // `setup_scene` жёстко закодированы и НЕ имеют отношения к загружаемому
+    // миру) — переданный мир добавляет ТОЛЬКО стримингуемые чанки
+    // (объекты .alworld) и, если в нём есть точка спавна, стартовую
+    // позицию камеры; он не заменяет и не отключает демо-декорации.
+    // Полноценный "загрузить только свой уровень, без демо-обвеса" —
+    // отдельная задача, для которой этого файла в его нынешнем виде мало
+    // (пришлось бы разбирать setup_scene/setup_lights на опциональные шаги).
+    let custom_world_path: Option<String> = std::env::args().nth(1).filter(|p| {
+        let exists = std::path::Path::new(p).is_file();
+        if !exists {
+            eprintln!("[MAIN] WARNING: путь к .alworld '{}' не найден — грузится demo_world по умолчанию", p);
+        }
+        exists
+    });
+
     let mut engine = AlkashEngine::new(WINDOW_WIDTH, WINDOW_HEIGHT);
 
     if let Err(e) = engine.init() {
@@ -201,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_lights(&mut engine);
     setup_scene(&mut engine);
     let physics_debug_entities = setup_physics(&mut engine);
-    setup_world_streaming(&mut engine);
+    setup_world_streaming(&mut engine, custom_world_path.as_deref());
     setup_audio(&mut engine);
     let scripting_handles = setup_scripting(&mut engine);
     run_loop(&mut engine, scripting_handles, physics_debug_entities);
@@ -529,8 +551,27 @@ fn setup_physics(engine: &mut AlkashEngine) -> Vec<alkash3d_rs::scene::EntityId>
 /// загружает его в движок. Дальше `engine.update()` внутри `run_loop`
 /// сам подгружает/выгружает чанки по мере ходьбы камеры — здесь только
 /// однократная инициализация.
-fn setup_world_streaming(engine: &mut AlkashEngine) {
-    println!("\n[MAIN] Setting up world streaming demo...");
+///
+/// ИЗМЕНЕНО (точка спавна игрока — "Play my world"): `custom_world_path`
+/// — путь, переданный первым аргументом командной строки (см. `main()`
+/// выше). `Some` — грузим ЕГО через `load_world` вместо генерации
+/// demo_world; `None` — поведение как раньше, без изменений.
+fn setup_world_streaming(engine: &mut AlkashEngine, custom_world_path: Option<&str>) {
+    println!("\n[MAIN] Setting up world streaming...");
+
+    if let Some(path) = custom_world_path {
+        match engine.load_world(path, None) {
+            Ok(()) => println!("[MAIN] ✓ Загружен пользовательский мир: {}", path),
+            Err(e) => {
+                eprintln!("[MAIN] WARNING: не удалось загрузить '{}': {:?} — пробуем demo_world вместо него", path, e);
+                if let Err(e2) = engine.load_demo_world("demo_world") {
+                    eprintln!("[MAIN] WARNING: не удалось создать/загрузить демо-мир: {:?} — стриминг не будет активен", e2);
+                }
+            }
+        }
+        return;
+    }
+
     match engine.load_demo_world("demo_world") {
         Ok(()) => println!("[MAIN] ✓ Демо-мир создан и загружен (demo_world/world.alworld)"),
         Err(e) => eprintln!("[MAIN] WARNING: не удалось создать/загрузить демо-мир: {:?} — стриминг не будет активен", e),
@@ -870,8 +911,25 @@ fn run_loop(engine: &mut AlkashEngine, scripting_handles: ScriptingHandles, phys
     // самой кромке. x=-8.0 остаётся почти в центре ряда из 20 фонарей
     // (фонари на x = -50..45 с шагом 5), рядом сразу с несколькими
     // фонарями по обе стороны.
-    engine.camera.position = Vec3::new(-8.0, EYE_HEIGHT, 1.0);
-    engine.camera.target = Vec3::new(0.0, EYE_HEIGHT - 0.2, 0.0);
+    // ДОБАВЛЕНО (точка спавна игрока — "Play my world"): если загруженный
+    // мир нёс точку спавна (см. AlkashEngine::world_spawn_point и
+    // GLOBAL_OBJECT_FLAG_SPAWN_POINT), стартуем ИЗ НЕЁ вместо жёстко
+    // закодированной позиции у уличных фонарей ниже. `demo_world` точки
+    // спавна не несёт (create_and_save_demo_world её не кладёт) — для
+    // demo_world `world_spawn_point()` всегда `None`, старое поведение
+    // не меняется ни на бит.
+    match engine.world_spawn_point() {
+        Some((spawn_pos, yaw)) => {
+            let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+            engine.camera.position = Vec3::new(spawn_pos.x, EYE_HEIGHT, spawn_pos.z);
+            engine.camera.target = engine.camera.position + forward;
+            println!("[MAIN] ✓ Точка спавна из .alworld: ({:.2}, {:.2}, {:.2}), yaw={:.1}°", spawn_pos.x, spawn_pos.y, spawn_pos.z, yaw.to_degrees());
+        }
+        None => {
+            engine.camera.position = Vec3::new(-8.0, EYE_HEIGHT, 1.0);
+            engine.camera.target = Vec3::new(0.0, EYE_HEIGHT - 0.2, 0.0);
+        }
+    }
 
     let rot_speed = 2.0;
 

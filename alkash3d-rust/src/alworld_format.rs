@@ -71,6 +71,24 @@ pub struct GlobalObject {
     pub flags: u32,
 }
 
+/// ДОБАВЛЕНО (точка спавна игрока — по прямому запросу пользователя,
+/// эдитор → движок): `global_objects` до этой правки нигде в движке не
+/// читался (только сериализовался save()/load() — см. поиск по
+/// engine/*.rs), так что вместо изменения бинарного layout `.alworld`
+/// (потребовало бы версионирования заголовка, см. как это решалось для
+/// `.altex` через `materials_offset`/`version>=2` — куда инвазивнее, чем
+/// нужно здесь) один `GlobalObject` с этим битом в `flags` ПЕРЕИСПОЛЬЗУЕТ
+/// уже существующие поля: `transform` несёт мировую позицию (индексы
+/// 12..15 — та же раскладка, что у `ChunkObjectHeader::transform`),
+/// `lod_distances[0]` — угол поворота по Y (yaw, в радианах; полю всё
+/// равно нечем было бы быть занятым для маркера, у которого нет
+/// геометрии и который в LOD не участвует). Старший бит выбран, чтобы не
+/// пересекаться с обычными флагами global-объектов, которые естественно
+/// начинали бы нумероваться с 0. Записывается эдитором
+/// (alkash3d-editorapp/src/converters/alworld.rs), читается движком через
+/// `AlkashEngine::world_spawn_point()` (engine/world_streaming.rs).
+pub const GLOBAL_OBJECT_FLAG_SPAWN_POINT: u32 = 0x8000_0000;
+
 pub struct AlworldFile {
     pub header: AlworldHeader,
     pub strings: Vec<String>,
