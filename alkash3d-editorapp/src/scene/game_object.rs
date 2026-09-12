@@ -14,6 +14,16 @@ pub struct GameObject {
     pub object_type: ObjectType,
     pub animations: HashMap<String, Animation>,
     pub shader_technique: String,
+    // ДОБАВЛЕНО (иерархия объектов — parent/child, как в Unity/Unreal):
+    // родитель этого объекта в сцене, либо `None` для объекта верхнего
+    // уровня. `transform` выше остаётся ЛОКАЛЬНЫМ (относительно родителя)
+    // — мировой transform всегда получают через `Scene::get_world_transform`,
+    // которая идёт вверх по цепочке `parent`. Список детей НЕ хранится
+    // отдельным полем (не дублируем состояние, которое легко рассинхронить)
+    // — `Scene::children_of` каждый раз сканирует объекты сцены по этому
+    // полю; при масштабе сцен, с которыми работает этот эдитор, это дешевле
+    // и надёжнее, чем поддерживать два источника истины.
+    pub parent: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +79,7 @@ impl GameObject {
             object_type,
             animations: HashMap::new(),
             shader_technique: "PBR_Standard".to_string(),
+            parent: None,
         }
     }
 

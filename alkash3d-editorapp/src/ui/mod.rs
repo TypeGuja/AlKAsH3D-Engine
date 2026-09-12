@@ -6,5 +6,6 @@ pub mod status_bar;
 pub mod viewport;
 pub mod dialogs;
 pub mod style;
+pub mod asset_browser;
 
 pub use style::setup_egui_style;

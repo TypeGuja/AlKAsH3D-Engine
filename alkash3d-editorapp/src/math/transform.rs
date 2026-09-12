@@ -48,15 +48,43 @@ impl Transform {
         }
     }
 
-    /// Преобразует в матрицу 4x4
+    /// Преобразует в матрицу 4x4.
+    ///
+    /// ИСПРАВЛЕНО (главная причина "объекты не рисуются на видеокарте"):
+    /// старая реализация строила массив `[[f32;4];4]` так, будто внешний
+    /// индекс — это СТРОКА матрицы (row-major, с переносом в последнюю
+    /// колонку — [rot*scale.., position.x] в строке 0 и т.д.). Но WGSL
+    /// конструирует `mat4x4<f32>` из массива `[[f32;4];4]`, где внешний
+    /// индекс — это КОЛОНКА (column-major), как и требует std140/wgpu, и
+    /// именно так уже написаны CameraData::view_matrix()/proj_matrix() в
+    /// gpu/renderer.rs (там позиция/трансляция специально положена в
+    /// элемент с внешним индексом 3, т.е. в "колонку 3"). Из-за этого
+    /// рассинхрона старая model-матрица фактически читалась шейдером
+    /// транспонированной: перенос (position) утекал в компоненту W
+    /// результата вместо того, чтобы сдвигать XYZ, а вращение применялось
+    /// в обратную сторону. Проверено численно (см. сессию): для identity-
+    /// вращения и position=(10,0,0) локальная точка (1,0,0) превращалась в
+    /// мировую (1,0,0,11) — то есть объект вообще не сдвигался с места, а
+    /// W-компонента портилась, что после perspective-divide давало
+    /// полностью не тот результат (обычно объект оказывался вне frustum —
+    /// невидим).
+    ///
+    /// Строим матрицу через уже проверенный `rotation.rotate(..)` (тот же
+    /// метод, что использует `transform_point()`, покрытый тестами), беря
+    /// образы масштабированных локальных базисных векторов как колонки —
+    /// это по построению даёт `to_matrix() * vec4(p,1) == transform_point(p)`
+    /// в интерпретации WGSL, независимо от внутреннего соглашения
+    /// `Quat::to_mat3()`.
     #[inline]
     pub fn to_matrix(&self) -> [[f32; 4]; 4] {
-        let rot_mat = self.rotation.to_mat3();
+        let right = self.rotation.rotate(Vec3::new(self.scale.x, 0.0, 0.0));
+        let up = self.rotation.rotate(Vec3::new(0.0, self.scale.y, 0.0));
+        let fwd = self.rotation.rotate(Vec3::new(0.0, 0.0, self.scale.z));
         [
-            [rot_mat[0][0] * self.scale.x, rot_mat[0][1] * self.scale.x, rot_mat[0][2] * self.scale.x, self.position.x],
-            [rot_mat[1][0] * self.scale.y, rot_mat[1][1] * self.scale.y, rot_mat[1][2] * self.scale.y, self.position.y],
-            [rot_mat[2][0] * self.scale.z, rot_mat[2][1] * self.scale.z, rot_mat[2][2] * self.scale.z, self.position.z],
-            [0.0, 0.0, 0.0, 1.0],
+            [right.x, right.y, right.z, 0.0],
+            [up.x, up.y, up.z, 0.0],
+            [fwd.x, fwd.y, fwd.z, 0.0],
+            [self.position.x, self.position.y, self.position.z, 1.0],
         ]
     }
 

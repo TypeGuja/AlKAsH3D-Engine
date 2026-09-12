@@ -24,9 +24,33 @@ pub struct GpuRenderer {
     pub light_buffer: wgpu::Buffer,
     pub light_bind_group: wgpu::BindGroup,
 
-    // Буфер модели
+    // Буфер модели.
+    //
+    // ИСПРАВЛЕНО (баг "объекты не рисуются" / все объекты схлопываются в
+    // одну точку): раньше это был ОДИН uniform-буфер на одну ModelUniform
+    // (64 байта), который в render() перезаписывался через
+    // `self.queue.write_buffer(&self.model_buffer, 0, ..)` перед КАЖДЫМ
+    // draw_indexed внутри одного и того же command encoder'а. Но
+    // queue.write_buffer не встраивается в текущий encoder как команда —
+    // это отдельная запись, которая (наравне с остальными такими же
+    // записями) применяется к буферу до того, как GPU начнёт выполнять
+    // команды основного encoder'а (тот сабмитится один раз, после того как
+    // весь render pass уже записан). Поэтому к моменту фактического
+    // исполнения draw-вызовов на GPU в буфере оставалась ТОЛЬКО последняя
+    // записанная матрица — то есть ВСЕ объекты кадра рисовались с
+    // трансформацией последнего обработанного объекта (порядок которого
+    // к тому же был недетерминирован — материалы группировались через
+    // HashMap). Теперь это буфер на `model_capacity` слотов с выравниванием
+    // под `min_uniform_buffer_offset_alignment`, все матрицы кадра
+    // записываются в него по своим уникальным офсетам ДО открытия render
+    // pass, а каждый draw_indexed использует свой слот через dynamic offset
+    // в set_bind_group — так буферы разных объектов больше не затирают
+    // друг друга.
     pub model_buffer: wgpu::Buffer,
     pub model_bind_group: wgpu::BindGroup,
+    model_bind_group_layout: wgpu::BindGroupLayout,
+    model_stride: u64,
+    model_capacity: u32,
 
     // Материалы
     pub material_bind_group_layout: wgpu::BindGroupLayout,
@@ -47,8 +71,27 @@ pub struct GpuRenderer {
     pub readback_buffer: Option<wgpu::Buffer>,
     pub buffer_size: u64,
 
+    // ИСПРАВЛЕНО (ещё один wgpu validation panic — "Bytes per row does not
+    // respect COPY_BYTES_PER_ROW_ALIGNMENT" в copy_texture_to_buffer): wgpu
+    // требует, чтобы bytes_per_row в ImageDataLayout был кратен 256 байтам;
+    // "естественный" bytes_per_row = width * 4 этому почти никогда не
+    // удовлетворяет (кратно 256 только при width, кратной 64). Храним
+    // реально используемый (дополненный до 256) bytes_per_row отдельно от
+    // логической ширины изображения — see try_update_egui_texture, где по
+    // этому значению построчно убирается паддинг перед тем, как отдать
+    // тайтово упакованные пиксели в egui::ColorImage.
+    padded_bytes_per_row: u32,
+
     // Egui текстура
-    pub egui_texture: Option<egui::TextureId>,
+    // ИСПРАВЛЕНО (панику "Tried setting texture Managed(N) which is not
+    // allocated" в epaint): раньше здесь хранился голый `egui::TextureId`,
+    // полученный из `handle.id()` сразу после `ctx.load_texture(...)`, а сам
+    // `TextureHandle` отбрасывался. `TextureHandle` в egui — счётчик ссылок:
+    // когда он дропается, texture manager на ближайшем кадре освобождает
+    // текстуру по этому id. Следующий вызов `tex_manager().write().set(id, ..)`
+    // с уже освобождённым id и приводил к панике. Нужно хранить сам handle,
+    // пока текстура используется — тогда он живёт вместе с рендерером.
+    pub egui_texture: Option<egui::TextureHandle>,
     pub texture_size: (u32, u32),
 
     // Статистика
@@ -58,6 +101,11 @@ pub struct GpuRenderer {
 
     // Флаг ожидания копирования
     pub copy_in_progress: bool,
+
+    // ИСПРАВЛЕНО (баг отрисовки — см. подробности у try_update_egui_texture):
+    // канал текущего незавершённого map_async, чтобы не запускать map_async
+    // повторно на буфере, который уже находится в процессе маппинга.
+    map_rx: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +172,14 @@ struct MaterialUniform {
     metallic: f32,
     roughness: f32,
     ao: f32,
+    // ИСПРАВЛЕНО (ещё один wgpu validation panic: "Buffer is bound with size
+    // 28 where the shader expects 32 in group[3]"): без этого поля структура
+    // занимает 16+4+4+4=28 байт, а WGSL-структура `Material` (см. PBR_SHADER
+    // выше) из-за vec4-поля albedo требует выравнивания размера на 16 байт
+    // (std140-подобные правила uniform-буферов) — то есть реально 32 байта.
+    // CameraUniform/LightUniform это поле уже имели, у MaterialUniform его
+    // не хватало.
+    _padding: f32,
 }
 
 // ============================================================
@@ -284,7 +340,16 @@ impl CameraData {
             fov: 60.0_f32.to_radians(),
             aspect: 16.0 / 9.0,
             near: 0.1,
-            far: 1000.0,
+            // ИСПРАВЛЕНО (баг: "большой импортированный OBJ-город не
+            // виден"): far=1000 обрезал геометрию дальше 1000 единиц от
+            // камеры — для сцены масштаба "город" этого может не хватать
+            // даже после того, как исправлен потолок zoom_camera (см.
+            // app.rs). near/far здесь не синхронизируются с App per-frame
+            // (в отличие от position/target/fov/aspect в render_gpu_viewport)
+            // — это просто статический дефолт, так что подняли его сразу
+            // до безопасного запаса, согласованного с новым потолком zoom
+            // (500 000).
+            far: 500_000.0,
         }
     }
 
@@ -301,17 +366,40 @@ impl CameraData {
         ]
     }
 
+    // ИСПРАВЛЕНО (глубина клипа не подходила под wgpu): формула ниже —
+    // классическая OpenGL-проекция, у которой NDC z лежит в [-1, 1]
+    // (M[2][2]=(far+near)/(near-far), M[2][3]=2*far*near/(near-far)). Но
+    // wgpu (как D3D/Vulkan/Metal) ожидает NDC z в [0, 1] — с OpenGL-формулой
+    // clip.z получается отрицательным для всего, что ближе примерно
+    // середины диапазона [near, far], и аппаратный клиппинг (который для
+    // wgpu требует clip.z в [0, clip.w]) отбрасывает такие вершины как
+    // "перед near plane", хотя они видимы. Заменил на стандартную формулу
+    // для z в [0,1] (M[2][2]=far/(near-far), M[2][3]=far*near/(near-far)).
     fn proj_matrix(&self) -> [[f32; 4]; 4] {
         let f = 1.0 / (self.fov / 2.0).tan();
 
         [
             [f / self.aspect, 0.0, 0.0, 0.0],
             [0.0, f, 0.0, 0.0],
-            [0.0, 0.0, (self.far + self.near) / (self.near - self.far), -1.0],
-            [0.0, 0.0, (2.0 * self.far * self.near) / (self.near - self.far), 0.0],
+            [0.0, 0.0, self.far / (self.near - self.far), -1.0],
+            [0.0, 0.0, (self.far * self.near) / (self.near - self.far), 0.0],
         ]
     }
 
+    /// ИСПРАВЛЕНО (главная причина "объекты не рисуются на видеокарте" —
+    /// сильнее всех остальных найденных багов вместе взятых): перемножение
+    /// `result[i][j] = sum_k proj[i][k] * view[k][j]` арифметически НЕ дает
+    /// `proj_matrix * view_matrix` в том соглашении (внешний индекс массива
+    /// = колонка, см. комментарий у Transform::to_matrix()), в котором сами
+    /// view_matrix()/proj_matrix() написаны и корректно читаются WGSL по
+    /// отдельности. Проверено численно: для камеры в (0,0,5), смотрящей на
+    /// начало координат, старая формула давала для мировой точки (0,0,0)
+    /// клип-координату с W=0 (!) — то есть после perspective-divide деление
+    /// на ноль/неопределённость для КАЖДОЙ вершины прямо по центру экрана,
+    /// а для остальных точек — грубо неверный клиппинг. Правильная формула
+    /// (дающая ровно proj_matrix() ∘ view_matrix(), т.е. сперва view, потом
+    /// proj, как и требуется) получается перемножением в обратном порядке
+    /// операндов: `result[i][j] = sum_k view[i][k] * proj[k][j]`.
     pub fn view_proj_matrix(&self) -> [[f32; 4]; 4] {
         let view = self.view_matrix();
         let proj = self.proj_matrix();
@@ -321,7 +409,7 @@ impl CameraData {
             for j in 0..4 {
                 result[i][j] = 0.0;
                 for k in 0..4 {
-                    result[i][j] += proj[i][k] * view[k][j];
+                    result[i][j] += view[i][k] * proj[k][j];
                 }
             }
         }
@@ -433,7 +521,10 @@ impl GpuRenderer {
             }],
         });
 
-        // Model bind group
+        // Model bind group. has_dynamic_offset: true — см. комментарий у
+        // поля model_buffer выше: каждый объект кадра получает свой слот в
+        // общем буфере вместо того, чтобы делить один слот на всех.
+        let model_item_size = std::mem::size_of::<ModelUniform>() as u64;
         let model_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Model Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -441,16 +532,20 @@ impl GpuRenderer {
                 visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                    has_dynamic_offset: true,
+                    min_binding_size: std::num::NonZeroU64::new(model_item_size),
                 },
                 count: None,
             }],
         });
 
+        let model_align = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let model_stride = model_item_size.div_ceil(model_align) * model_align;
+        let model_capacity: u32 = 128;
+
         let model_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Model Buffer"),
-            size: std::mem::size_of::<ModelUniform>() as u64,
+            size: model_stride * model_capacity as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -460,7 +555,11 @@ impl GpuRenderer {
             layout: &model_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: model_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &model_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(model_item_size),
+                }),
             }],
         });
 
@@ -504,8 +603,23 @@ impl GpuRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
+                // ИСПРАВЛЕНО (главная причина крашей "GPU rendering" — wgpu
+                // validation panic "Render pipeline targets are incompatible
+                // with render pass ... RenderPass uses textures with formats
+                // [Rgba8Unorm] but the RenderPipeline uses attachments with
+                // formats [Bgra8Unorm]"): раньше здесь стоял `format`,
+                // переданный снаружи как `render_state.target_format` — формат
+                // ОКОННОЙ поверхности egui/wgpu. Но этот рендерер никогда не
+                // рисует напрямую в окно — он всегда рендерит в offscreen
+                // `output_texture`, который `ensure_output_texture()` ниже
+                // всегда создаёт как `Rgba8Unorm` (годный для readback в
+                // egui::ColorImage). Из-за рассинхронизации форматов первый же
+                // вызов `render()` падал с hard validation panic и убивал весь
+                // процесс. Пайплайн должен быть собран под формат ЦЕЛИ, в
+                // которую он реально рисует, — то есть под Rgba8Unorm, а не
+                // под формат окна.
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -574,6 +688,9 @@ impl GpuRenderer {
             light_bind_group,
             model_buffer,
             model_bind_group,
+            model_bind_group_layout,
+            model_stride,
+            model_capacity,
             material_bind_group_layout,
             materials: vec![default_material],
             meshes: Vec::new(),
@@ -583,13 +700,47 @@ impl GpuRenderer {
             output_view: None,
             readback_buffer: None,
             buffer_size: 0,
+            padded_bytes_per_row: 0,
             egui_texture: None,
             texture_size: (width, height),
             draw_calls: 0,
             triangles_rendered: 0,
             surface_format: format,
             copy_in_progress: false,
+            map_rx: None,
         }
+    }
+
+    /// Гарантирует, что model_buffer вмещает `needed` слотов (по одному на
+    /// объект кадра); при нехватке пересоздаёт буфер и bind group под новую
+    /// вместимость (см. комментарий у поля model_buffer).
+    fn ensure_model_capacity(&mut self, needed: u32) {
+        if needed <= self.model_capacity {
+            return;
+        }
+
+        let new_capacity = needed.max(self.model_capacity.saturating_mul(2)).max(16);
+        let model_item_size = std::mem::size_of::<ModelUniform>() as u64;
+
+        self.model_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Model Buffer"),
+            size: self.model_stride * new_capacity as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.model_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Model BG"),
+            layout: &self.model_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &self.model_buffer,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(model_item_size),
+                }),
+            }],
+        });
+        self.model_capacity = new_capacity;
     }
 
     /// Проверяет, нужно ли пересоздавать output текстуру
@@ -615,8 +766,14 @@ impl GpuRenderer {
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Создаём readback буфер
-            let buffer_size = (w as u64 * h as u64 * 4).max(4);
+            // Создаём readback буфер. bytes_per_row обязан быть кратен
+            // wgpu::COPY_BYTES_PER_ROW_ALIGNMENT (256) — округляем вверх и
+            // выделяем буфер уже под дополненный размер строки (см. пояснение
+            // у поля padded_bytes_per_row выше).
+            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let unpadded_bytes_per_row = w * 4;
+            let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+            let buffer_size = (padded_bytes_per_row as u64 * h as u64).max(4);
             let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Readback Buffer"),
                 size: buffer_size,
@@ -628,8 +785,14 @@ impl GpuRenderer {
             self.output_view = Some(view);
             self.readback_buffer = Some(readback_buffer);
             self.buffer_size = buffer_size;
+            self.padded_bytes_per_row = padded_bytes_per_row;
             self.texture_size = (w, h);
             self.copy_in_progress = false;
+            // Старый readback-буфер (и любой незавершённый map_async на нём)
+            // сейчас будет отброшен вместе с заменяемым Buffer — забываем и
+            // его receiver, иначе try_update_egui_texture ниже мог бы позже
+            // получить результат маппинга буфера, которого уже нет.
+            self.map_rx = None;
         }
 
         // Пересоздаём depth если нужно
@@ -675,6 +838,34 @@ impl GpuRenderer {
         };
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
 
+        // ИСПРАВЛЕНО (баг отрисовки на видеокарте — см. подробности у
+        // try_update_egui_texture): раньше render() безусловно писал новый
+        // copy_texture_to_buffer в readback_buffer каждый UI-кадр, даже пока
+        // буфер ещё был замаплен (map_async) под чтение предыдущего кадра.
+        // wgpu запрещает использовать замапленный буфер как destination
+        // копирования — это либо тихо проглатываемая validation-ошибка (и
+        // вьюпорт замирал на первом же кадре), либо паника через
+        // uncaptured-error handler в зависимости от бэкенда/сборки. Пока
+        // предыдущий цикл чтения не завершён (см. copy_in_progress/map_rx),
+        // просто пропускаем этот кадр рендера — предыдущая картинка в egui
+        // остаётся видна, а как только буфер освободится, рендер продолжится
+        // с актуальной камерой/сценой.
+        if self.copy_in_progress {
+            return;
+        }
+
+        // Гарантируем, что в model_buffer хватит слотов на все объекты
+        // кадра, и сразу пишем каждую матрицу в свой уникальный офсет — до
+        // открытия render pass, одним проходом, без разделения одного слота
+        // между несколькими draw-вызовами (см. комментарий у поля
+        // model_buffer выше).
+        self.ensure_model_capacity(render_objects.len() as u32);
+        for (i, obj) in render_objects.iter().enumerate() {
+            let model_uniform = ModelUniform { model: obj.1 };
+            let offset = i as u64 * self.model_stride;
+            self.queue.write_buffer(&self.model_buffer, offset, bytemuck::cast_slice(&[model_uniform]));
+        }
+
         let output_view = match &self.output_view {
             Some(v) => v,
             None => return,
@@ -715,24 +906,29 @@ impl GpuRenderer {
             rp.set_bind_group(0, &self.camera_bind_group, &[]);
             rp.set_bind_group(1, &self.light_bind_group, &[]);
 
-            // Группируем по материалам
-            let mut material_groups: HashMap<usize, Vec<&(usize, [[f32; 4]; 4], usize)>> = HashMap::new();
-            for obj in render_objects {
-                material_groups.entry(obj.2).or_default().push(obj);
+            // Группируем по материалам — индексы в render_objects, а не
+            // сами кортежи, чтобы у каждого объекта остался его собственный
+            // офсет (i * model_stride) в общем model_buffer.
+            let mut material_groups: HashMap<usize, Vec<usize>> = HashMap::new();
+            for (i, obj) in render_objects.iter().enumerate() {
+                material_groups.entry(obj.2).or_default().push(i);
             }
 
-            for (&material_idx, objects) in &material_groups {
+            for (&material_idx, indices) in &material_groups {
                 let mat_idx = if material_idx < self.materials.len() { material_idx } else { 0 };
                 rp.set_bind_group(3, &self.materials[mat_idx].bind_group, &[]);
 
-                for &&(mesh_idx, model_matrix, _) in objects {
+                for &i in indices {
+                    let (mesh_idx, _model_matrix, _) = render_objects[i];
                     if mesh_idx >= self.meshes.len() { continue; }
                     let mesh = &self.meshes[mesh_idx];
                     if !mesh.visible { continue; }
 
-                    let model_uniform = ModelUniform { model: model_matrix };
-                    self.queue.write_buffer(&self.model_buffer, 0, bytemuck::cast_slice(&[model_uniform]));
-                    rp.set_bind_group(2, &self.model_bind_group, &[]);
+                    // Матрица этого объекта уже записана в свой слот выше
+                    // (до открытия render pass) — здесь только выбираем его
+                    // через dynamic offset, ничего не перезаписывая.
+                    let offset = i as u64 * self.model_stride;
+                    rp.set_bind_group(2, &self.model_bind_group, &[offset as u32]);
 
                     rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                     if mesh.index_count > 0 {
@@ -762,7 +958,10 @@ impl GpuRenderer {
                 buffer: readback_buffer,
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
-                    bytes_per_row: Some(w * 4),
+                    // Дополненный до 256 байт bytes_per_row (см. поле
+                    // padded_bytes_per_row) — try_update_egui_texture ниже
+                    // убирает этот паддинг при чтении.
+                    bytes_per_row: Some(self.padded_bytes_per_row),
                     rows_per_image: Some(h),
                 },
             },
@@ -773,7 +972,21 @@ impl GpuRenderer {
         self.copy_in_progress = true;
     }
 
-    /// Пытается обновить egui текстуру из readback буфера
+    /// Пытается обновить egui текстуру из readback буфера.
+    ///
+    /// ИСПРАВЛЕНО (баг отрисовки на видеокарте): раньше эта функция вызывала
+    /// `slice.map_async(...)` заново на КАЖДЫЙ вызов, пока `copy_in_progress`
+    /// было true — то есть на буфере с уже отправленным, но не завершённым
+    /// маппингом запускался ещё один `map_async`, что wgpu не поддерживает
+    /// (второй запрос либо отбрасывается с ошибкой в новый канал, либо
+    /// конфликтует с первым). А после успешного чтения буфер НИКОГДА не
+    /// разматировался обратно (`unmap()` не вызывался) — он оставался
+    /// замапленным навсегда, и следующий `render()` пытался писать в него
+    /// через `copy_texture_to_buffer`, что для замапленного буфера запрещено.
+    /// Отсюда и наблюдавшиеся баги — вьюпорт замирал на первом кадре или
+    /// падал. Теперь `map_async` запускается РОВНО один раз за цикл (receiver
+    /// хранится в `self.map_rx` между вызовами), а по завершении буфер
+    /// явно разматируется.
     pub fn try_update_egui_texture(&mut self, ctx: &egui::Context) -> bool {
         if !self.copy_in_progress {
             return false;
@@ -784,34 +997,63 @@ impl GpuRenderer {
             None => return false,
         };
 
-        let w = self.texture_size.0 as usize;
-        let h = self.texture_size.1 as usize;
+        // Запускаем map_async только один раз за цикл чтения.
+        if self.map_rx.is_none() {
+            let slice = readback_buffer.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+            self.map_rx = Some(rx);
+        }
 
-        // Пробуем прочитать без блокировки
-        let slice = readback_buffer.slice(..);
-
-        // Используем канал для асинхронного чтения
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-
-        // Не ждём — просто проверяем
+        // Не ждём — просто проверяем, готов ли маппинг.
         self.device.poll(wgpu::Maintain::Poll);
 
+        let rx = self.map_rx.as_ref().unwrap();
         match rx.try_recv() {
             Ok(Ok(())) => {
-                let data = slice.get_mapped_range().to_vec();
+                let w = self.texture_size.0 as usize;
+                let h = self.texture_size.1 as usize;
+                let padded_row = self.padded_bytes_per_row as usize;
+                let unpadded_row = w * 4;
+                let raw = readback_buffer.slice(..).get_mapped_range();
+
+                // Строки в буфере дополнены до padded_bytes_per_row (см.
+                // ensure_output_texture/render) — вырезаем только реальные
+                // unpadded_row байт из каждой строки, иначе изображение
+                // съезжает по диагонали (padding-байты сдвигают все строки,
+                // кроме первой).
+                let data: Vec<u8> = if padded_row == unpadded_row {
+                    raw.to_vec()
+                } else {
+                    let mut tight = Vec::with_capacity(unpadded_row * h);
+                    for row in 0..h {
+                        let start = row * padded_row;
+                        tight.extend_from_slice(&raw[start..start + unpadded_row]);
+                    }
+                    tight
+                };
+                drop(raw);
 
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
                     [w, h],
                     &data,
                 );
+                drop(data);
 
-                // Обновляем существующую текстуру или создаём новую
-                if let Some(tex_id) = self.egui_texture {
+                // Буфер обязательно разматируем сразу после чтения — иначе
+                // следующий render() не сможет писать в него copy_texture_to_buffer.
+                readback_buffer.unmap();
+                self.map_rx = None;
+                self.copy_in_progress = false;
+
+                // Обновляем существующую текстуру или создаём новую. Handle
+                // хранится целиком в self.egui_texture (см. комментарий у
+                // поля) — только так текстура переживает конец этого кадра.
+                if let Some(handle) = &self.egui_texture {
                     ctx.tex_manager().write().set(
-                        tex_id,
+                        handle.id(),
                         egui::epaint::ImageDelta::full(color_image, egui::TextureOptions::LINEAR),
                     );
                 } else {
@@ -820,20 +1062,24 @@ impl GpuRenderer {
                         color_image,
                         egui::TextureOptions::LINEAR,
                     );
-                    self.egui_texture = Some(handle.id());
+                    self.egui_texture = Some(handle);
                 }
 
-                drop(data);
-                self.copy_in_progress = false;
                 true
             }
-            _ => false,
+            Ok(Err(e)) => {
+                eprintln!("[GPU] try_update_egui_texture: map_async failed: {:?}", e);
+                self.map_rx = None;
+                self.copy_in_progress = false;
+                false
+            }
+            Err(_) => false, // ещё не готово — ждём следующего кадра
         }
     }
 
     /// Возвращает текущую egui текстуру для отображения
     pub fn get_egui_texture(&self) -> Option<egui::TextureId> {
-        self.egui_texture
+        self.egui_texture.as_ref().map(|h| h.id())
     }
 
     pub fn add_mesh(&mut self, mesh: &Mesh) -> usize {
@@ -901,7 +1147,7 @@ impl GpuMaterial {
         metallic: f32,
         roughness: f32,
     ) -> Self {
-        let uniform = MaterialUniform { albedo, metallic, roughness, ao: 1.0 };
+        let uniform = MaterialUniform { albedo, metallic, roughness, ao: 1.0, _padding: 0.0 };
 
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Material Buffer"),

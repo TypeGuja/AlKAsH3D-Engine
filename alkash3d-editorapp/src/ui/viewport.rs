@@ -46,6 +46,9 @@ pub fn render_viewport(ui: &mut Ui, app: &mut crate::EditorApp) {
                     ui.painter().circle_filled(pos, 10.0, col);
                 }
             }
+            ObjectType::SpawnPoint => {
+                app.draw_spawn_marker(ui, world.position, world.rotation.forward(), rect);
+            }
             _ => {}
         }
 
@@ -53,6 +56,8 @@ pub fn render_viewport(ui: &mut Ui, app: &mut crate::EditorApp) {
             ui.painter().text(pos, Align2::CENTER_CENTER, &obj.name, FontId::proportional(10.0), if selected { Color32::WHITE } else { Color32::LIGHT_GRAY });
         }
     }
+
+    app.draw_gizmo(ui, rect);
 }
 
 fn render_mesh(ui: &Ui, mesh: &crate::mesh::Mesh, transform: &crate::math::Transform, selected: bool, rect: Rect, app: &crate::EditorApp) {

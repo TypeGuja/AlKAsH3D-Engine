@@ -11,6 +11,20 @@ pub enum ObjectType {
     ParticleSystem(ParticleSystemComponent),
     AudioSource(AudioSourceComponent),
     ScriptedEntity(ScriptedEntityComponent),
+    /// ДОБАВЛЕНО (точка спавна игрока — по прямому запросу пользователя):
+    /// позиция и направление взгляда игрока при появлении в мире —
+    /// позиция берётся из `GameObject::transform.position`, направление
+    /// взгляда — из `transform.rotation.forward()` (тот же паттерн, что и
+    /// у Light: ориентация не хранится отдельным полем, целиком выражена
+    /// через transform самого объекта). Пустой вариант — как у `Empty`,
+    /// сам факт "это SpawnPoint" и есть вся нужная информация сверх
+    /// transform. Экспортируется в `.alworld` как `GlobalObject` с
+    /// зарезервированным битом `GLOBAL_OBJECT_FLAG_SPAWN_POINT` (см.
+    /// `converters/alworld.rs`) — движок сейчас `global_objects` вообще не
+    /// читает (см. поиск по engine/*.rs), так что это чисто аддитивный,
+    /// ничего не ломающий способ протащить точку спавна через уже
+    /// существующее, но пока не используемое поле формата.
+    SpawnPoint,
 }
 
 #[derive(Debug, Clone)]
