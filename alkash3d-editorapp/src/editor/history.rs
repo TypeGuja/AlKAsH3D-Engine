@@ -8,6 +8,16 @@ pub enum EditorCommand {
     CreateObject { id: Uuid, object: crate::scene::GameObject },
     DeleteObject { id: Uuid, object: crate::scene::GameObject },
     ModifyTransform { id: Uuid, old_transform: Transform, new_transform: Transform },
+    // ДОБАВЛЕНО (undo/redo для mesh-редактора — по прямому запросу
+    // пользователя, следующий пункт плана после снап-фичи): move/extrude/
+    // delete вершин и граней меняют и число вершин, и число индексов, так
+    // что точечный "старое/новое значение поля" (как у ModifyTransform) не
+    // подходит — проще и надёжнее хранить ПОЛНЫЙ снимок меша до и после
+    // правки (Mesh уже Clone, а меши редактируемых объектов небольшие —
+    // это не world-стриминг). Один такой снимок соответствует ОДНОМУ жесту
+    // пользователя (весь драг перетаскивания, один вызов extrude, один
+    // delete), а не каждому кадру внутри него.
+    ModifyMesh { id: Uuid, old_mesh: crate::mesh::Mesh, new_mesh: crate::mesh::Mesh },
 }
 
 pub struct CommandHistory {
@@ -33,23 +43,38 @@ impl CommandHistory {
         self.redo_stack.clear();
     }
 
-    pub fn undo(&mut self, scene: &mut Scene) -> bool {
+    /// Возвращает id объекта, которого коснулась отменённая команда (если
+    /// был), чтобы вызывающий код (см. `app.rs`) мог обновить GPU-меш/сбросить
+    /// выделение в mesh-редакторе — сам `CommandHistory` ничего не знает ни о
+    /// GPU, ни об Edit Mode.
+    pub fn undo(&mut self, scene: &mut Scene) -> Option<Uuid> {
         if let Some(command) = self.undo_stack.pop_front() {
+            let id = Self::command_object_id(&command);
             self.apply_undo(command.clone(), scene);
             self.redo_stack.push_front(command);
-            true
+            id
         } else {
-            false
+            None
         }
     }
 
-    pub fn redo(&mut self, scene: &mut Scene) -> bool {
+    pub fn redo(&mut self, scene: &mut Scene) -> Option<Uuid> {
         if let Some(command) = self.redo_stack.pop_front() {
+            let id = Self::command_object_id(&command);
             self.apply_redo(command.clone(), scene);
             self.undo_stack.push_front(command);
-            true
+            id
         } else {
-            false
+            None
+        }
+    }
+
+    fn command_object_id(command: &EditorCommand) -> Option<Uuid> {
+        match command {
+            EditorCommand::CreateObject { id, .. } => Some(*id),
+            EditorCommand::DeleteObject { id, .. } => Some(*id),
+            EditorCommand::ModifyTransform { id, .. } => Some(*id),
+            EditorCommand::ModifyMesh { id, .. } => Some(*id),
         }
     }
 
@@ -62,6 +87,13 @@ impl CommandHistory {
                     obj.transform = old_transform;
                 }
             }
+            EditorCommand::ModifyMesh { id, old_mesh, .. } => {
+                if let Some(obj) = scene.get_object_mut(id) {
+                    if let crate::scene::ObjectType::Mesh(m) = &mut obj.object_type {
+                        m.mesh = old_mesh;
+                    }
+                }
+            }
         }
     }
 
@@ -72,6 +104,13 @@ impl CommandHistory {
             EditorCommand::ModifyTransform { id, new_transform, .. } => {
                 if let Some(obj) = scene.get_object_mut(id) {
                     obj.transform = new_transform;
+                }
+            }
+            EditorCommand::ModifyMesh { id, new_mesh, .. } => {
+                if let Some(obj) = scene.get_object_mut(id) {
+                    if let crate::scene::ObjectType::Mesh(m) = &mut obj.object_type {
+                        m.mesh = new_mesh;
+                    }
                 }
             }
         }

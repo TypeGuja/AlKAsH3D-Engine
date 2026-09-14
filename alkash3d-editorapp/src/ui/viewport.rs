@@ -58,6 +58,7 @@ pub fn render_viewport(ui: &mut Ui, app: &mut crate::EditorApp) {
     }
 
     app.draw_gizmo(ui, rect);
+    app.draw_mesh_edit_overlay(ui, rect);
 }
 
 fn render_mesh(ui: &Ui, mesh: &crate::mesh::Mesh, transform: &crate::math::Transform, selected: bool, rect: Rect, app: &crate::EditorApp) {

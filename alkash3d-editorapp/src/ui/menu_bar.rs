@@ -27,6 +27,10 @@ pub fn render_menu_bar(ctx: &egui::Context, app: &mut crate::EditorApp) {
                         app.export_lighting_to_alfar_dialog();
                         ui.close_menu();
                     }
+                    if ui.button("Material Library to .almat...").clicked() {
+                        app.export_materials_to_almat_dialog();
+                        ui.close_menu();
+                    }
                     if ui.button("Sounds to .alsnd...").clicked() {
                         app.export_sounds_to_alsnd_dialog();
                         ui.close_menu();
@@ -71,11 +75,69 @@ pub fn render_menu_bar(ctx: &egui::Context, app: &mut crate::EditorApp) {
                         app.import_alfar_dialog();
                         ui.close_menu();
                     }
+                    if ui.button(".almat materials (adds to library)...").clicked() {
+                        app.import_almat_dialog();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button(".alsnd sounds (adds to scene)...").clicked() {
+                        app.import_alsnd_dialog();
+                        ui.close_menu();
+                    }
+                    if ui.button(".alscript scripts (adds to scene)...").clicked() {
+                        app.import_alscript_dialog();
+                        ui.close_menu();
+                    }
+                    if ui.button(".alroute route (adds to scene)...").clicked() {
+                        app.import_alroute_dialog();
+                        ui.close_menu();
+                    }
+                    if ui.button(".alasm assembly (adds to scene)...").clicked() {
+                        app.import_alasm_dialog();
+                        ui.close_menu();
+                    }
+                    if ui.button(".alcar car preset (adds to scene)...").clicked() {
+                        app.import_alcar_dialog();
+                        ui.close_menu();
+                    }
                 });
 
                 ui.separator();
                 if ui.button("Exit").clicked() {
                     std::process::exit(0);
+                }
+            });
+
+            // ДОБАВЛЕНО (по прямому запросу пользователя: "давай делать
+            // эдитор под каждый формат... чтобы они не лежали мёртвым
+            // грузом") — отдельные, не завязанные на 3D-сцену редакторы под
+            // конкретный формат данных (первый — звуковой банк, см.
+            // `ui/sound_bank_editor.rs`); остальные форматы получат свои
+            // пункты здесь по тому же паттерну позже.
+            ui.menu_button("Assets", |ui| {
+                if ui.button("🔊 Sound Bank Editor...").clicked() {
+                    app.open_sound_bank_editor();
+                    ui.close_menu();
+                }
+                if ui.button("🛣 Route Editor...").clicked() {
+                    app.open_route_editor();
+                    ui.close_menu();
+                }
+                if ui.button("📜 Script Registry Editor...").clicked() {
+                    app.open_script_editor();
+                    ui.close_menu();
+                }
+                if ui.button("🔧 Assembly Editor...").clicked() {
+                    app.open_assembly_editor();
+                    ui.close_menu();
+                }
+                if ui.button("🚗 Car Preset Editor...").clicked() {
+                    app.open_car_preset_editor();
+                    ui.close_menu();
+                }
+                if ui.button("🎨 Material Library Editor...").clicked() {
+                    app.open_material_library_editor();
+                    ui.close_menu();
                 }
             });
 

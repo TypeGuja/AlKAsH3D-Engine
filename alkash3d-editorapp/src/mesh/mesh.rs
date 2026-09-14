@@ -28,4 +28,25 @@ impl Mesh {
         mesh.recalculate_normals();
         mesh
     }
+
+    /// ДОБАВЛЕНО (редактор вершин/граней — по прямому запросу пользователя):
+    /// пересчитывает `bounds` из ТЕКУЩЕГО `vertices` — раньше AABB считался
+    /// только один раз в `new()`, что было корректно для мешей, которые
+    /// после создания никогда не менялись. Редактирование вершин
+    /// (move/extrude/delete — см. editor/mesh_edit.rs) меняет `vertices`
+    /// уже ПОСЛЕ создания меша, так что без явного пересчёта bounds
+    /// молчаливо устаревал бы (неверная bounding box в инспекторе/culling).
+    pub fn recalculate_bounds(&mut self) {
+        if self.vertices.is_empty() {
+            self.bounds = (Vec3::ZERO, Vec3::ZERO);
+            return;
+        }
+        let mut min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+        for v in &self.vertices {
+            min = min.min(*v);
+            max = max.max(*v);
+        }
+        self.bounds = (min, max);
+    }
 }

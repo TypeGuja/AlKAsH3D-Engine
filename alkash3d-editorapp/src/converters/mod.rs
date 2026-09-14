@@ -14,6 +14,7 @@ pub mod gltf;
 pub mod altex;
 pub mod alworld;
 pub mod alfar;
+pub mod almat;
 pub mod alsnd;
 pub mod alcar;
 pub mod alroute;

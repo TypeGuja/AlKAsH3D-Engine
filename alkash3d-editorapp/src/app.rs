@@ -77,6 +77,193 @@ pub struct EditorApp {
     pub show_asset_browser: bool,
     pub asset_browser_root: std::path::PathBuf,
     pub asset_tree: Option<crate::ui::asset_browser::AssetNode>,
+
+    // ДОБАВЛЕНО (редактор вершин/граней — по прямому запросу пользователя:
+    // "сделай возможность редактировать фигуры, делать новые"): Tab
+    // переключает Object Mode <-> Edit Mode для ОДНОГО выделенного
+    // Mesh-объекта (см. toggle_edit_mode в app.rs); `edit_mesh_select_mode`
+    // — что именно выделяет клик (вершину или грань); `edit_selected_*` —
+    // множества выбранных индексов В ТЕКУЩЕМ редактируемом меше (индексы,
+    // не Uuid — это индексы внутри `mesh.vertices`/треугольников, теряют
+    // смысл при выходе из Edit Mode, поэтому очищаются при каждом входе/
+    // выходе, см. toggle_edit_mode).
+    pub edit_mode: bool,
+    pub edit_mesh_object: Option<Uuid>,
+    pub edit_mesh_select_mode: crate::editor::MeshSelectMode,
+    pub edit_selected_vertices: std::collections::BTreeSet<usize>,
+    pub edit_selected_faces: std::collections::BTreeSet<usize>,
+    /// Отдельное от `gizmo_drag` состояние перетаскивания — gizmo в Edit
+    /// Mode всегда работает как Move (перемещение вершин), независимо от
+    /// `current_tool`, поэтому переиспользовать `gizmo_drag`/`apply_gizmo_delta`
+    /// (жёстко завязанные на `scene.selected_ids`/`obj.transform`) было бы
+    /// либо развилкой внутри уже и так плотного кода, либо риском
+    /// незаметно сломать перемещение целых объектов. Раздельное состояние
+    /// — раздельный, независимо проверяемый путь.
+    pub mesh_gizmo_drag: Option<crate::editor::GizmoDrag>,
+    pub mesh_gizmo_hover_axis: Option<crate::editor::GizmoAxisSel>,
+
+    // ИСПРАВЛЕНО (по прямому запросу пользователя — прошлая версия
+    // защищала ТОЛЬКО стартовое выравнивание выделения самого с собой, а
+    // не притягивала к другим вершинам меша по ходу драга, что пользователь
+    // и ожидал — "чтобы при перемещении оно залипало на высоте/плоскости
+    // ЛЮБОЙ другой части меша"): во время перетаскивания вдоль оси
+    // непрерывно ищем среди НЕвыделенных вершин того же меша ближайшую по
+    // ЭТОЙ оси к тому месту, куда сейчас тянет мышь — если она в радиусе
+    // захвата, движение "примагничивается" к её координате (вершины стоят
+    // ровно на ней, а не там, где реально сейчас мышь) и остаётся там, пока
+    // мышь не утащит достаточно далеко (радиус отпускания чуть больше
+    // радиуса захвата — гистерезис, чтобы не дребезжало на границе).
+    /// Мировые координаты (по оси текущего драга) всех НЕвыделенных вершин
+    /// редактируемого меша — кандидаты для примагничивания, пересчитаны
+    /// один раз в момент начала конкретного перетаскивания (не каждый кадр).
+    pub mesh_gizmo_snap_candidates: Vec<f32>,
+    /// Координата (по оси драга) в момент начала перетаскивания — точка
+    /// отсчёта для `mesh_gizmo_snap_raw_delta` ниже.
+    pub mesh_gizmo_snap_start_value: f32,
+    /// Координата, которая РЕАЛЬНО сейчас отражена в позициях вершин —
+    /// отличается от "сырой" желаемой позиции мыши, пока драг примагничен
+    /// к какому-то кандидату (см. `mesh_gizmo_snap_target`).
+    pub mesh_gizmo_snap_applied_value: f32,
+    /// Накопленный НЕограниченный сдвиг мыши с начала перетаскивания (без
+    /// учёта примагничивания) — "куда бы уехало выделение, если бы снапа
+    /// не было вообще".
+    pub mesh_gizmo_snap_raw_delta: f32,
+    /// Координата кандидата, к которому драг сейчас примагничен, если есть.
+    pub mesh_gizmo_snap_target: Option<f32>,
+    // ИСПРАВЛЕНО (по прямому запросу пользователя: "оно отсоединяется от
+    // куба, и выравнивается по центру, а должно по ближайшей грани до
+    // стороны (или угла)"): раньше примагничивался ЦЕНТРОИД выделения
+    // (`mesh_gizmo_snap_start_value`) — из-за этого при сдвиге вдоль оси, в
+    // которой у выделения есть протяжённость (например, целая грань,
+    // сдвигаемая вбок, а не по своей нормали), совпадать с кандидатом
+    // заставляли СЕРЕДИНУ выделения, а не его ближний край. Нужно вместо
+    // этого примагничивать ближайший к цели КРАЙ (мин. или макс. координату
+    // выделения по этой оси) — тогда стыкуется реальная сторона/угол, а не
+    // центр. Смещения края относительно центроида постоянны на всё время
+    // перетаскивания (это чистый перенос, форма выделения не меняется), так
+    // что достаточно зафиксировать их один раз в момент начала драга.
+    /// `(мин. по оси координата выделения на старте) - (координата пивота
+    /// на старте)` — см. комментарий выше.
+    pub mesh_gizmo_snap_min_offset: f32,
+    /// То же самое для максимальной координаты выделения по оси.
+    pub mesh_gizmo_snap_max_offset: f32,
+
+    // ДОБАВЛЕНО (undo/redo для mesh-редактора — по прямому запросу
+    // пользователя, следующий пункт плана после снап-фичи): снимок меша,
+    // сделанный в момент начала текущего перетаскивания gizmo в Edit Mode
+    // (см. `EditorCommand::ModifyMesh` в `editor/history.rs`). `None`, когда
+    // никакого драга не идёт. Используется только для undo/redo — не
+    // путать с `mesh_gizmo_snap_*`, которые про примагничивание.
+    pub mesh_edit_undo_snapshot: Option<crate::mesh::Mesh>,
+    /// true, если во время текущего драга реально было хоть одно движение
+    /// вершин (чтобы не засорять историю "пустыми" командами при клике без
+    /// сдвига мыши).
+    pub mesh_edit_history_dirty: bool,
+
+    // ДОБАВЛЕНО (по прямому запросу пользователя: "давай делать эдитор под
+    // каждый формат... чтобы они не лежали мёртвым грузом") — серия
+    // отдельных, не завязанных на 3D-сцену редакторов формата, все по
+    // одному паттерну (см. `ui/sound_bank_editor.rs` — первый и самый
+    // подробно откомментированный).
+    pub sound_bank_editor: SoundBankEditorState,
+    pub route_editor: RouteEditorState,
+    pub script_editor: ScriptEditorState,
+    pub assembly_editor: AssemblyEditorState,
+    pub car_preset_editor: CarPresetEditorState,
+    pub material_library_editor: MaterialLibraryEditorState,
+}
+
+/// Состояние окна "🔊 Sound Bank Editor" — см. `ui/sound_bank_editor.rs`.
+/// Не путать с размещением `AudioSource`-объектов в 3D-сцене (инспектор,
+/// `ObjectType::AudioSource`) — это про редактирование самого `.alsnd`
+/// как автономного набора данных (звук не пространственный, см. шапку
+/// `converters/alsnd.rs`).
+pub struct SoundBankEditorState {
+    pub open: bool,
+    pub bank_name: String,
+    pub entries: Vec<crate::converters::alsnd::SoundEntryEdit>,
+    /// Путь последнего загруженного/сохранённого файла — только для
+    /// отображения в заголовке окна, ни на что не влияет.
+    pub loaded_path: Option<String>,
+}
+
+impl Default for SoundBankEditorState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            bank_name: "SoundBank".to_string(),
+            entries: Vec::new(),
+            loaded_path: None,
+        }
+    }
+}
+
+/// Состояние окна "🛣 Route Editor" — см. `ui/route_editor.rs`.
+pub struct RouteEditorState {
+    pub open: bool,
+    pub routes: Vec<crate::converters::alroute::RouteEdit>,
+    pub loaded_path: Option<String>,
+}
+
+impl Default for RouteEditorState {
+    fn default() -> Self {
+        Self { open: false, routes: Vec::new(), loaded_path: None }
+    }
+}
+
+/// Состояние окна "📜 Script Registry Editor" — см. `ui/script_editor.rs`.
+pub struct ScriptEditorState {
+    pub open: bool,
+    pub entries: Vec<crate::converters::alscript::ScriptEdit>,
+    pub loaded_path: Option<String>,
+}
+
+impl Default for ScriptEditorState {
+    fn default() -> Self {
+        Self { open: false, entries: Vec::new(), loaded_path: None }
+    }
+}
+
+/// Состояние окна "🔧 Assembly Editor" — см. `ui/assembly_editor.rs`.
+pub struct AssemblyEditorState {
+    pub open: bool,
+    pub name: String,
+    pub category: alkash3d_rs::AssemblyCategory,
+    pub parts: Vec<crate::converters::alasm::PartEdit>,
+    pub loaded_path: Option<String>,
+}
+
+impl Default for AssemblyEditorState {
+    fn default() -> Self {
+        Self { open: false, name: "Assembly".to_string(), category: alkash3d_rs::AssemblyCategory::Generic, parts: Vec::new(), loaded_path: None }
+    }
+}
+
+/// Состояние окна "🚗 Car Preset Editor" — см. `ui/car_preset_editor.rs`.
+pub struct CarPresetEditorState {
+    pub open: bool,
+    pub edit: crate::converters::alcar::CarPresetEdit,
+    pub loaded_path: Option<String>,
+}
+
+impl Default for CarPresetEditorState {
+    fn default() -> Self {
+        Self { open: false, edit: crate::converters::alcar::CarPresetEdit::default(), loaded_path: None }
+    }
+}
+
+/// Состояние окна "🎨 Material Library Editor" — см.
+/// `ui/material_library_editor.rs`. Данные самой библиотеки — уже
+/// существующий `AssetLibrary::materials`, здесь только UI-состояние.
+pub struct MaterialLibraryEditorState {
+    pub open: bool,
+    pub new_material_name: String,
+}
+
+impl Default for MaterialLibraryEditorState {
+    fn default() -> Self {
+        Self { open: false, new_material_name: String::new() }
+    }
 }
 
 pub struct PendingImport {
@@ -177,6 +364,29 @@ impl EditorApp {
                 .and_then(|d| d.parent().map(|p| p.to_path_buf()))
                 .unwrap_or_else(|| std::path::PathBuf::from(".")),
             asset_tree: None,
+
+            edit_mode: false,
+            edit_mesh_object: None,
+            edit_mesh_select_mode: crate::editor::MeshSelectMode::Vertex,
+            edit_selected_vertices: std::collections::BTreeSet::new(),
+            edit_selected_faces: std::collections::BTreeSet::new(),
+            mesh_gizmo_drag: None,
+            mesh_gizmo_hover_axis: None,
+            mesh_gizmo_snap_candidates: Vec::new(),
+            mesh_gizmo_snap_start_value: 0.0,
+            mesh_gizmo_snap_applied_value: 0.0,
+            mesh_gizmo_snap_raw_delta: 0.0,
+            mesh_gizmo_snap_target: None,
+            mesh_gizmo_snap_min_offset: 0.0,
+            mesh_gizmo_snap_max_offset: 0.0,
+            mesh_edit_undo_snapshot: None,
+            mesh_edit_history_dirty: false,
+            sound_bank_editor: SoundBankEditorState::default(),
+            route_editor: RouteEditorState::default(),
+            script_editor: ScriptEditorState::default(),
+            assembly_editor: AssemblyEditorState::default(),
+            car_preset_editor: CarPresetEditorState::default(),
+            material_library_editor: MaterialLibraryEditorState::default(),
         };
 
         app.init_gpu();
@@ -210,6 +420,7 @@ impl EditorApp {
             format,
             width,
             height,
+            render_state.renderer.clone(),
         );
 
         Ok(renderer)
@@ -312,11 +523,11 @@ impl EditorApp {
             let width = rect.width() as u32;
             let height = rect.height() as u32;
 
-            // Рендерим сцену в offscreen текстуру
+            // Рендерим сцену в offscreen текстуру — зарегистрирована
+            // напрямую в egui_wgpu (см. GpuRenderer::ensure_output_texture),
+            // так что `get_egui_texture()` ниже сразу видит этот же кадр,
+            // без промежуточного шага чтения обратно на CPU.
             renderer.render(&render_objects, width, height);
-
-            // Пытаемся обновить egui текстуру (если готов readback)
-            renderer.try_update_egui_texture(ui.ctx());
 
             // Отображаем текстуру
             if let Some(tex_id) = renderer.get_egui_texture() {
@@ -359,6 +570,7 @@ impl EditorApp {
         }
 
         self.draw_gizmo(ui, rect);
+        self.draw_mesh_edit_overlay(ui, rect);
     }
 
     fn get_gpu_render_objects(&self) -> Vec<(usize, [[f32; 4]; 4], usize)> {
@@ -588,6 +800,23 @@ impl EditorApp {
         self.camera_position = self.camera_target - dir * nd;
     }
 
+    // ИСПРАВЛЕНО (баг, найденный пользователем: "поставленный спавн и точка
+    // света визуально уезжают при движении карты" — вторая, независимая от
+    // async-readback причина): `camera_fov` — ВЕРТИКАЛЬНЫЙ угол обзора (та
+    // же величина, что `gpu/camera.rs::calculate_projection_matrix` кладёт
+    // в `f = 1/tan(fovY/2)` и применяет к Y напрямую, а к X — только через
+    // ДЕЛЕНИЕ на `aspect`). Раньше здесь X домножался на `rect.width()`, а
+    // Y — на `rect.height()`, то есть использовались РАЗНЫЕ множители для
+    // двух осей одного и того же пинхол-преобразования. Алгебраически
+    // корректная формула (после сокращения деления на `aspect = width/height`
+    // с последующим умножением на `width/2`, как и делает GPU-проекция +
+    // растеризатор) сокращается до ОДНОГО и того же `rect.height() * 0.5`
+    // для ОБЕИХ осей — GPU-рендер всегда масштабирует именно по высоте,
+    // ширина участвует только в отсечении по краям кадра, не в масштабе.
+    // На квадратном вьюпорте (width == height) разницы не было видно, а на
+    // обычном прямоугольном панели X систематически съезжал относительно
+    // того, что реально рисует GPU — тем сильнее, чем дальше объект от
+    // центра экрана и чем больше aspect отличается от 1.
     pub fn world_to_screen(&self, wp: Vec3, rect: Rect) -> Option<Pos2> {
         let dir = (self.camera_target - self.camera_position).normalize();
         let right = dir.cross(self.camera_up).normalize();
@@ -603,7 +832,7 @@ impl EditorApp {
         let y = rel.dot(up) * scale;
         let c = rect.center();
         Some(Pos2::new(
-            c.x + x * rect.width() * 0.5,
+            c.x + x * rect.height() * 0.5,
             c.y - y * rect.height() * 0.5,
         ))
     }
@@ -919,6 +1148,54 @@ impl EditorApp {
         }
     }
 
+    /// File > Export > Material Library to .almat... — сохраняет ВСЮ
+    /// `AssetLibrary::materials` (именованную библиотеку материалов, не
+    /// материал текущего выделенного объекта — см. подробное объяснение в
+    /// шапке converters/almat.rs про то, чем это отличается от материала,
+    /// уже встроенного в `.altex`).
+    pub fn export_materials_to_almat_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Materials", &["almat"])
+            .set_file_name("materials.almat")
+            .save_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        match crate::converters::almat::export_materials_to_almat_file(&self.asset_library.materials, &path_str) {
+            Ok(()) => self.log(&format!("✅ Библиотека материалов экспортирована ({} шт.): {}", self.asset_library.materials.len(), path_str), Color32::GREEN),
+            Err(e) => self.log(&format!("❌ Ошибка экспорта .almat: {}", e), Color32::RED),
+        }
+    }
+
+    /// File > Import Engine Format > .almat materials... — ДОБАВЛЯЕТ
+    /// материалы в `AssetLibrary::materials` (совпадающие по имени —
+    /// перезаписывает), не заменяет всю библиотеку целиком и не трогает
+    /// текущую сцену.
+    pub fn import_almat_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Materials", &["almat"])
+            .pick_file()
+        else { return; };
+        self.import_almat_from_path(&path.to_string_lossy());
+    }
+
+    /// Общее ядро — см. комментарий у `import_altex_from_path`.
+    pub fn import_almat_from_path(&mut self, path_str: &str) {
+        let mut messages = Vec::new();
+        let result = crate::converters::almat::import_almat_to_materials(path_str, &mut |m| messages.push(m));
+        for m in messages {
+            self.log(&m, Color32::YELLOW);
+        }
+        match result {
+            Ok(materials) => {
+                let count = materials.len();
+                self.asset_library.materials.extend(materials);
+                self.log(&format!("✅ Загружено материалов: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка импорта .almat: {}", e), Color32::RED),
+        }
+    }
+
     /// File > Export > Lighting to .alfar... (см. выше для .altex/.alworld/.alfar)
     /// Эти три ниже — гейм-плей форматы (Tier 3): звук/машины/маршруты/
     /// скрипты/сборки. У сцены эдитора нет выделенных типов объектов для
@@ -1004,6 +1281,330 @@ impl EditorApp {
         match crate::converters::alasm::export_selected_to_alasm(&self.scene, alkash3d_rs::AssemblyCategory::Generic, &path_str) {
             Ok(()) => self.log(&format!("✅ Экспортировано в .alasm (+ .altex геометрия рядом): {}", path_str), Color32::GREEN),
             Err(e) => self.log(&format!("❌ Ошибка экспорта .alasm: {}", e), Color32::RED),
+        }
+    }
+
+    // ДОБАВЛЕНО (по прямому запросу пользователя — "по порядку сначала
+    // форматы": у Tier-3 форматов раньше был только Export, без Import —
+    // асимметрия с .altex/.alworld/.alfar/.almat выше). Все пять ниже
+    // ДОБАВЛЯЮТ объекты в ТЕКУЩУЮ сцену (как .alfar), а не заменяют её
+    // целиком (как .alworld) — общее ядро возвращает `Scene`-контейнер,
+    // объекты которого просто переносятся в `self.scene.add_object`, тот
+    // же паттерн, что и `import_alfar_from_path` выше.
+
+    /// File > Import > Sounds (.alsnd)... — добавляет AudioSource-объекты.
+    pub fn import_alsnd_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Sound Bank", &["alsnd"])
+            .pick_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        let mut messages = Vec::new();
+        let result = crate::converters::alsnd::import_alsnd_to_scene(&path_str, &mut |m| messages.push(m));
+        for m in messages {
+            self.log(&m, Color32::YELLOW);
+        }
+        match result {
+            Ok(sound_scene) => {
+                let count = sound_scene.objects.len();
+                for (_, obj) in sound_scene.objects {
+                    self.scene.add_object(obj);
+                }
+                self.log(&format!("✅ Загружено звуков: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка импорта .alsnd: {}", e), Color32::RED),
+        }
+    }
+
+    /// Assets > Sound Bank Editor... — открывает (или переоткрывает поверх)
+    /// панель редактора, см. `ui/sound_bank_editor.rs`.
+    pub fn open_sound_bank_editor(&mut self) {
+        self.sound_bank_editor.open = true;
+    }
+
+    /// "📂 Загрузить .alsnd..." в самом редакторе — В ОТЛИЧИЕ от
+    /// `import_alsnd_dialog` выше (которая добавляет AudioSource-объекты в
+    /// 3D-сцену), заменяет содержимое панели редактора напрямую, без
+    /// прохода через `Scene` — см. `converters::alsnd::load_sound_bank`.
+    pub fn load_sound_bank_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Sound Bank", &["alsnd"])
+            .pick_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        match crate::converters::alsnd::load_sound_bank(&path_str) {
+            Ok((bank_name, entries)) => {
+                let count = entries.len();
+                self.sound_bank_editor.bank_name = if bank_name.is_empty() { "SoundBank".to_string() } else { bank_name };
+                self.sound_bank_editor.entries = entries;
+                self.sound_bank_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Загружено в редактор звуков: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка загрузки .alsnd: {}", e), Color32::RED),
+        }
+    }
+
+    /// "💾 Сохранить как .alsnd..." в самом редакторе.
+    pub fn save_sound_bank_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Sound Bank", &["alsnd"])
+            .set_file_name("sounds.alsnd")
+            .save_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        match crate::converters::alsnd::save_sound_bank(&self.sound_bank_editor.bank_name, &self.sound_bank_editor.entries, &path_str) {
+            Ok(count) => {
+                self.sound_bank_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Сохранено звуков: {} -> {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка сохранения .alsnd: {}", e), Color32::RED),
+        }
+    }
+
+    // ========================= Route Editor (.alroute) =========================
+
+    pub fn open_route_editor(&mut self) {
+        self.route_editor.open = true;
+    }
+
+    pub fn load_route_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Route", &["alroute"]).pick_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        match crate::converters::alroute::load_routes(&path_str) {
+            Ok(routes) => {
+                let count = routes.len();
+                self.route_editor.routes = routes;
+                self.route_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Загружено маршрутов в редактор: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка загрузки .alroute: {}", e), Color32::RED),
+        }
+    }
+
+    pub fn save_route_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Route", &["alroute"]).set_file_name("routes.alroute").save_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        match crate::converters::alroute::save_routes(&self.route_editor.routes, &path_str) {
+            Ok(count) => {
+                self.route_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Сохранено маршрутов: {} -> {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка сохранения .alroute: {}", e), Color32::RED),
+        }
+    }
+
+    // ========================= Script Registry Editor (.alscript) =========================
+
+    pub fn open_script_editor(&mut self) {
+        self.script_editor.open = true;
+    }
+
+    pub fn load_script_registry_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Scripts", &["alscript"]).pick_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        let mut messages = Vec::new();
+        match crate::converters::alscript::load_scripts(&path_str, &mut |m| messages.push(m)) {
+            Ok(entries) => {
+                let count = entries.len();
+                self.script_editor.entries = entries;
+                self.script_editor.loaded_path = Some(path_str.clone());
+                for m in messages { self.log(&m, Color32::YELLOW); }
+                self.log(&format!("✅ Загружено скриптов в редактор: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка загрузки .alscript: {}", e), Color32::RED),
+        }
+    }
+
+    pub fn save_script_registry_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Scripts", &["alscript"]).set_file_name("scripts.alscript").save_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        match crate::converters::alscript::save_scripts(&self.script_editor.entries, &path_str) {
+            Ok(count) => {
+                self.script_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Сохранено скриптов: {} -> {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка сохранения .alscript: {}", e), Color32::RED),
+        }
+    }
+
+    // ========================= Assembly Editor (.alasm) =========================
+
+    pub fn open_assembly_editor(&mut self) {
+        self.assembly_editor.open = true;
+    }
+
+    pub fn load_assembly_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Assembly", &["alasm"]).pick_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        match crate::converters::alasm::load_assembly(&path_str) {
+            Ok((name, category, parts)) => {
+                let count = parts.len();
+                self.assembly_editor.name = if name.is_empty() { "Assembly".to_string() } else { name };
+                self.assembly_editor.category = category;
+                self.assembly_editor.parts = parts;
+                self.assembly_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Загружено деталей в редактор: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка загрузки .alasm: {}", e), Color32::RED),
+        }
+    }
+
+    pub fn save_assembly_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Assembly", &["alasm"]).set_file_name("assembly.alasm").save_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        match crate::converters::alasm::save_assembly(&self.assembly_editor.name, self.assembly_editor.category, &self.assembly_editor.parts, &path_str) {
+            Ok(count) => {
+                self.assembly_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Сохранено деталей: {} -> {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка сохранения .alasm: {}", e), Color32::RED),
+        }
+    }
+
+    // ========================= Car Preset Editor (.alcar) =========================
+
+    pub fn open_car_preset_editor(&mut self) {
+        self.car_preset_editor.open = true;
+    }
+
+    pub fn load_car_preset_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Car", &["alcar"]).pick_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        match crate::converters::alcar::load_car_preset(&path_str) {
+            Ok(edit) => {
+                self.car_preset_editor.edit = edit;
+                self.car_preset_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Загружен пресет машины: {}", path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка загрузки .alcar: {}", e), Color32::RED),
+        }
+    }
+
+    pub fn save_car_preset_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("AlKAsH3D Car", &["alcar"]).set_file_name("car.alcar").save_file() else { return; };
+        let path_str = path.to_string_lossy().to_string();
+        match crate::converters::alcar::save_car_preset(&self.car_preset_editor.edit, &path_str) {
+            Ok(()) => {
+                self.car_preset_editor.loaded_path = Some(path_str.clone());
+                self.log(&format!("✅ Сохранён пресет машины: {}", path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка сохранения .alcar: {}", e), Color32::RED),
+        }
+    }
+
+    // ========================= Material Library Editor (.almat) =========================
+    // Load/Save намеренно переиспользуют уже существующие
+    // `import_almat_dialog`/`export_materials_to_almat_dialog` (см. выше) —
+    // редактор работает прямо по `AssetLibrary::materials`, отдельная
+    // пара диалогов ему не нужна.
+
+    pub fn open_material_library_editor(&mut self) {
+        self.material_library_editor.open = true;
+    }
+
+    /// File > Import > Scripts (.alscript)... — добавляет ScriptedEntity-объекты.
+    pub fn import_alscript_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Scripts", &["alscript"])
+            .pick_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        let mut messages = Vec::new();
+        let result = crate::converters::alscript::import_alscript_to_scene(&path_str, &mut |m| messages.push(m));
+        for m in messages {
+            self.log(&m, Color32::YELLOW);
+        }
+        match result {
+            Ok(script_scene) => {
+                let count = script_scene.objects.len();
+                for (_, obj) in script_scene.objects {
+                    self.scene.add_object(obj);
+                }
+                self.log(&format!("✅ Загружено скриптов: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка импорта .alscript: {}", e), Color32::RED),
+        }
+    }
+
+    /// File > Import > Route (.alroute)... — добавляет корень-маршрут +
+    /// цепочку дочерних Empty-точек на каждую точку маршрута.
+    pub fn import_alroute_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Route", &["alroute"])
+            .pick_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        let mut messages = Vec::new();
+        let result = crate::converters::alroute::import_alroute_to_scene(&path_str, &mut |m| messages.push(m));
+        for m in messages {
+            self.log(&m, Color32::YELLOW);
+        }
+        match result {
+            Ok(route_scene) => {
+                let count = route_scene.objects.len();
+                for (_, obj) in route_scene.objects {
+                    self.scene.add_object(obj);
+                }
+                self.log(&format!("✅ Загружено объектов маршрута: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка импорта .alroute: {}", e), Color32::RED),
+        }
+    }
+
+    /// File > Import > Assembly (.alasm)... — добавляет иерархию деталей
+    /// (Mesh/куб-заглушка + parent/child).
+    pub fn import_alasm_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Assembly", &["alasm"])
+            .pick_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        let mut messages = Vec::new();
+        let result = crate::converters::alasm::import_alasm_to_scene(&path_str, &mut |m| messages.push(m));
+        for m in messages {
+            self.log(&m, Color32::YELLOW);
+        }
+        match result {
+            Ok(asm_scene) => {
+                let count = asm_scene.objects.len();
+                for (_, obj) in asm_scene.objects {
+                    self.scene.add_object(obj);
+                }
+                self.log(&format!("✅ Загружено деталей сборки: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка импорта .alasm: {}", e), Color32::RED),
+        }
+    }
+
+    /// File > Import > Car Preset (.alcar)... — добавляет корень-машину +
+    /// кузов (если резолвится) + фары/стопы/поворотники как Light-объекты.
+    pub fn import_alcar_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("AlKAsH3D Car", &["alcar"])
+            .pick_file()
+        else { return; };
+        let path_str = path.to_string_lossy().to_string();
+
+        let mut messages = Vec::new();
+        let result = crate::converters::alcar::import_alcar_to_scene(&path_str, &mut |m| messages.push(m));
+        for m in messages {
+            self.log(&m, Color32::YELLOW);
+        }
+        match result {
+            Ok(car_scene) => {
+                let count = car_scene.objects.len();
+                for (_, obj) in car_scene.objects {
+                    self.scene.add_object(obj);
+                }
+                self.log(&format!("✅ Загружено объектов машины: {} из {}", count, path_str), Color32::GREEN);
+            }
+            Err(e) => self.log(&format!("❌ Ошибка импорта .alcar: {}", e), Color32::RED),
         }
     }
 
@@ -1237,6 +1838,778 @@ impl EditorApp {
         }
     }
 
+    // =====================================================================
+    // ДОБАВЛЕНО (редактор вершин/граней — по прямому запросу пользователя:
+    // "сделай возможность редактировать фигуры, делать новые"): Tab —
+    // вход/выход из Edit Mode для одного выделенного Mesh-объекта; 1/2 —
+    // режим выделения (вершины/грани); клик — выделить (Shift — добавить/
+    // снять); существующий gizmo НЕ переиспользуется напрямую (см.
+    // комментарий у mesh_gizmo_drag в определении EditorApp) — здесь
+    // параллельный, но геометрически идентичный путь, привязанный к
+    // индексам вершин меша вместо Uuid объектов сцены. Чистая геометрия
+    // (move/extrude/delete) — в editor/mesh_edit.rs, тут только ввод/GPU.
+    // =====================================================================
+
+    pub fn toggle_edit_mode(&mut self) {
+        if self.edit_mode {
+            // Если Tab нажали прямо посреди перетаскивания — не терять его
+            // из истории отмены.
+            self.mesh_edit_commit_history();
+            self.edit_mode = false;
+            self.edit_mesh_object = None;
+            self.edit_selected_vertices.clear();
+            self.edit_selected_faces.clear();
+            self.mesh_gizmo_drag = None;
+            self.mesh_gizmo_hover_axis = None;
+            self.mesh_gizmo_snap_target = None;
+            self.mesh_gizmo_snap_candidates.clear();
+            self.log("Edit Mode: выключен", Color32::GRAY);
+            return;
+        }
+
+        if self.scene.selected_ids.len() != 1 {
+            self.log("⚠️ Для Edit Mode выдели РОВНО один Mesh-объект, потом Tab", Color32::YELLOW);
+            return;
+        }
+        let id = self.scene.selected_ids[0];
+        let Some(obj) = self.scene.get_object(id) else { return; };
+        if !matches!(obj.object_type, ObjectType::Mesh(_)) {
+            self.log("⚠️ Edit Mode доступен только для Mesh-объектов", Color32::YELLOW);
+            return;
+        }
+
+        self.edit_mode = true;
+        self.edit_mesh_object = Some(id);
+        self.edit_selected_vertices.clear();
+        self.edit_selected_faces.clear();
+        self.log("✏️ Edit Mode: 1=вершины 2=грани, клик=выделить, Shift+клик=добавить, E=экструзия (грани), Delete=удалить, Tab=выход", Color32::GREEN);
+    }
+
+    /// "Действующее" выделение вершин для gizmo/перемещения: в режиме Face
+    /// это объединение вершин всех выбранных граней (двигать грань = двигать
+    /// её вершины), в режиме Vertex — само `edit_selected_vertices`.
+    fn effective_selected_vertices(&self) -> std::collections::BTreeSet<usize> {
+        match self.edit_mesh_select_mode {
+            crate::editor::MeshSelectMode::Vertex => self.edit_selected_vertices.clone(),
+            crate::editor::MeshSelectMode::Face => {
+                let Some(id) = self.edit_mesh_object else { return Default::default(); };
+                let Some(obj) = self.scene.get_object(id) else { return Default::default(); };
+                let ObjectType::Mesh(m) = &obj.object_type else { return Default::default(); };
+                crate::editor::mesh_edit::vertices_of_faces(&m.mesh, &self.edit_selected_faces)
+            }
+        }
+    }
+
+    /// Мировой центроид текущего выделения — pivot mesh-gizmo. `None`, если
+    /// нечего двигать (нет активного Edit Mode или пустое выделение).
+    fn mesh_gizmo_pivot(&self) -> Option<Vec3> {
+        let id = self.edit_mesh_object?;
+        let world_transform = self.scene.get_world_transform(id);
+        let obj = self.scene.get_object(id)?;
+        let ObjectType::Mesh(m) = &obj.object_type else { return None; };
+        let verts = self.effective_selected_vertices();
+        if verts.is_empty() {
+            return None;
+        }
+        let mut sum = Vec3::ZERO;
+        let mut count = 0u32;
+        for &i in &verts {
+            if let Some(&v) = m.mesh.vertices.get(i) {
+                sum = sum + world_transform.transform_point(v);
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return None;
+        }
+        Some(sum * (1.0 / count as f32))
+    }
+
+    fn axis_component(v: Vec3, axis: crate::editor::GizmoAxisSel) -> f32 {
+        use crate::editor::GizmoAxisSel;
+        match axis {
+            GizmoAxisSel::X => v.x,
+            GizmoAxisSel::Y => v.y,
+            GizmoAxisSel::Z => v.z,
+        }
+    }
+
+    /// Кандидаты для примагничивания драга по оси `axis` — мировые
+    /// координаты (по этой оси) всех вершин редактируемого меша, КРОМЕ
+    /// текущего выделения (притягиваться к самому себе бессмысленно).
+    /// Пересчитывается один раз в момент начала каждого перетаскивания — см.
+    /// комментарий у `mesh_gizmo_snap_candidates` в определении EditorApp.
+    fn compute_snap_candidates(&self, axis: crate::editor::GizmoAxisSel) -> Vec<f32> {
+        let Some(id) = self.edit_mesh_object else { return Vec::new(); };
+        let world_transform = self.scene.get_world_transform(id);
+        let Some(obj) = self.scene.get_object(id) else { return Vec::new(); };
+        let ObjectType::Mesh(m) = &obj.object_type else { return Vec::new(); };
+        let selected = self.effective_selected_vertices();
+
+        let mut out = Vec::with_capacity(m.mesh.vertices.len());
+        for (i, &v) in m.mesh.vertices.iter().enumerate() {
+            if selected.contains(&i) {
+                continue;
+            }
+            let world_v = world_transform.transform_point(v);
+            out.push(Self::axis_component(world_v, axis));
+        }
+        out
+    }
+
+    /// Мин./макс. мировая координата (по оси `axis`) вершин текущего
+    /// действующего выделения — протяжённость выделения по этой оси. `None`,
+    /// если выделять нечего. См. комментарий у `mesh_gizmo_snap_min_offset`.
+    fn selected_axis_extent(&self, axis: crate::editor::GizmoAxisSel) -> Option<(f32, f32)> {
+        let id = self.edit_mesh_object?;
+        let world_transform = self.scene.get_world_transform(id);
+        let obj = self.scene.get_object(id)?;
+        let ObjectType::Mesh(m) = &obj.object_type else { return None; };
+        let verts = self.effective_selected_vertices();
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
+        for &i in &verts {
+            if let Some(&v) = m.mesh.vertices.get(i) {
+                let c = Self::axis_component(world_transform.transform_point(v), axis);
+                min = min.min(c);
+                max = max.max(c);
+            }
+        }
+        if min.is_finite() && max.is_finite() {
+            Some((min, max))
+        } else {
+            None
+        }
+    }
+
+    /// Аналог `handle_gizmo_input`, но для Edit Mode — работает поверх
+    /// `edit_selected_vertices`/`edit_selected_faces` вместо
+    /// `scene.selected_ids`, gizmo всегда ведёт себя как Move (см.
+    /// комментарий у `mesh_gizmo_drag`). Возвращает true, если клик этого
+    /// кадра "поглощён" (наведение/начатое перетаскивание/клик-выделение),
+    /// чтобы `handle_viewport_input` не пытался параллельно вращать камеру
+    /// тем же кликом.
+    fn handle_mesh_edit_input(&mut self, ui: &mut Ui, rect: Rect) -> bool {
+        if !self.edit_mode {
+            self.mesh_gizmo_drag = None;
+            self.mesh_gizmo_hover_axis = None;
+            return false;
+        }
+        let Some(id) = self.edit_mesh_object else { return false; };
+        if self.scene.get_object(id).is_none() {
+            // Объект пропал (удалён/отменено через undo) — не застреваем в
+            // Edit Mode над несуществующим объектом.
+            self.toggle_edit_mode();
+            return false;
+        }
+
+        // Продолжение уже начатого перетаскивания — приоритетнее наведения/клика.
+        if let Some(drag) = self.mesh_gizmo_drag.clone() {
+            if ui.input(|i| i.pointer.primary_down()) {
+                if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+                    let mouse_delta = p - drag.last_mouse;
+                    if mouse_delta.length_sq() > 0.0 {
+                        self.apply_mesh_gizmo_delta(drag.axis, mouse_delta, rect);
+                    }
+                    if let Some(d) = self.mesh_gizmo_drag.as_mut() {
+                        d.last_mouse = p;
+                    }
+                }
+                return true;
+            } else {
+                self.mesh_gizmo_drag = None;
+                self.mesh_gizmo_snap_target = None;
+                self.mesh_gizmo_snap_candidates.clear();
+                self.mesh_edit_commit_history();
+                return true;
+            }
+        }
+
+        // Наведение + возможное начало перетаскивания на хэндле gizmo.
+        self.mesh_gizmo_hover_axis = None;
+        if let Some(pivot) = self.mesh_gizmo_pivot() {
+            if let Some(origin_screen) = self.world_to_screen(pivot, rect) {
+                let handle_len = self.gizmo_handle_length(pivot);
+                use crate::editor::GizmoAxisSel;
+                let mut axis_screens: Vec<(GizmoAxisSel, Pos2)> = Vec::new();
+                for axis in [GizmoAxisSel::X, GizmoAxisSel::Y, GizmoAxisSel::Z] {
+                    if let Some(tip) = self.world_to_screen(pivot + axis.world_dir() * handle_len, rect) {
+                        axis_screens.push((axis, tip));
+                    }
+                }
+
+                if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+                    if rect.contains(p) {
+                        let mut best: Option<(GizmoAxisSel, f32)> = None;
+                        for (axis, tip) in &axis_screens {
+                            let d = distance_point_to_segment(p, origin_screen, *tip);
+                            if d < 10.0 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                                best = Some((*axis, d));
+                            }
+                        }
+                        self.mesh_gizmo_hover_axis = best.map(|(a, _)| a);
+
+                        if let Some(axis) = self.mesh_gizmo_hover_axis {
+                            if ui.input(|i| i.pointer.primary_pressed()) {
+                                self.mesh_gizmo_drag = Some(crate::editor::GizmoDrag {
+                                    axis,
+                                    tool: EditorTool::Move,
+                                    last_mouse: p,
+                                });
+                                self.mesh_edit_snapshot_before();
+                                // ДОБАВЛЕНО (примагничивание к другим вершинам
+                                // меша — см. комментарий у `mesh_gizmo_snap_candidates`
+                                // в определении EditorApp): список кандидатов и
+                                // точка отсчёта фиксируются один раз в момент
+                                // начала ИМЕННО ЭТОГО перетаскивания.
+                                self.mesh_gizmo_snap_candidates = self.compute_snap_candidates(axis);
+                                self.mesh_gizmo_snap_start_value = Self::axis_component(pivot, axis);
+                                self.mesh_gizmo_snap_applied_value = self.mesh_gizmo_snap_start_value;
+                                self.mesh_gizmo_snap_raw_delta = 0.0;
+                                self.mesh_gizmo_snap_target = None;
+                                let (ext_min, ext_max) = self.selected_axis_extent(axis)
+                                    .unwrap_or((self.mesh_gizmo_snap_start_value, self.mesh_gizmo_snap_start_value));
+                                self.mesh_gizmo_snap_min_offset = ext_min - self.mesh_gizmo_snap_start_value;
+                                self.mesh_gizmo_snap_max_offset = ext_max - self.mesh_gizmo_snap_start_value;
+                                return true;
+                            }
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ни наведения, ни драга на хэндле — обычный клик выделяет
+        // вершину/грань под курсором (или снимает выделение при клике мимо).
+        self.mesh_edit_click_select(ui, rect)
+    }
+
+    fn apply_mesh_gizmo_delta(&mut self, axis: crate::editor::GizmoAxisSel, mouse_delta: Vec2, rect: Rect) {
+        let Some(pivot) = self.mesh_gizmo_pivot() else { return; };
+        let Some(origin_screen) = self.world_to_screen(pivot, rect) else { return; };
+        let handle_len = self.gizmo_handle_length(pivot);
+        let Some(tip_screen) = self.world_to_screen(pivot + axis.world_dir() * handle_len, rect) else { return; };
+
+        let axis_screen_vec = tip_screen - origin_screen;
+        let screen_len = axis_screen_vec.length();
+        if screen_len < 0.5 {
+            return;
+        }
+        let axis_screen_dir = axis_screen_vec / screen_len;
+        let pixels_along_axis = mouse_delta.x * axis_screen_dir.x + mouse_delta.y * axis_screen_dir.y;
+        if pixels_along_axis == 0.0 {
+            return;
+        }
+
+        let units_per_pixel = handle_len / screen_len;
+
+        // ДОБАВЛЕНО (примагничивание к другим вершинам меша — по прямому
+        // запросу пользователя: "снап к любой другой вершине меша", после
+        // того как первая версия — защита только стартового выравнивания —
+        // оказалась не тем, что нужно): считаем, куда бы уехало выделение
+        // БЕЗ какого-либо снапа (`raw_target`), затем либо продолжаем уже
+        // начатое примагничивание (пока `raw_target` не отъехал от цели
+        // дальше радиуса отпускания), либо ищем среди кандидатов
+        // (`mesh_gizmo_snap_candidates`, см. `compute_snap_candidates`)
+        // ближайшего в радиусе захвата. Реально ПРИМЕНЯЕМ только разницу
+        // между эффективной целью и уже применённым значением — пока цель
+        // не меняется (держимся на кандидате), вершины стоят на месте;
+        // когда меняется (нашли новый кандидат или отпустили старый),
+        // скачком доезжают до неё.
+        self.mesh_gizmo_snap_raw_delta += pixels_along_axis * units_per_pixel;
+        let raw_target = self.mesh_gizmo_snap_start_value + self.mesh_gizmo_snap_raw_delta;
+
+        const CAPTURE_PX: f32 = 10.0;
+        const RELEASE_PX: f32 = 14.0; // чуть больше радиуса захвата — гистерезис против дребезга на границе
+        let capture_world = CAPTURE_PX * units_per_pixel;
+        let release_world = RELEASE_PX * units_per_pixel;
+
+        if let Some(target) = self.mesh_gizmo_snap_target {
+            if (raw_target - target).abs() >= release_world {
+                self.mesh_gizmo_snap_target = None;
+            }
+        }
+        if self.mesh_gizmo_snap_target.is_none() {
+            // ИСПРАВЛЕНО (регрессия, найденная пользователем: "снап больше
+            // ни на одной оси не залипает" — прошлый фикс сломал ВООБЩЕ
+            // ВСЁ, не только починил X): раньше "исключение стартовой
+            // позиции" использовало ТОТ ЖЕ `capture_world`, что и сам
+            // поиск кандидата — но `capture_world` зависит от масштаба
+            // экрана (`units_per_pixel`, см. выше), а при отдалённой
+            // камере (как на скриншоте — куб небольшой в кадре) это может
+            // быть ЗАМЕТНАЯ доля мировых единиц самого объекта. На
+            // маленьком кубе (сторона 1) это исключало ВСЕ кандидаты
+            // подряд, не только буквально совпадающие со стартом — отсюда
+            // "вообще перестало залипать". Для проверки "это буквально та
+            // же точка, откуда начали" нужен маленький ФИКСИРОВАННЫЙ
+            // допуск, не зависящий от зума камеры — не `capture_world`.
+            const SELF_MATCH_EPS: f32 = 1e-4;
+            // ИСПРАВЛЕНО (см. комментарий у `mesh_gizmo_snap_min_offset`):
+            // проверяем оба края выделения (мин. и макс. координату по этой
+            // оси), а не только центроид (`raw_target` без поправки) — для
+            // каждого края переводим "край совпал с кандидатом" в
+            // равносильную цель для ПИВОТА (raw_target + offset края = край;
+            // край = кандидат  =>  raw_target = кандидат - offset), чтобы
+            // реально применяемый сдвиг (который двигает весь пивот) поставил
+            // именно этот край точно на кандидата, а не середину выделения.
+            let mut best: Option<(f32, f32)> = None; // (цель ДЛЯ ПИВОТА, расстояние)
+            for &candidate in &self.mesh_gizmo_snap_candidates {
+                for offset in [self.mesh_gizmo_snap_min_offset, self.mesh_gizmo_snap_max_offset] {
+                    let edge_start = self.mesh_gizmo_snap_start_value + offset;
+                    if (candidate - edge_start).abs() < SELF_MATCH_EPS {
+                        continue;
+                    }
+                    let pivot_target = candidate - offset;
+                    let d = (raw_target - pivot_target).abs();
+                    if d < capture_world && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                        best = Some((pivot_target, d));
+                    }
+                }
+            }
+            self.mesh_gizmo_snap_target = best.map(|(v, _)| v);
+
+            // ДОБАВЛЕНО (временная диагностика — по прямому запросу, раз
+            // визуально протестировать не могу сам): показывает, что
+            // реально происходит при каждой попытке примагничивания, чтобы
+            // не гадать вслепую, если проблема всё ещё не решена.
+            if let Some(target) = self.mesh_gizmo_snap_target {
+                self.log(&format!("[snap] цель найдена: {:.4} (старт {:.4}, raw {:.4}, кандидатов {})", target, self.mesh_gizmo_snap_start_value, raw_target, self.mesh_gizmo_snap_candidates.len()), Color32::from_rgb(120, 220, 255));
+            }
+        }
+
+        let effective_target = self.mesh_gizmo_snap_target.unwrap_or(raw_target);
+        let delta_scalar = effective_target - self.mesh_gizmo_snap_applied_value;
+        if delta_scalar == 0.0 {
+            return; // держимся на кандидате — вершины не двигаются этот кадр
+        }
+        self.mesh_gizmo_snap_applied_value = effective_target;
+        let world_delta = axis.world_dir() * delta_scalar;
+
+        let Some(id) = self.edit_mesh_object else { return; };
+        let world_transform = self.scene.get_world_transform(id);
+        // Мировое смещение -> локальное пространство меша. `transform_point`
+        // сначала масштабирует, потом вращает, потом сдвигает (см.
+        // math/transform.rs) — для ВЕКТОРА (не точки) сдвиг не участвует,
+        // так что обратное преобразование делает шаги в обратном порядке:
+        // сначала отменяем вращение, потом масштаб.
+        let rotated_back = world_transform.rotation.inverse().rotate(world_delta);
+        let scale = world_transform.scale;
+        let local_delta = Vec3::new(
+            if scale.x.abs() > 1e-8 { rotated_back.x / scale.x } else { 0.0 },
+            if scale.y.abs() > 1e-8 { rotated_back.y / scale.y } else { 0.0 },
+            if scale.z.abs() > 1e-8 { rotated_back.z / scale.z } else { 0.0 },
+        );
+
+        let verts = self.effective_selected_vertices();
+        if let Some(obj) = self.scene.get_object_mut(id) {
+            if let ObjectType::Mesh(m) = &mut obj.object_type {
+                crate::editor::mesh_edit::move_vertices(&mut m.mesh, &verts, local_delta);
+            }
+        }
+        self.mesh_edit_history_dirty = true;
+        self.refresh_gpu_mesh_live(id);
+    }
+
+    /// Снимок меша редактируемого объекта — вызывать ПЕРЕД началом правки
+    /// (драг, экструзия, удаление), см. `mesh_edit_undo_snapshot`.
+    fn mesh_edit_snapshot_before(&mut self) {
+        self.mesh_edit_history_dirty = false;
+        let Some(id) = self.edit_mesh_object else { self.mesh_edit_undo_snapshot = None; return; };
+        let Some(obj) = self.scene.get_object(id) else { self.mesh_edit_undo_snapshot = None; return; };
+        let ObjectType::Mesh(m) = &obj.object_type else { self.mesh_edit_undo_snapshot = None; return; };
+        self.mesh_edit_undo_snapshot = Some(m.mesh.clone());
+    }
+
+    /// Закрывает правку, начатую `mesh_edit_snapshot_before` — если меш
+    /// реально поменялся (`mesh_edit_history_dirty`), кладёт в историю ОДНУ
+    /// команду `ModifyMesh` на весь жест целиком (не на каждый кадр драга).
+    /// Безопасно звать даже если ничего не менялось — просто ничего не
+    /// делает.
+    fn mesh_edit_commit_history(&mut self) {
+        let snapshot = self.mesh_edit_undo_snapshot.take();
+        let dirty = self.mesh_edit_history_dirty;
+        self.mesh_edit_history_dirty = false;
+        if !dirty {
+            return;
+        }
+        let Some(old_mesh) = snapshot else { return; };
+        let Some(id) = self.edit_mesh_object else { return; };
+        let Some(obj) = self.scene.get_object(id) else { return; };
+        let ObjectType::Mesh(m) = &obj.object_type else { return; };
+        self.history.push(crate::editor::EditorCommand::ModifyMesh {
+            id,
+            old_mesh,
+            new_mesh: m.mesh.clone(),
+        });
+    }
+
+    /// Обычный клик (без наведения на gizmo) в Edit Mode — выбирает
+    /// ближайшую к курсору вершину/грань (в пределах пиксельного порога),
+    /// либо снимает выделение при клике мимо (без Shift). Возвращает true,
+    /// если клик вообще был обработан этим кадром (нажатие мыши зафиксировано,
+    /// даже если ничего не попало под курсор) — тот же смысл, что у
+    /// остальных `handle_*_input`, чтобы `handle_viewport_input` не начал
+    /// параллельно двигать камеру.
+    fn mesh_edit_click_select(&mut self, ui: &mut Ui, rect: Rect) -> bool {
+        let Some(id) = self.edit_mesh_object else { return false; };
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return false;
+        }
+        let Some(p) = ui.input(|i| i.pointer.hover_pos()) else { return false; };
+        if !rect.contains(p) {
+            return false;
+        }
+        let shift = ui.input(|i| i.modifiers.shift);
+        // ИСПРАВЛЕНО (по прямому запросу пользователя: "убери отсоединение
+        // грани от куба", затем "зачем ты alt вырезал? он мне нужен") —
+        // Alt+клик остаётся способом выделить РОВНО один треугольник вместо
+        // всей компланарной группы, но БЕЗ физического отрыва от соседей
+        // (раньше Alt+клик ещё и дублировал общие вершины —
+        // `detach_faces_from_neighbors` — это и убрали; сам факт выбора
+        // одного треугольника отдельно от группы — нужная пользователю
+        // функция, топологический разрыв меша — нет).
+        let alt = ui.input(|i| i.modifiers.alt);
+
+        let world_transform = self.scene.get_world_transform(id);
+        let Some(obj) = self.scene.get_object(id) else { return false; };
+        let ObjectType::Mesh(m) = &obj.object_type else { return false; };
+        let mesh = &m.mesh;
+
+        match self.edit_mesh_select_mode {
+            crate::editor::MeshSelectMode::Vertex => {
+                let mut best: Option<(usize, f32)> = None;
+                for (i, &v) in mesh.vertices.iter().enumerate() {
+                    let world_v = world_transform.transform_point(v);
+                    let Some(screen) = self.world_to_screen(world_v, rect) else { continue; };
+                    let d = (screen - p).length();
+                    if d < 12.0 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                        best = Some((i, d));
+                    }
+                }
+                if let Some((idx, _)) = best {
+                    if shift {
+                        if self.edit_selected_vertices.contains(&idx) {
+                            self.edit_selected_vertices.remove(&idx);
+                        } else {
+                            self.edit_selected_vertices.insert(idx);
+                        }
+                    } else {
+                        self.edit_selected_vertices.clear();
+                        self.edit_selected_vertices.insert(idx);
+                    }
+                } else if !shift {
+                    self.edit_selected_vertices.clear();
+                }
+            }
+            crate::editor::MeshSelectMode::Face => {
+                let count = crate::editor::mesh_edit::face_count(mesh);
+                let mut best: Option<(usize, f32)> = None;
+                for f in 0..count {
+                    let Some(centroid) = crate::editor::mesh_edit::face_centroid(mesh, f) else { continue; };
+                    let world_c = world_transform.transform_point(centroid);
+                    let Some(screen) = self.world_to_screen(world_c, rect) else { continue; };
+                    let d = (screen - p).length();
+                    if d < 14.0 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                        best = Some((f, d));
+                    }
+                }
+                if let Some((idx, _)) = best {
+                    // Клик выделяет всю связную компланарную группу (см.
+                    // `coplanar_face_group`) — для плоской поверхности (куб,
+                    // плоскость) это ровно та "грань", что пользователь видит
+                    // визуально (обычно 2 треугольника на квад). Alt+клик —
+                    // осознанный выход из этого: РОВНО один треугольник под
+                    // курсором, без расширения до соседей (без их отрыва).
+                    let group: std::collections::BTreeSet<usize> = if alt {
+                        [idx].into_iter().collect()
+                    } else {
+                        crate::editor::mesh_edit::coplanar_face_group(mesh, idx)
+                    };
+                    if shift {
+                        if group.iter().all(|f| self.edit_selected_faces.contains(f)) {
+                            for f in &group {
+                                self.edit_selected_faces.remove(f);
+                            }
+                        } else {
+                            self.edit_selected_faces.extend(group);
+                        }
+                    } else {
+                        self.edit_selected_faces.clear();
+                        self.edit_selected_faces.extend(group);
+                    }
+                } else if !shift {
+                    self.edit_selected_faces.clear();
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Дешёвое обновление GPU-меша "на месте" (см.
+    /// `GpuRenderer::update_mesh_vertices`) — вызывается каждый кадр во
+    /// время перетаскивания gizmo. Если число вершин почему-то разошлось
+    /// (не должно происходить для чистого перемещения), откатывается на
+    /// полное пересоздание, как структурные правки.
+    fn refresh_gpu_mesh_live(&mut self, id: Uuid) {
+        let Some(&mesh_idx) = self.gpu_mesh_map.get(&id) else { return; };
+        let Some(obj) = self.scene.get_object(id) else { return; };
+        let ObjectType::Mesh(m) = &obj.object_type else { return; };
+        if let Some(renderer) = self.gpu_renderer.as_mut() {
+            if !renderer.update_mesh_vertices(mesh_idx, &m.mesh) {
+                let new_idx = renderer.add_mesh(&m.mesh);
+                self.gpu_mesh_map.insert(id, new_idx);
+            }
+        }
+    }
+
+    /// Полное пересоздание GPU-меша — после структурных правок (экструзия/
+    /// удаление), которые меняют число вершин/индексов, а не только их
+    /// значения (см. `GpuRenderer::update_mesh_vertices` про то, почему
+    /// именно они не могут переиспользовать существующий буфер).
+    fn refresh_gpu_mesh_structural(&mut self, id: Uuid) {
+        let Some(obj) = self.scene.get_object(id) else { return; };
+        let ObjectType::Mesh(m) = &obj.object_type else { return; };
+        if let Some(renderer) = self.gpu_renderer.as_mut() {
+            let new_idx = renderer.add_mesh(&m.mesh);
+            self.gpu_mesh_map.insert(id, new_idx);
+        }
+    }
+
+    /// Вызывается после `history.undo`/`history.redo` — сам `CommandHistory`
+    /// знает только про `Scene`, ничего не знает ни про GPU, ни про
+    /// mesh-редактор. `id` — объект, которого коснулась отменённая/
+    /// повторённая команда (см. `CommandHistory::undo`/`redo`).
+    fn after_history_change(&mut self, id: Uuid) {
+        // move/extrude/delete меняют число вершин меша, а undo/redo самого
+        // объекта может вовсе создать/удалить его — старые индексы
+        // выделения в mesh-редакторе (если это как раз редактируемый
+        // объект) более не гарантированно валидны, безопаснее сбросить их,
+        // чем рискнуть индексом за границей массива вершин.
+        if self.edit_mesh_object == Some(id) {
+            self.edit_selected_vertices.clear();
+            self.edit_selected_faces.clear();
+            self.mesh_gizmo_drag = None;
+            self.mesh_gizmo_snap_target = None;
+            self.mesh_gizmo_snap_candidates.clear();
+        }
+        if self.scene.get_object(id).is_some() {
+            self.refresh_gpu_mesh_structural(id);
+        } else {
+            self.gpu_mesh_map.remove(&id);
+        }
+    }
+
+    /// Клавиша E в Edit Mode (Face) — экструдирует выбранные грани вдоль их
+    /// среднего нормали на дистанцию, пропорциональную размеру меша (тот же
+    /// принцип, что и у `gizmo_handle_length` — фиксированное число единиц
+    /// было бы то незаметным, то абсурдным в зависимости от масштаба
+    /// объекта). Новое выделение после экструзии — только что созданные
+    /// (выдвинутые) вершины, в режиме Vertex — гизмо сразу готов их подвинуть
+    /// дальше, тот же поток действий, что в Blender (Extrude, затем Move).
+    pub fn extrude_selected_faces(&mut self) {
+        if !self.edit_mode {
+            return;
+        }
+        if self.edit_mesh_select_mode != crate::editor::MeshSelectMode::Face {
+            self.log("⚠️ Экструзия работает только в режиме выделения граней (клавиша 2)", Color32::YELLOW);
+            return;
+        }
+        let Some(id) = self.edit_mesh_object else { return; };
+        if self.edit_selected_faces.is_empty() {
+            self.log("⚠️ Нет выделенных граней для экструзии", Color32::YELLOW);
+            return;
+        }
+
+        let amount = {
+            let Some(obj) = self.scene.get_object(id) else { return; };
+            let ObjectType::Mesh(m) = &obj.object_type else { return; };
+            let (min, max) = m.mesh.bounds;
+            ((max - min).length() * 0.1).max(0.05)
+        };
+
+        self.mesh_edit_snapshot_before();
+        let new_vertex_indices = {
+            let Some(obj) = self.scene.get_object_mut(id) else { return; };
+            let ObjectType::Mesh(m) = &mut obj.object_type else { return; };
+            crate::editor::mesh_edit::extrude_faces(&mut m.mesh, &self.edit_selected_faces, amount)
+        };
+
+        if new_vertex_indices.is_empty() {
+            self.mesh_edit_undo_snapshot = None;
+            self.log("⚠️ Экструзия не дала результата (проверь выделение)", Color32::YELLOW);
+            return;
+        }
+
+        let new_count = new_vertex_indices.len();
+        self.edit_selected_faces.clear();
+        self.edit_mesh_select_mode = crate::editor::MeshSelectMode::Vertex;
+        self.edit_selected_vertices = new_vertex_indices;
+
+        self.mesh_edit_history_dirty = true;
+        self.mesh_edit_commit_history();
+        self.refresh_gpu_mesh_structural(id);
+        self.log(&format!("✅ Экструзия: {} новых вершин выделено", new_count), Color32::GREEN);
+    }
+
+    /// Клавиша Delete в Edit Mode — удаляет выбранные вершины (режим Vertex)
+    /// или грани (режим Face) текущего редактируемого меша. Отдельная
+    /// функция от обычного `Key::Delete` (который удаляет ЦЕЛЫЕ объекты
+    /// сцены) — переключение между ними по `self.edit_mode` в обработчике
+    /// клавиш (см. `update()`).
+    pub fn delete_selected_mesh_elements(&mut self) {
+        if !self.edit_mode {
+            return;
+        }
+        let Some(id) = self.edit_mesh_object else { return; };
+
+        match self.edit_mesh_select_mode {
+            crate::editor::MeshSelectMode::Vertex => {
+                if self.edit_selected_vertices.is_empty() {
+                    return;
+                }
+                let selected = self.edit_selected_vertices.clone();
+                self.mesh_edit_snapshot_before();
+                if let Some(obj) = self.scene.get_object_mut(id) {
+                    if let ObjectType::Mesh(m) = &mut obj.object_type {
+                        crate::editor::mesh_edit::delete_vertices(&mut m.mesh, &selected);
+                    }
+                }
+                self.edit_selected_vertices.clear();
+                self.mesh_edit_history_dirty = true;
+                self.mesh_edit_commit_history();
+                self.log(&format!("🗑️ Удалено вершин: {}", selected.len()), Color32::YELLOW);
+            }
+            crate::editor::MeshSelectMode::Face => {
+                if self.edit_selected_faces.is_empty() {
+                    return;
+                }
+                let selected = self.edit_selected_faces.clone();
+                self.mesh_edit_snapshot_before();
+                if let Some(obj) = self.scene.get_object_mut(id) {
+                    if let ObjectType::Mesh(m) = &mut obj.object_type {
+                        crate::editor::mesh_edit::delete_faces(&mut m.mesh, &selected);
+                    }
+                }
+                self.edit_selected_faces.clear();
+                self.mesh_edit_history_dirty = true;
+                self.mesh_edit_commit_history();
+                self.log(&format!("🗑️ Удалено граней: {}", selected.len()), Color32::YELLOW);
+            }
+        }
+
+        self.refresh_gpu_mesh_structural(id);
+    }
+
+    /// Отрисовка маркеров вершин/граней + подпись режима + gizmo Edit
+    /// Mode — общая для GPU-оверлея (render_gpu_viewport) и CPU-фолбэка
+    /// (ui/viewport.rs), тот же принцип, что и у `draw_spawn_marker`/
+    /// `draw_gizmo`.
+    pub fn draw_mesh_edit_overlay(&self, ui: &Ui, rect: Rect) {
+        if !self.edit_mode {
+            return;
+        }
+        let Some(id) = self.edit_mesh_object else { return; };
+        let Some(obj) = self.scene.get_object(id) else { return; };
+        let ObjectType::Mesh(m) = &obj.object_type else { return; };
+        let mesh = &m.mesh;
+        let world_transform = self.scene.get_world_transform(id);
+        let painter = ui.painter();
+
+        let mode_label = match self.edit_mesh_select_mode {
+            crate::editor::MeshSelectMode::Vertex => "✏️ EDIT MODE — вершины (1/2 режим, E экструзия граней, Delete, Tab выход)",
+            crate::editor::MeshSelectMode::Face => "✏️ EDIT MODE — грани (1/2 режим, Alt+клик — один треугольник, E экструзия, Delete, Tab выход)",
+        };
+        painter.text(
+            rect.left_top() + egui::vec2(8.0, 8.0),
+            Align2::LEFT_TOP,
+            mode_label,
+            FontId::proportional(13.0),
+            Color32::from_rgb(255, 200, 60),
+        );
+
+        // ДОБАВЛЕНО (по прямому запросу пользователя — примагничивание к
+        // другим вершинам меша во время драга, см. `mesh_gizmo_snap_target`):
+        // пока активное перетаскивание реально держится на каком-то
+        // кандидате — показываем это явно, иначе "вершины перестали
+        // двигаться, хотя мышь ещё едет" выглядело бы как баг/лаг, а не
+        // как осознанное примагничивание.
+        if let (Some(drag), Some(target)) = (&self.mesh_gizmo_drag, self.mesh_gizmo_snap_target) {
+            let axis_name = match drag.axis {
+                crate::editor::GizmoAxisSel::X => "X",
+                crate::editor::GizmoAxisSel::Y => "Y",
+                crate::editor::GizmoAxisSel::Z => "Z",
+            };
+            painter.text(
+                rect.left_top() + egui::vec2(8.0, 26.0),
+                Align2::LEFT_TOP,
+                format!("🔒 Примагничено: {} = {:.3} (другая вершина меша)", axis_name, target),
+                FontId::proportional(12.0),
+                Color32::from_rgb(120, 220, 255),
+            );
+        }
+
+        match self.edit_mesh_select_mode {
+            crate::editor::MeshSelectMode::Vertex => {
+                for (i, &v) in mesh.vertices.iter().enumerate() {
+                    let world_v = world_transform.transform_point(v);
+                    let Some(p) = self.world_to_screen(world_v, rect) else { continue; };
+                    let selected = self.edit_selected_vertices.contains(&i);
+                    let color = if selected { Color32::from_rgb(255, 160, 40) } else { Color32::WHITE };
+                    let radius = if selected { 5.0 } else { 3.5 };
+                    painter.circle_filled(p, radius, color);
+                    if selected {
+                        painter.circle_stroke(p, radius + 2.0, Stroke::new(1.5, Color32::from_rgb(255, 220, 140)));
+                    }
+                }
+            }
+            crate::editor::MeshSelectMode::Face => {
+                let count = crate::editor::mesh_edit::face_count(mesh);
+                for f in 0..count {
+                    let Some(centroid) = crate::editor::mesh_edit::face_centroid(mesh, f) else { continue; };
+                    let world_c = world_transform.transform_point(centroid);
+                    let Some(p) = self.world_to_screen(world_c, rect) else { continue; };
+                    let selected = self.edit_selected_faces.contains(&f);
+                    let color = if selected { Color32::from_rgb(255, 160, 40) } else { Color32::from_rgb(200, 200, 220) };
+                    painter.circle_filled(p, if selected { 5.0 } else { 3.0 }, color);
+
+                    if selected {
+                        if let Some([a, b, c]) = crate::editor::mesh_edit::face_vertex_indices(mesh, f) {
+                            let pa = mesh.vertices.get(a).and_then(|&v| self.world_to_screen(world_transform.transform_point(v), rect));
+                            let pb = mesh.vertices.get(b).and_then(|&v| self.world_to_screen(world_transform.transform_point(v), rect));
+                            let pc = mesh.vertices.get(c).and_then(|&v| self.world_to_screen(world_transform.transform_point(v), rect));
+                            if let (Some(pa), Some(pb), Some(pc)) = (pa, pb, pc) {
+                                let hl = Color32::from_rgb(255, 220, 140);
+                                painter.line_segment([pa, pb], Stroke::new(2.0, hl));
+                                painter.line_segment([pb, pc], Stroke::new(2.0, hl));
+                                painter.line_segment([pc, pa], Stroke::new(2.0, hl));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(pivot) = self.mesh_gizmo_pivot() {
+            if let Some(origin_screen) = self.world_to_screen(pivot, rect) {
+                let handle_len = self.gizmo_handle_length(pivot);
+                use crate::editor::GizmoAxisSel;
+                for axis in [GizmoAxisSel::X, GizmoAxisSel::Y, GizmoAxisSel::Z] {
+                    let Some(tip) = self.world_to_screen(pivot + axis.world_dir() * handle_len, rect) else { continue; };
+                    let is_dragging_this = self.mesh_gizmo_drag.as_ref().map(|d| d.axis == axis).unwrap_or(false);
+                    let is_hovered = self.mesh_gizmo_drag.is_none() && self.mesh_gizmo_hover_axis == Some(axis);
+                    let active = is_dragging_this || is_hovered;
+                    let color = if active { Color32::WHITE } else { axis.color() };
+                    let width = if active { 4.0 } else { 2.5 };
+                    painter.line_segment([origin_screen, tip], Stroke::new(width, color));
+                    painter.circle_filled(tip, 5.0, color);
+                }
+                painter.circle_filled(origin_screen, 4.0, Color32::WHITE);
+            }
+        }
+    }
+
     /// Визуальная отметка точки спавна во вьюпорте (флажок на шесте + линия
     /// направления взгляда) — общая для GPU-оверлея (render_gpu_viewport
     /// выше) и CPU-фолбэка (ui/viewport.rs), поэтому метод, а не
@@ -1326,7 +2699,13 @@ impl EditorApp {
         let right = dir.cross(self.camera_up).normalize();
         let up = right.cross(dir).normalize();
         let c = rect.center();
-        let x = (screen.x - c.x) / (rect.width() * 0.5).max(1.0);
+        // ИСПРАВЛЕНО (та же причина, что и у `world_to_screen` — см. её
+        // комментарий): обратная проекция ОБЯЗАНА делить на тот же
+        // множитель, каким прямая проекция умножает, иначе пара функций
+        // перестаёт быть взаимно-обратной на неквадратном вьюпорте — объект,
+        // перетащенный из браузера ассетов, приземлялся бы не под курсором,
+        // а со сдвигом по X.
+        let x = (screen.x - c.x) / (rect.height() * 0.5).max(1.0);
         let y = (c.y - screen.y) / (rect.height() * 0.5).max(1.0);
         let tf = (self.camera_fov.to_radians() * 0.5).tan();
         let ray_dir = (dir + right * (x * tf) + up * (y * tf)).normalize();
@@ -1431,25 +2810,63 @@ impl eframe::App for EditorApp {
 
         ctx.input(|i| {
             if i.key_pressed(Key::W) { self.current_tool = EditorTool::Move; }
-            if i.key_pressed(Key::E) { self.current_tool = EditorTool::Rotate; }
+            if i.key_pressed(Key::E) {
+                // ДОБАВЛЕНО (редактор вершин/граней): в Edit Mode E —
+                // экструзия выбранных граней, а не переключение на Rotate
+                // (вне Edit Mode поведение прежнее).
+                if self.edit_mode {
+                    self.extrude_selected_faces();
+                } else {
+                    self.current_tool = EditorTool::Rotate;
+                }
+            }
             if i.key_pressed(Key::R) { self.current_tool = EditorTool::Scale; }
             if i.key_pressed(Key::Q) { self.current_tool = EditorTool::Select; }
 
-            if i.key_pressed(Key::Delete) {
-                if self.gpu_renderer.is_some() {
-                    for id in &self.scene.selected_ids {
-                        self.gpu_mesh_map.remove(id);
-                        self.gpu_material_map.remove(id);
-                    }
+            // ДОБАВЛЕНО (редактор вершин/граней): Tab — вход/выход из Edit
+            // Mode; 1/2 — режим выделения (вершины/грани), только пока Edit
+            // Mode активен, чтобы не перехватывать эти клавиши в остальном UI.
+            if i.key_pressed(Key::Tab) {
+                self.toggle_edit_mode();
+            }
+            if self.edit_mode {
+                if i.key_pressed(Key::Num1) {
+                    self.edit_mesh_select_mode = crate::editor::MeshSelectMode::Vertex;
+                    self.edit_selected_faces.clear();
                 }
-                self.scene.delete_selected();
+                if i.key_pressed(Key::Num2) {
+                    self.edit_mesh_select_mode = crate::editor::MeshSelectMode::Face;
+                    self.edit_selected_vertices.clear();
+                }
+            }
+
+            if i.key_pressed(Key::Delete) {
+                // ДОБАВЛЕНО (редактор вершин/граней): в Edit Mode Delete
+                // удаляет выбранные вершины/грани РЕДАКТИРУЕМОГО меша, а не
+                // целые объекты сцены (прежнее поведение, сохранено для
+                // Object Mode).
+                if self.edit_mode {
+                    self.delete_selected_mesh_elements();
+                } else {
+                    if self.gpu_renderer.is_some() {
+                        for id in &self.scene.selected_ids {
+                            self.gpu_mesh_map.remove(id);
+                            self.gpu_material_map.remove(id);
+                        }
+                    }
+                    self.scene.delete_selected();
+                }
             }
 
             if i.key_pressed(Key::Z) && i.modifiers.ctrl {
-                self.history.undo(&mut self.scene);
+                if let Some(id) = self.history.undo(&mut self.scene) {
+                    self.after_history_change(id);
+                }
             }
             if i.key_pressed(Key::Y) && i.modifiers.ctrl {
-                self.history.redo(&mut self.scene);
+                if let Some(id) = self.history.redo(&mut self.scene) {
+                    self.after_history_change(id);
+                }
             }
 
             if i.key_pressed(Key::F5) {
@@ -1474,11 +2891,26 @@ impl eframe::App for EditorApp {
         crate::ui::status_bar::render_status_bar(ctx, self);
         crate::ui::dialogs::render_dialogs(ctx, self);
         crate::ui::asset_browser::render_asset_browser(ctx, self);
+        crate::ui::sound_bank_editor::render_sound_bank_editor(ctx, self);
+        crate::ui::route_editor::render_route_editor(ctx, self);
+        crate::ui::script_editor::render_script_editor(ctx, self);
+        crate::ui::assembly_editor::render_assembly_editor(ctx, self);
+        crate::ui::car_preset_editor::render_car_preset_editor(ctx, self);
+        crate::ui::material_library_editor::render_material_library_editor(ctx, self);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.available_rect_before_wrap();
-            let gizmo_active = self.handle_gizmo_input(ui, rect);
-            self.handle_viewport_input(ui, rect, gizmo_active);
+            // ДОБАВЛЕНО (редактор вершин/граней): в Edit Mode клик/gizmo
+            // обрабатывает вершины/грани редактируемого меша, а не объекты
+            // сцены — `suppress_select` дополнительно форсируется в true в
+            // Edit Mode, чтобы клик по вершине не переключал заодно
+            // "выделенный объект" (см. handle_viewport_input ниже).
+            let gizmo_active = if self.edit_mode {
+                self.handle_mesh_edit_input(ui, rect)
+            } else {
+                self.handle_gizmo_input(ui, rect)
+            };
+            self.handle_viewport_input(ui, rect, gizmo_active || self.edit_mode);
 
             // Сначала даём шанс загрузить
             self.process_upload_queue(self.max_upload_bytes_per_frame);

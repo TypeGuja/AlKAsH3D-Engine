@@ -67,45 +67,40 @@ pub struct GpuRenderer {
     pub output_texture: Option<wgpu::Texture>,
     pub output_view: Option<wgpu::TextureView>,
 
-    // Буфер для копирования
-    pub readback_buffer: Option<wgpu::Buffer>,
-    pub buffer_size: u64,
-
-    // ИСПРАВЛЕНО (ещё один wgpu validation panic — "Bytes per row does not
-    // respect COPY_BYTES_PER_ROW_ALIGNMENT" в copy_texture_to_buffer): wgpu
-    // требует, чтобы bytes_per_row в ImageDataLayout был кратен 256 байтам;
-    // "естественный" bytes_per_row = width * 4 этому почти никогда не
-    // удовлетворяет (кратно 256 только при width, кратной 64). Храним
-    // реально используемый (дополненный до 256) bytes_per_row отдельно от
-    // логической ширины изображения — see try_update_egui_texture, где по
-    // этому значению построчно убирается паддинг перед тем, как отдать
-    // тайтово упакованные пиксели в egui::ColorImage.
-    padded_bytes_per_row: u32,
-
-    // Egui текстура
-    // ИСПРАВЛЕНО (панику "Tried setting texture Managed(N) which is not
-    // allocated" в epaint): раньше здесь хранился голый `egui::TextureId`,
-    // полученный из `handle.id()` сразу после `ctx.load_texture(...)`, а сам
-    // `TextureHandle` отбрасывался. `TextureHandle` в egui — счётчик ссылок:
-    // когда он дропается, texture manager на ближайшем кадре освобождает
-    // текстуру по этому id. Следующий вызов `tex_manager().write().set(id, ..)`
-    // с уже освобождённым id и приводил к панике. Нужно хранить сам handle,
-    // пока текстура используется — тогда он живёт вместе с рендерером.
-    pub egui_texture: Option<egui::TextureHandle>,
+    // ИСПРАВЛЕНО (баг, найденный пользователем: "перемещение карты
+    // лаганное" + "точки освещения и спавн немного смещаются при движении
+    // карты"): раньше сюда рендерилось В ОТДЕЛЬНУЮ output-текстуру, потом
+    // ЦЕЛИКОМ копировалось на CPU через `copy_texture_to_buffer` +
+    // `map_async` (см. историю правок ниже — `readback_buffer`/
+    // `copy_in_progress`/`map_rx`, ныне удалены), и только ПОТОМ заново
+    // загружалось в egui как НОВАЯ CPU-текстура через `ctx.load_texture`.
+    // У этого пути ДВЕ проблемы разом: (1) `map_async` — асинхронный,
+    // раньше чем через кадр-другой результат не готов, а `render()` пока
+    // это не завершится, СОВСЕМ пропускал кадр (`if copy_in_progress {
+    // return; }`) — то есть картинка в вьюпорте реально обновлялась
+    // заметно РЕЖЕ, чем рисовались остальные элементы UI, отсюда
+    // "лаганность"; (2) оверлей (маркер спавна, лейблы, гизмо — см.
+    // app.rs::render_gpu_viewport) считает свои экранные координаты через
+    // `world_to_screen` от ТЕКУЩЕЙ камеры КАЖДЫЙ UI-кадр, а фон за ним
+    // обновлялся с задержкой в кадр-другой — при движении камеры оверлей
+    // и фон оказывались нарисованы для РАЗНЫХ положений камеры, отсюда и
+    // "точки/спавн смещаются".
+    //
+    // Правильный (и заодно кратно более дешёвый) путь — тот, для которого
+    // egui_wgpu вообще существует: регистрируем ЭТУ ЖЕ wgpu-текстуру
+    // напрямую в `egui_wgpu::Renderer` (`register_native_texture`) один
+    // раз (и заново при пересоздании текстуры/ресайзе) — egui рисует её
+    // БЕЗ единого байта копирования через CPU, и в тот же кадр, в который
+    // мы её отрендерили (никакого readback, никакой асинхронности,
+    // никакой задержки между фоном и оверлеем).
+    egui_renderer: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
+    egui_texture_id: Option<egui::TextureId>,
     pub texture_size: (u32, u32),
 
     // Статистика
     pub draw_calls: u32,
     pub triangles_rendered: u32,
     pub surface_format: wgpu::TextureFormat,
-
-    // Флаг ожидания копирования
-    pub copy_in_progress: bool,
-
-    // ИСПРАВЛЕНО (баг отрисовки — см. подробности у try_update_egui_texture):
-    // канал текущего незавершённого map_async, чтобы не запускать map_async
-    // повторно на буфере, который уже находится в процессе маппинга.
-    map_rx: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -439,6 +434,7 @@ impl GpuRenderer {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        egui_renderer: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
     ) -> Self {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
@@ -698,16 +694,12 @@ impl GpuRenderer {
             depth_view,
             output_texture: None,
             output_view: None,
-            readback_buffer: None,
-            buffer_size: 0,
-            padded_bytes_per_row: 0,
-            egui_texture: None,
+            egui_renderer,
+            egui_texture_id: None,
             texture_size: (width, height),
             draw_calls: 0,
             triangles_rendered: 0,
             surface_format: format,
-            copy_in_progress: false,
-            map_rx: None,
         }
     }
 
@@ -754,6 +746,13 @@ impl GpuRenderer {
             let w = width.max(1);
             let h = height.max(1);
 
+            // ИЗМЕНЕНО (см. подробный комментарий у полей `egui_renderer`/
+            // `egui_texture_id` в определении struct — устранение
+            // лаганности/рассинхронизации оверлея с фоном): `COPY_SRC`
+            // больше не нужен (никто больше не копирует эту текстуру в CPU
+            // буфер) — вместо него `TEXTURE_BINDING`, чтобы egui_wgpu мог
+            // сэмплировать её напрямую как обычную текстуру в своём
+            // собственном шейдере отрисовки UI.
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Output Texture"),
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -761,38 +760,30 @@ impl GpuRenderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Создаём readback буфер. bytes_per_row обязан быть кратен
-            // wgpu::COPY_BYTES_PER_ROW_ALIGNMENT (256) — округляем вверх и
-            // выделяем буфер уже под дополненный размер строки (см. пояснение
-            // у поля padded_bytes_per_row выше).
-            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let unpadded_bytes_per_row = w * 4;
-            let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
-            let buffer_size = (padded_bytes_per_row as u64 * h as u64).max(4);
-            let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Readback Buffer"),
-                size: buffer_size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
+            // Регистрируем ЭТУ САМУЮ view напрямую в egui_wgpu — начиная с
+            // этого момента `egui_texture_id` показывает ЛЮБОЙ будущий
+            // рендер в неё БЕЗ дополнительных вызовов (никакого аналога
+            // "update" не нужно — egui каждый кадр сэмплирует ровно тот же
+            // GPU-ресурс). Старый id (если был — например, после ресайза
+            // окна) сначала освобождаем, иначе texture manager egui копит
+            // дескрипторы на уже ненужные view.
+            {
+                let mut renderer = self.egui_renderer.write();
+                if let Some(old_id) = self.egui_texture_id.take() {
+                    renderer.free_texture(&old_id);
+                }
+                let id = renderer.register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
+                self.egui_texture_id = Some(id);
+            }
 
             self.output_texture = Some(texture);
             self.output_view = Some(view);
-            self.readback_buffer = Some(readback_buffer);
-            self.buffer_size = buffer_size;
-            self.padded_bytes_per_row = padded_bytes_per_row;
             self.texture_size = (w, h);
-            self.copy_in_progress = false;
-            // Старый readback-буфер (и любой незавершённый map_async на нём)
-            // сейчас будет отброшен вместе с заменяемым Buffer — забываем и
-            // его receiver, иначе try_update_egui_texture ниже мог бы позже
-            // получить результат маппинга буфера, которого уже нет.
-            self.map_rx = None;
         }
 
         // Пересоздаём depth если нужно
@@ -838,22 +829,6 @@ impl GpuRenderer {
         };
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
 
-        // ИСПРАВЛЕНО (баг отрисовки на видеокарте — см. подробности у
-        // try_update_egui_texture): раньше render() безусловно писал новый
-        // copy_texture_to_buffer в readback_buffer каждый UI-кадр, даже пока
-        // буфер ещё был замаплен (map_async) под чтение предыдущего кадра.
-        // wgpu запрещает использовать замапленный буфер как destination
-        // копирования — это либо тихо проглатываемая validation-ошибка (и
-        // вьюпорт замирал на первом же кадре), либо паника через
-        // uncaptured-error handler в зависимости от бэкенда/сборки. Пока
-        // предыдущий цикл чтения не завершён (см. copy_in_progress/map_rx),
-        // просто пропускаем этот кадр рендера — предыдущая картинка в egui
-        // остаётся видна, а как только буфер освободится, рендер продолжится
-        // с актуальной камерой/сценой.
-        if self.copy_in_progress {
-            return;
-        }
-
         // Гарантируем, что в model_buffer хватит слотов на все объекты
         // кадра, и сразу пишем каждую матрицу в свой уникальный офсет — до
         // открытия render pass, одним проходом, без разделения одного слота
@@ -868,10 +843,6 @@ impl GpuRenderer {
 
         let output_view = match &self.output_view {
             Some(v) => v,
-            None => return,
-        };
-        let readback_buffer = match &self.readback_buffer {
-            Some(b) => b,
             None => return,
         };
 
@@ -942,144 +913,21 @@ impl GpuRenderer {
             }
         }
 
-        // Копируем в readback буфер
-        let output_texture = self.output_texture.as_ref().unwrap();
-        let w = self.texture_size.0;
-        let h = self.texture_size.1;
-
-        encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
-                texture: output_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyBuffer {
-                buffer: readback_buffer,
-                layout: wgpu::ImageDataLayout {
-                    offset: 0,
-                    // Дополненный до 256 байт bytes_per_row (см. поле
-                    // padded_bytes_per_row) — try_update_egui_texture ниже
-                    // убирает этот паддинг при чтении.
-                    bytes_per_row: Some(self.padded_bytes_per_row),
-                    rows_per_image: Some(h),
-                },
-            },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-
+        // ИЗМЕНЕНО: раньше здесь был `copy_texture_to_buffer` в readback-буфер
+        // + `copy_in_progress = true` (весь механизм async-чтения с CPU, см.
+        // подробный комментарий у полей `egui_renderer`/`egui_texture_id`
+        // выше) — теперь `output_view` уже зарегистрирована напрямую в egui
+        // (см. `ensure_output_texture`), никакого копирования не нужно:
+        // просто отправляем кадр на GPU, и он тут же виден там же, где
+        // зарегистрирован `egui_texture_id`.
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.copy_in_progress = true;
     }
 
-    /// Пытается обновить egui текстуру из readback буфера.
-    ///
-    /// ИСПРАВЛЕНО (баг отрисовки на видеокарте): раньше эта функция вызывала
-    /// `slice.map_async(...)` заново на КАЖДЫЙ вызов, пока `copy_in_progress`
-    /// было true — то есть на буфере с уже отправленным, но не завершённым
-    /// маппингом запускался ещё один `map_async`, что wgpu не поддерживает
-    /// (второй запрос либо отбрасывается с ошибкой в новый канал, либо
-    /// конфликтует с первым). А после успешного чтения буфер НИКОГДА не
-    /// разматировался обратно (`unmap()` не вызывался) — он оставался
-    /// замапленным навсегда, и следующий `render()` пытался писать в него
-    /// через `copy_texture_to_buffer`, что для замапленного буфера запрещено.
-    /// Отсюда и наблюдавшиеся баги — вьюпорт замирал на первом кадре или
-    /// падал. Теперь `map_async` запускается РОВНО один раз за цикл (receiver
-    /// хранится в `self.map_rx` между вызовами), а по завершении буфер
-    /// явно разматируется.
-    pub fn try_update_egui_texture(&mut self, ctx: &egui::Context) -> bool {
-        if !self.copy_in_progress {
-            return false;
-        }
-
-        let readback_buffer = match &self.readback_buffer {
-            Some(b) => b,
-            None => return false,
-        };
-
-        // Запускаем map_async только один раз за цикл чтения.
-        if self.map_rx.is_none() {
-            let slice = readback_buffer.slice(..);
-            let (tx, rx) = std::sync::mpsc::channel();
-            slice.map_async(wgpu::MapMode::Read, move |result| {
-                let _ = tx.send(result);
-            });
-            self.map_rx = Some(rx);
-        }
-
-        // Не ждём — просто проверяем, готов ли маппинг.
-        self.device.poll(wgpu::Maintain::Poll);
-
-        let rx = self.map_rx.as_ref().unwrap();
-        match rx.try_recv() {
-            Ok(Ok(())) => {
-                let w = self.texture_size.0 as usize;
-                let h = self.texture_size.1 as usize;
-                let padded_row = self.padded_bytes_per_row as usize;
-                let unpadded_row = w * 4;
-                let raw = readback_buffer.slice(..).get_mapped_range();
-
-                // Строки в буфере дополнены до padded_bytes_per_row (см.
-                // ensure_output_texture/render) — вырезаем только реальные
-                // unpadded_row байт из каждой строки, иначе изображение
-                // съезжает по диагонали (padding-байты сдвигают все строки,
-                // кроме первой).
-                let data: Vec<u8> = if padded_row == unpadded_row {
-                    raw.to_vec()
-                } else {
-                    let mut tight = Vec::with_capacity(unpadded_row * h);
-                    for row in 0..h {
-                        let start = row * padded_row;
-                        tight.extend_from_slice(&raw[start..start + unpadded_row]);
-                    }
-                    tight
-                };
-                drop(raw);
-
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                    [w, h],
-                    &data,
-                );
-                drop(data);
-
-                // Буфер обязательно разматируем сразу после чтения — иначе
-                // следующий render() не сможет писать в него copy_texture_to_buffer.
-                readback_buffer.unmap();
-                self.map_rx = None;
-                self.copy_in_progress = false;
-
-                // Обновляем существующую текстуру или создаём новую. Handle
-                // хранится целиком в self.egui_texture (см. комментарий у
-                // поля) — только так текстура переживает конец этого кадра.
-                if let Some(handle) = &self.egui_texture {
-                    ctx.tex_manager().write().set(
-                        handle.id(),
-                        egui::epaint::ImageDelta::full(color_image, egui::TextureOptions::LINEAR),
-                    );
-                } else {
-                    let handle = ctx.load_texture(
-                        "gpu-3d-output",
-                        color_image,
-                        egui::TextureOptions::LINEAR,
-                    );
-                    self.egui_texture = Some(handle);
-                }
-
-                true
-            }
-            Ok(Err(e)) => {
-                eprintln!("[GPU] try_update_egui_texture: map_async failed: {:?}", e);
-                self.map_rx = None;
-                self.copy_in_progress = false;
-                false
-            }
-            Err(_) => false, // ещё не готово — ждём следующего кадра
-        }
-    }
-
-    /// Возвращает текущую egui текстуру для отображения
+    /// Текстура для отображения в egui — зарегистрирована напрямую на GPU
+    /// (см. `ensure_output_texture`), обновляется автоматически каждым
+    /// вызовом `render()` без какого-либо дополнительного шага.
     pub fn get_egui_texture(&self) -> Option<egui::TextureId> {
-        self.egui_texture.as_ref().map(|h| h.id())
+        self.egui_texture_id
     }
 
     pub fn add_mesh(&mut self, mesh: &Mesh) -> usize {
@@ -1124,6 +972,54 @@ impl GpuRenderer {
         });
 
         idx
+    }
+
+    /// ДОБАВЛЕНО (редактор вершин — по прямому запросу пользователя):
+    /// дешёвое обновление УЖЕ существующего GPU-меша на месте
+    /// (`queue.write_buffer`, без пересоздания буфера) — используется во
+    /// время перетаскивания вершин gizmo, когда КОЛИЧЕСТВО вершин/индексов
+    /// не меняется каждый кадр, только их позиции/нормали. `add_mesh` (новый
+    /// буфер на каждый вызов) для этого пути слишком дорог — при
+    /// перетаскивании вызывается потенциально десятки раз в секунду, и
+    /// каждый вызов `add_mesh` не освобождает старый буфер (см. комментарий
+    /// у `GpuRenderer::meshes` — растущий `Vec`, индексы должны оставаться
+    /// стабильными), так что бездумный вызов `add_mesh` каждый кадр драга
+    /// быстро набрал бы сотни мегабайт мусора за одну сессию правки.
+    ///
+    /// Возвращает `false` (ничего не меняя), если число вершин/индексов
+    /// разошлось с уже выделенным буфером — тогда вызывающий код (см.
+    /// `EditorApp::refresh_gpu_mesh_after_structural_edit`) обязан вместо
+    /// этого вызвать `add_mesh` и обновить свою карту `id -> mesh_idx`
+    /// (структурные правки — экструзия/удаление — меняют количество вершин
+    /// и происходят РЕДКО, по одной операции за раз, не каждый кадр, так что
+    /// цена нового буфера там уже не проблема).
+    pub fn update_mesh_vertices(&mut self, mesh_idx: usize, mesh: &Mesh) -> bool {
+        let Some(gpu_mesh) = self.meshes.get(mesh_idx) else { return false; };
+
+        let expected_vertex_bytes = (mesh.vertices.len() * std::mem::size_of::<Vertex3D>()) as u64;
+        let expected_index_bytes = (mesh.indices.len() * 4) as u64;
+        if gpu_mesh.vertex_buffer.size() != expected_vertex_bytes || gpu_mesh.index_buffer.size() != expected_index_bytes {
+            return false;
+        }
+
+        let mut vertices = Vec::with_capacity(mesh.vertices.len());
+        for i in 0..mesh.vertices.len() {
+            let normal = if i < mesh.normals.len() { mesh.normals[i] } else { Vec3::UP };
+            vertices.push(Vertex3D {
+                position: [mesh.vertices[i].x, mesh.vertices[i].y, mesh.vertices[i].z],
+                normal: [normal.x, normal.y, normal.z],
+                color: [0.7, 0.7, 0.7],
+            });
+        }
+
+        self.queue.write_buffer(&gpu_mesh.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        // Индексы при простом перемещении вершин не меняются, но пишем их
+        // тоже — эта функция вызывается и после операций, где порядок
+        // индексов мог быть переставлен без изменения ИХ ЧИСЛА (сейчас
+        // таких нет, но дешёвая защита на будущее не помешает).
+        self.queue.write_buffer(&gpu_mesh.index_buffer, 0, bytemuck::cast_slice(&mesh.indices));
+
+        true
     }
 
     pub fn add_material(&mut self, albedo: [f32; 4], metallic: f32, roughness: f32) -> usize {
