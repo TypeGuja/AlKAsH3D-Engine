@@ -899,16 +899,35 @@ impl AlkashEngine {
             // приходит сюда в PIXEL_SHADER_RESOURCE на КАЖДОМ кадре,
             // включая первый, без отдельной ветки под "первый кадр".
             {
+                // ДОБАВЛЕНО (runtime-переключаемый MSAA — по прямому
+                // запросу пользователя): при MSAA=off `hdr_target` создаётся
+                // ОДНОИМПЛОВЫМ (см. `Renderer::new`, msaa_samples=1) — то
+                // есть уже РОВНО того же формата/размера/сэмплинга, что и
+                // `hdr_resolved`. `ResolveSubresource` требует именно
+                // многосэмпловый источник (иначе ошибка валидации D3D12),
+                // поэтому здесь простой `CopyResource` вместо resolve — обе
+                // ветки решают одну и ту же задачу ("перенести то, что
+                // нарисовал main pass, в текстуру, которую дальше читают
+                // bloom/volumetric/tonemap"), отличается только GPU-команда
+                // и связанные с ней состояния ресурсов (COPY_* вместо
+                // RESOLVE_*).
+                let msaa_on = self.msaa_samples > 1;
+                let (src_state_before, dst_state_before) = if msaa_on {
+                    (D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATE_RESOLVE_DEST)
+                } else {
+                    (D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST)
+                };
+
                 let to_resolve = [
                     Self::transition_barrier(
                         &renderer.hdr_target.resource,
                         D3D12_RESOURCE_STATE_RENDER_TARGET,
-                        D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                        src_state_before,
                     ),
                     Self::transition_barrier(
                         &renderer.hdr_resolved.resource,
                         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                        D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                        dst_state_before,
                     ),
                 ];
                 cmd_list.ResourceBarrier(&to_resolve);
@@ -916,23 +935,27 @@ impl AlkashEngine {
                     Self::drop_transition_barrier(b);
                 }
 
-                cmd_list.ResolveSubresource(
-                    &renderer.hdr_resolved.resource,
-                    0,
-                    &renderer.hdr_target.resource,
-                    0,
-                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
-                );
+                if msaa_on {
+                    cmd_list.ResolveSubresource(
+                        &renderer.hdr_resolved.resource,
+                        0,
+                        &renderer.hdr_target.resource,
+                        0,
+                        windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    );
+                } else {
+                    cmd_list.CopyResource(&renderer.hdr_resolved.resource, &renderer.hdr_target.resource);
+                }
 
                 let after_resolve = [
                     Self::transition_barrier(
                         &renderer.hdr_target.resource,
-                        D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+                        src_state_before,
                         D3D12_RESOURCE_STATE_RENDER_TARGET,
                     ),
                     Self::transition_barrier(
                         &renderer.hdr_resolved.resource,
-                        D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                        dst_state_before,
                         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                     ),
                 ];
@@ -942,7 +965,16 @@ impl AlkashEngine {
                 }
             }
 
-            if let (Some(volumetric_texture), Some(volumetric_srv_heap), Some(volumetric_cb)) = (
+            // ДОБАВЛЕНО (по прямому запросу пользователя — переключаемые
+            // графические настройки): `graphics_settings.volumetric`
+            // проверяется ЗДЕСЬ, а не через обнуление `volumetric_texture`
+            // (как делает `disable_volumetric_for_diagnostics` для разовой
+            // ручной диагностики) — иначе SRV этой текстуры в
+            // `renderer.srv_uav_heap`, которую БЕЗУСЛОВНО каждый кадр
+            // читает tonemap composite, указывала бы на уже уничтоженный
+            // ресурс. Ресурс остаётся живым, пропускается только сам
+            // проход (реальная экономия GPU-времени всё равно есть).
+            if self.graphics_settings.volumetric { if let (Some(volumetric_texture), Some(volumetric_srv_heap), Some(volumetric_cb)) = (
                 &self.volumetric_texture,
                 &self.volumetric_srv_heap,
                 &self.volumetric_constant_buffer,
@@ -1077,6 +1109,38 @@ impl AlkashEngine {
                     Self::drop_transition_barrier(b);
                 }
                 self.volumetric_is_srv = true;
+            } } else if let Some(volumetric_texture) = &self.volumetric_texture {
+                // ИСПРАВЛЕНО (та же причина, что и у SSAO ниже — см.
+                // подробный комментарий там): volumetric-свет АДДИТИВНЫЙ
+                // (`combined = hdrColor + ... + volumetricColor`, см.
+                // pipeline_post.rs), поэтому непроинициализированное
+                // содержимое здесь менее разрушительно, чем у
+                // мультипликативного SSAO (не может занулить всю картинку),
+                // но всё равно может добавить случайный паразитный оттенок —
+                // на всякий случай чистим в (0,0,0,0), нейтральный "нет
+                // god rays" для аддитивного канала.
+                if self.volumetric_is_srv {
+                    let to_rt = [Self::transition_barrier(
+                        &volumetric_texture.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    )];
+                    cmd_list.ResourceBarrier(&to_rt);
+                    for b in to_rt {
+                        Self::drop_transition_barrier(b);
+                    }
+                }
+                cmd_list.ClearRenderTargetView(self.volumetric_rtv, &[0.0, 0.0, 0.0, 0.0], None);
+                let to_srv = [Self::transition_barrier(
+                    &volumetric_texture.resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                )];
+                cmd_list.ResourceBarrier(&to_srv);
+                for b in to_srv {
+                    Self::drop_transition_barrier(b);
+                }
+                self.volumetric_is_srv = true;
             }
 
             // ДОБАВЛЕНО (максимальная графика — SSAO, см.
@@ -1088,7 +1152,14 @@ impl AlkashEngine {
             // disable_volumetric_for_diagnostics) — в последнем случае SSAO
             // сам переводит depth в SRV, как раньше это делал volumetric в
             // одиночку.
-            if let (Some(ssao_texture), Some(ssao_depth_srv_heap), Some(ssao_cb)) = (
+            // ДОБАВЛЕНО (по прямому запросу пользователя — переключаемые
+            // графические настройки): та же причина, что и у volumetric
+            // чуть выше — `graphics_settings.ssao` проверяется здесь, а не
+            // через обнуление `ssao_texture` (см. `disable_ssao_for_diagnostics`,
+            // предназначенный для разовой ручной диагностики, а не для
+            // штатного переключения) — иначе SRV этой текстуры в t3
+            // tonemap-composite указывала бы на уничтоженный ресурс.
+            if self.graphics_settings.ssao { if let (Some(ssao_texture), Some(ssao_depth_srv_heap), Some(ssao_cb)) = (
                 &self.ssao_texture,
                 &self.ssao_depth_srv_heap,
                 &self.ssao_constant_buffer,
@@ -1186,6 +1257,166 @@ impl AlkashEngine {
                     Self::drop_transition_barrier(b);
                 }
                 self.ssao_is_srv = true;
+
+                // ДОБАВЛЕНО (по прямому запросу пользователя — устранение
+                // видимой зернистости SSAO, см. подробный комментарий у
+                // полей `ssao_blur_*` в engine/mod.rs): два fullscreen-
+                // прохода separable-блюра СРАЗУ после сырого AO выше, пока
+                // `ssao_texture` ещё PIXEL_SHADER_RESOURCE (барьер только
+                // что это обеспечил). Переиспользует УЖЕ существующие
+                // `bloom_blur_pipeline_state`/`bloom_root_signature`
+                // (идентичны по форме — тот же RTV-формат, та же root
+                // signature SRV t0 + CBV b0) вместо отдельного шейдера/PSO.
+                if let (
+                    Some(blur_texture),
+                    Some(blur_srv_heap),
+                    Some(cb_x),
+                    Some(cb_y),
+                    Some(blur_pso),
+                    Some(blur_root_sig),
+                ) = (
+                    &self.ssao_blur_texture,
+                    &self.ssao_blur_srv_heap,
+                    &self.ssao_blur_cb_x,
+                    &self.ssao_blur_cb_y,
+                    &self.bloom_blur_pipeline_state,
+                    &self.bloom_root_signature,
+                ) {
+                    let blur_width = blur_texture.width;
+                    let blur_height = blur_texture.height;
+
+                    let blur_viewport = D3D12_VIEWPORT {
+                        TopLeftX: 0.0,
+                        TopLeftY: 0.0,
+                        Width: blur_width as f32,
+                        Height: blur_height as f32,
+                        MinDepth: 0.0,
+                        MaxDepth: 1.0,
+                    };
+                    let blur_scissor = RECT {
+                        left: 0,
+                        top: 0,
+                        right: blur_width as i32,
+                        bottom: blur_height as i32,
+                    };
+                    cmd_list.RSSetViewports(&[blur_viewport]);
+                    cmd_list.RSSetScissorRects(&[blur_scissor]);
+                    cmd_list.SetGraphicsRootSignature(Some(blur_root_sig));
+                    cmd_list.SetPipelineState(Some(blur_pso));
+                    let blur_heaps = [Some(blur_srv_heap.clone())];
+                    cmd_list.SetDescriptorHeaps(&blur_heaps);
+                    cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                    // Проход 1 (горизонталь): ssao_texture (уже SRV) ->
+                    // ssao_blur_texture.
+                    cmd_list.OMSetRenderTargets(1, Some(&self.ssao_blur_rtv), false, None);
+                    cmd_list.SetGraphicsRootDescriptorTable(0, self.ssao_blur_srv_raw_gpu);
+                    cmd_list.SetGraphicsRootConstantBufferView(1, cb_x.resource.GetGPUVirtualAddress());
+                    cmd_list.DrawInstanced(3, 1, 0, 0);
+
+                    // ssao_texture больше не читается в этом кадре — сразу
+                    // возвращаем в RENDER_TARGET под финальную запись
+                    // прохода 2, а только что записанную ssao_blur_texture
+                    // переводим в SRV — теперь она вход прохода 2.
+                    let blur_to_srv = Self::transition_barrier(
+                        &blur_texture.resource,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    );
+                    let raw_back_to_rt = Self::transition_barrier(
+                        &ssao_texture.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    );
+                    let barriers = [blur_to_srv, raw_back_to_rt];
+                    cmd_list.ResourceBarrier(&barriers);
+                    for b in barriers {
+                        Self::drop_transition_barrier(b);
+                    }
+
+                    // Проход 2 (вертикаль): ssao_blur_texture -> ssao_texture
+                    // (финальный результат — тот же слот, что уже
+                    // зарегистрирован в t3 renderer.srv_uav_heap для
+                    // tonemap, см. create_ssao_final_srv, повторная
+                    // регистрация не нужна).
+                    cmd_list.OMSetRenderTargets(1, Some(&self.ssao_rtv), false, None);
+                    cmd_list.SetGraphicsRootDescriptorTable(0, self.ssao_blur_srv_mid_gpu);
+                    cmd_list.SetGraphicsRootConstantBufferView(1, cb_y.resource.GetGPUVirtualAddress());
+                    cmd_list.DrawInstanced(3, 1, 0, 0);
+
+                    let ssao_final_to_srv = Self::transition_barrier(
+                        &ssao_texture.resource,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    );
+                    // ВАЖНО: blur_texture тоже возвращаем в RENDER_TARGET
+                    // ЗДЕСЬ же, а не оставляем в PIXEL_SHADER_RESOURCE — она
+                    // используется ТОЛЬКО внутри этого блока (никто больше
+                    // её не читает), поэтому вместо отдельного персистентного
+                    // трекера состояния (как `bloom_a_is_srv`/`ssao_is_srv`
+                    // для ресурсов, живущих дольше одного блока) проще и
+                    // надёжнее гарантировать, что она ВСЕГДА заканчивает
+                    // кадр в том же состоянии, в котором была создана
+                    // (RENDER_TARGET, см. `create_hdr_target`) — тогда
+                    // следующий кадр может безусловно писать в неё Проходом
+                    // 1 без разбора "а в каком она была состоянии в конце
+                    // прошлого кадра". Без этого второй и все последующие
+                    // кадры писали бы в неё как в RTV, когда GPU считает её
+                    // PIXEL_SHADER_RESOURCE — ровно тот класс "no-op барьер
+                    // не на первом кадре" бага, что уже объяснён у
+                    // `bloom_a_is_srv`/`shadow_maps_are_srv` в engine/mod.rs.
+                    let blur_back_to_rt = Self::transition_barrier(
+                        &blur_texture.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    );
+                    let barriers = [ssao_final_to_srv, blur_back_to_rt];
+                    cmd_list.ResourceBarrier(&barriers);
+                    for b in barriers {
+                        Self::drop_transition_barrier(b);
+                    }
+                    // self.ssao_is_srv остаётся true — итоговое состояние
+                    // ssao_texture то же самое (PIXEL_SHADER_RESOURCE), что
+                    // и без блюра, только что записанное чуть выше.
+                }
+            } } else if let Some(ssao_texture) = &self.ssao_texture {
+                // ИСПРАВЛЕНО (баг, найденный пользователем: "при all false
+                // нету изображения"): SSAO выключен — сам проход НИКОГДА не
+                // рисует в `ssao_texture`, а D3D12 НЕ гарантирует
+                // зануление/какое-либо конкретное содержимое свежесозданного
+                // ресурса. tonemap composite БЕЗУСЛОВНО каждый кадр делает
+                // `hdrColor *= aoColor` (см. pipeline_post.rs) — раз AO
+                // МУЛЬТИПЛИКАТИВНЫЙ, а не аддитивный (в отличие от bloom/
+                // volumetric), любое содержимое текстуры, отличное от
+                // (1,1,1), портит ВСЮ картинку, а не только AO-эффект; на
+                // практике Windows часто (не гарантированно) зануляет новую
+                // VRAM-страницу из соображений безопасности — умножение на 0
+                // даёт ПОЛНОСТЬЮ чёрный экран, что пользователь и увидел.
+                // Чиним дешёвым `ClearRenderTargetView` в белый (1,1,1,1) —
+                // нейтральный множитель "нет затемнения" — вместо полного
+                // SSAO-прохода.
+                if self.ssao_is_srv {
+                    let to_rt = [Self::transition_barrier(
+                        &ssao_texture.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    )];
+                    cmd_list.ResourceBarrier(&to_rt);
+                    for b in to_rt {
+                        Self::drop_transition_barrier(b);
+                    }
+                }
+                cmd_list.ClearRenderTargetView(self.ssao_rtv, &[1.0, 1.0, 1.0, 1.0], None);
+                let to_srv = [Self::transition_barrier(
+                    &ssao_texture.resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                )];
+                cmd_list.ResourceBarrier(&to_srv);
+                for b in to_srv {
+                    Self::drop_transition_barrier(b);
+                }
+                self.ssao_is_srv = true;
             }
 
             // Оба прохода выше (volumetric/SSAO) закончили читать depth —
@@ -1204,7 +1435,15 @@ impl AlkashEngine {
                 self.depth_stencil_is_srv = false;
             }
 
-            if let (Some(bloom_a), Some(bloom_b), Some(bloom_srv_heap)) =
+            // ДОБАВЛЕНО (по прямому запросу пользователя — переключаемые
+            // графические настройки): та же причина, что у SSAO/volumetric
+            // выше — `graphics_settings.bloom` проверяется здесь, а не
+            // через обнуление `bloom_texture_a` (см.
+            // `disable_bloom_for_diagnostics`, для разовой ручной
+            // диагностики) — иначе SRV `bloom_texture_a`, которую
+            // БЕЗУСЛОВНО каждый кадр читает tonemap composite (t1),
+            // указывала бы на уничтоженный ресурс.
+            if self.graphics_settings.bloom { if let (Some(bloom_a), Some(bloom_b), Some(bloom_srv_heap)) =
                 (&self.bloom_texture_a, &self.bloom_texture_b, &self.bloom_srv_heap)
             {
                 let bloom_a_resource = &bloom_a.resource;
@@ -1350,6 +1589,37 @@ impl AlkashEngine {
                 let barriers = [a_final_to_srv];
                 cmd_list.ResourceBarrier(&barriers);
                 for b in barriers {
+                    Self::drop_transition_barrier(b);
+                }
+                self.bloom_a_is_srv = true;
+            } } else if let Some(bloom_a) = &self.bloom_texture_a {
+                // ИСПРАВЛЕНО (та же причина, что у SSAO/volumetric выше):
+                // bloom тоже АДДИТИВНЫЙ (`bloomColor * bloomIntensity`,
+                // складывается, не умножается) — чистим только
+                // `bloom_texture_a` (единственная, что реально читает
+                // tonemap через уже зарегистрированный `bloom_final_srv_cpu`,
+                // см. `create_bloom_resources`) в (0,0,0,0), `bloom_texture_b`
+                // — чисто внутренний scratch этого прохода, никем больше не
+                // читается, трогать не нужно.
+                if self.bloom_a_is_srv {
+                    let to_rt = [Self::transition_barrier(
+                        &bloom_a.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    )];
+                    cmd_list.ResourceBarrier(&to_rt);
+                    for b in to_rt {
+                        Self::drop_transition_barrier(b);
+                    }
+                }
+                cmd_list.ClearRenderTargetView(self.bloom_rtv_a, &[0.0, 0.0, 0.0, 0.0], None);
+                let to_srv = [Self::transition_barrier(
+                    &bloom_a.resource,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                )];
+                cmd_list.ResourceBarrier(&to_srv);
+                for b in to_srv {
                     Self::drop_transition_barrier(b);
                 }
                 self.bloom_a_is_srv = true;

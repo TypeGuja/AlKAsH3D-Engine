@@ -297,7 +297,7 @@ impl AlkashEngine {
             return;
         }
 
-        match Renderer::new(width, height, 2) {
+        match Renderer::new(width, height, 2, self.msaa_samples) {
             Ok(renderer) => {
                 self.renderer = Some(renderer);
                 println!("[ENGINE] ✓ Renderer recreated after resize: {}x{}", width, height);

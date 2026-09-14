@@ -404,7 +404,14 @@ class VehicleAI:
     // вызов — при регистрации нескольких скриптов одной и той же DLL
     // (например одна "vehicle_ai.dll" на 20 машин) путь к DLL дублировался
     // бы в строковой таблице 20 раз.
-    fn add_string(&mut self, s: &str) -> u32 {
+    // ИСПРАВЛЕНО (найдено при написании редактора скриптов в эдиторе —
+    // alkash3d-editorapp/src/converters/alscript.rs): было приватным, в
+    // отличие от `add_string` у ВСЕХ остальных `*_format.rs` в этом же
+    // проекте (alsnd/alroute/alasm/alcar/alworld/almat/alfar/altex — везде
+    // `pub fn`) — эдитору, который собирает `ScriptDescriptor` вручную (не
+    // через `register_*`, см. комментарий у `build_alscript_file` в
+    // converters/alscript.rs), нужен доступ к строковой таблице напрямую.
+    pub fn add_string(&mut self, s: &str) -> u32 {
         if let Some(pos) = self.strings.iter().position(|existing| existing == s) {
             return pos as u32;
         }

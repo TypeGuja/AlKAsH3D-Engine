@@ -181,7 +181,14 @@ impl AlrouteFile {
         Ok(alroute)
     }
 
+    // ИСПРАВЛЕНО (найдено при написании импорта .alroute в эдиторе —
+    // alkash3d-editorapp/src/converters/alroute.rs): прямая индексация
+    // паниковала на любом некорректном/повреждённом id, в отличие от
+    // остальных `*_format.rs` в этом же проекте (alsnd/alscript/alasm уже
+    // используют `.get(...).unwrap_or("")` — тот же паттерн здесь для
+    // консистентности и чтобы битый файл не ронял процесс, который его
+    // читает).
     pub fn get_string(&self, id: u32) -> &str {
-        &self.strings[id as usize]
+        self.strings.get(id as usize).map(|s| s.as_str()).unwrap_or("")
     }
 }

@@ -523,7 +523,15 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(width: u32, height: u32, buffer_count: u32) -> Result<Self> {
+    /// `msaa_samples` — ДОБАВЛЕНО (runtime-переключаемый MSAA, по прямому
+    /// запросу пользователя): раньше здесь читалась глобальная константа
+    /// `crate::engine::MSAA_SAMPLES` напрямую — теперь вызывающая сторона
+    /// (`AlkashEngine`, см. `GraphicsSettings`/`self.msaa_samples` в
+    /// engine/mod.rs) решает, 4x сейчас MSAA или выключен (1x), и передаёт
+    /// готовое число сюда явным параметром. `MSAA_SAMPLES` (константа) при
+    /// этом остаётся — она теперь означает "сколько сэмплов, КОГДА MSAA
+    /// включён", а не "сколько сэмплов всегда".
+    pub fn new(width: u32, height: u32, buffer_count: u32, msaa_samples: u32) -> Result<Self> {
         println!("[RENDERER] ========== CREATING RENDERER ==========");
         println!("[RENDERER] Width: {}, Height: {}, Buffer count: {}", width, height, buffer_count);
 
@@ -577,7 +585,7 @@ impl Renderer {
         }
 
         println!("[RENDERER] Creating depth stencil...");
-        let depth_stencil = RenderTexture::create_depth_stencil(width, height, crate::engine::MSAA_SAMPLES)?;
+        let depth_stencil = RenderTexture::create_depth_stencil(width, height, msaa_samples)?;
         let depth_stencil_view = crate::heap::DescriptorHeap::get_cpu_handle(&dsv_heap, 0, dsv_size);
         // ОБНОВЛЕНО (Фаза 8 плана по реализму/фонарям — volumetric-
         // подсветка): раньше здесь стоял `device.CreateDepthStencilView(
@@ -601,7 +609,7 @@ impl Renderer {
         // существовал в heap.rs, но не был подключён нигде в движке до
         // этой фазы).
         println!("[RENDERER] Creating HDR target...");
-        let hdr_target = RenderTexture::create_hdr_target(width, height, crate::engine::MSAA_SAMPLES, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        let hdr_target = RenderTexture::create_hdr_target(width, height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
         let hdr_rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(1)?;
         let hdr_rtv = crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 0, rtv_size);
         unsafe {

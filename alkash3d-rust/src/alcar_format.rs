@@ -388,7 +388,13 @@ impl AlcarFile {
         Ok(alcar)
     }
 
+    // ИСПРАВЛЕНО (найдено при написании импорта .alcar в эдиторе —
+    // alkash3d-editorapp/src/converters/alcar.rs): прямая индексация
+    // паниковала, когда `brand_id`/`model_id` по умолчанию (`0`) не
+    // резолвится ни в одну строку (пустая `strings`, как у свежесозданного
+    // `AlcarFile::new()`) — тот же баг и та же правка, что и у
+    // `alroute_format.rs::get_string`, см. комментарий там.
     pub fn get_string(&self, id: u32) -> &str {
-        &self.strings[id as usize]
+        self.strings.get(id as usize).map(|s| s.as_str()).unwrap_or("")
     }
 }

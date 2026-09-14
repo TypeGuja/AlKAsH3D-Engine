@@ -213,6 +213,26 @@ impl LodGroup {
 }
 
 pub struct AlkashEngine {
+    /// ДОБАВЛЕНО (по прямому запросу пользователя — включение/выключение
+    /// SSAO/MSAA/bloom/volumetric/shadows переменной из кода бинарника, а
+    /// не хардкодом внутри движка): выставляется через
+    /// `AlkashEngine::set_graphics_settings()`, ДО `init()` — сам `init()`
+    /// один раз читает эти флаги при построении рендер-пайплайна и
+    /// сохраняет их сюда же для справки/логов. Значение по умолчанию
+    /// (`GraphicsSettings::default()`) — полное качество, тот же результат,
+    /// что был у движка ДО этой правки для любого кода, который эту
+    /// функцию не вызывает.
+    pub graphics_settings: GraphicsSettings,
+    /// Фактическое число сэмплов MSAA основного цветового/depth-таргета —
+    /// либо `MSAA_SAMPLES` (если `graphics_settings.msaa == true`), либо
+    /// `1` (выключен). Отдельное от `graphics_settings.msaa` (`bool`) поле,
+    /// а не пересчёт на лету, потому что читается КАЖДЫЙ кадр в нескольких
+    /// разных местах (`render_frame`, `Renderer::new` при ресайзе,
+    /// `create_pipeline_state`) — простое число дешевле условного выражения
+    /// на каждом из них и не может разойтись с тем, что реально передано в
+    /// `Renderer::new`, так как ОБА берутся из этого же поля.
+    msaa_samples: u32,
+
     pub renderer: Option<Renderer>,
     pub meshes: Vec<Mesh>,
     pub mesh_instances: Vec<MeshInstance>,
@@ -714,6 +734,50 @@ pub struct AlkashEngine {
     /// RENDER_TARGET — тот же явный трекер, что и `volumetric_is_srv`.
     ssao_is_srv: bool,
 
+    /// ДОБАВЛЕНО (по прямому запросу пользователя — устранение видимой
+    /// зернистости SSAO: 12 сэмплов без отдельного blur-прохода дают
+    /// заметный шум, особенно на тёмных/ночных сценах, см. комментарий у
+    /// `compile_ssao_shaders` про изначально принятый компромисс). Один
+    /// half-res scratch-таргет под двухпроходный (гориз.+верт.) separable
+    /// блюр СЫРОГО AO из `ssao_texture` — переиспользует УЖЕ
+    /// скомпилированные `bloom_blur_pipeline_state`/`bloom_root_signature`
+    /// (идентичны по форме: тот же RTV-формат R16G16B16A16_FLOAT, та же
+    /// root signature — SRV-таблица t0 + point-сэмплер s0 + CBV b0 из
+    /// {threshold (не используется здесь), texel_size, padding}), поэтому
+    /// НЕ заводит собственный шейдер/root signature/PSO — только
+    /// собственные РЕСУРСЫ (текстуру + дескрипторы), тот же принцип, что и
+    /// у остальных проходов этого файла (каждый держит свою копию SRV
+    /// поверх общих/чужих ресурсов, не делит heap'ы между разными root
+    /// signature). Финальный блюренный результат пишется ОБРАТНО в
+    /// `ssao_texture` — так уже зарегистрированный `create_ssao_final_srv`
+    /// слот в `renderer.srv_uav_heap` остаётся валидным без повторной
+    /// регистрации.
+    ssao_blur_texture: Option<crate::render::RenderTexture>,
+    ssao_blur_rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    ssao_blur_rtv_heap: Option<ID3D12DescriptorHeap>,
+    /// 2 смежных SRV в одном heap — индекс 0: `ssao_texture` (вход
+    /// горизонтального прохода), индекс 1: `ssao_blur_texture` (вход
+    /// вертикального прохода) — тот же паттерн, что `bloom_srv_heap` (A/B).
+    ssao_blur_srv_heap: Option<ID3D12DescriptorHeap>,
+    ssao_blur_srv_raw_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
+    ssao_blur_srv_mid_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
+    /// ВАЖНО: намеренно ДВА отдельных буфера (а не один, перезаписываемый
+    /// дважды за кадр, как делает `bloom_params_buffer` для extract/blurX/
+    /// blurY) — `cmd_list.Close()`/`ExecuteCommandLists` вызывается ОДИН
+    /// раз в конце `render_frame` (см. там), а `Buffer::update_constant_buffer`
+    /// это немедленный CPU-side Map/memcpy/Unmap, а НЕ per-draw снимок —
+    /// значит несколько CPU-записей в ОДИН и тот же constant buffer ДО
+    /// закрытия command list оставляют в буфере только ПОСЛЕДНЕЕ
+    /// записанное значение к моменту, когда GPU реально начнёт выполнять
+    /// хоть одну из ссылающихся на него команд. Здесь это не проблема
+    /// (texel_size горизонтали/вертикали не зависят от кадра — только от
+    /// разрешения half-res таргета), поэтому оба буфера пишутся ОДИН раз
+    /// при создании/ресайзе (см. `create_ssao_resources`) и никогда не
+    /// перезаписываются в `render_frame` — этот класс гонки для них в
+    /// принципе не возникает.
+    ssao_blur_cb_x: Option<Buffer>,
+    ssao_blur_cb_y: Option<Buffer>,
+
     /// ДОБАВЛЕНО (World Streaming — подключение .alworld к движку):
     /// текущий загруженный мир (метаданные — где какие чанки, размер
     /// чанка, streaming config) + рантайм-состояние стриминга (какие
@@ -854,6 +918,49 @@ pub const SHADOW_MAP_RESOLUTION: u32 = 2048;
 /// сэмпл 0 напрямую через `Texture2DMS` (см. `compile_volumetric_shaders`),
 /// та же экономия, что уже даёт half-res исполнение этого прохода.
 pub const MSAA_SAMPLES: u32 = 4;
+
+/// ДОБАВЛЕНО (по прямому запросу пользователя — "включать SSAO/MSAA и т.д.
+/// из кода бинарника переменной"): один набор флагов графических настроек,
+/// передаваемый через `AlkashEngine::set_graphics_settings()` ДО `init()`.
+/// `Default` (все `true`) — полное качество, ПОЛНОСТЬЮ совпадает с
+/// поведением движка до появления этой структуры, так что существующий
+/// код (main.rs/main_car.rs/main_test.rs и т.д.), который не вызывает
+/// `set_graphics_settings`, не меняет своё поведение ни на бит.
+///
+/// `ssao`/`bloom`/`volumetric`/`shadows` переиспользуют уже существующие
+/// `disable_*_for_diagnostics()` (см. `bin/benchmark.rs`/
+/// `bin/example_minimal.rs`, где они уже управляются переменными
+/// окружения ровно для той же цели — сравнить кадр с проходом и без) —
+/// здесь тот же принцип, просто настраиваемый структурой, а не env-var.
+///
+/// `msaa` — единственный флаг с двумя РЕАЛЬНО разными путями компиляции
+/// шейдеров (см. `compile_ssao_shaders`/`compile_volumetric_shaders`):
+/// глубина читается либо как `Texture2DMS`, либо как обычный `Texture2D`,
+/// в зависимости от того, многосэмпловый ли сейчас `Renderer::depth_stencil`
+/// (см. `AlkashEngine::msaa_samples`). Ровно 2 состояния (4x/выключен), а
+/// не произвольное число сэмплов — этого достаточно для сравнения "с
+/// сглаживанием / без" и не требует ещё большего числа шейдерных
+/// вариантов.
+#[derive(Debug, Clone, Copy)]
+pub struct GraphicsSettings {
+    pub msaa: bool,
+    pub ssao: bool,
+    pub bloom: bool,
+    pub volumetric: bool,
+    pub shadows: bool,
+}
+
+impl Default for GraphicsSettings {
+    fn default() -> Self {
+        Self {
+            msaa: true,
+            ssao: true,
+            bloom: true,
+            volumetric: true,
+            shadows: true,
+        }
+    }
+}
 
 /// ДОБАВЛЕНО (каскадные тени / CSM — расширение Фазы 6): число каскадов.
 /// 3 — стандартный практический компромисс между качеством и стоимостью

@@ -22,7 +22,7 @@ use crate::math::Vec3;
 use crate::camera::Camera;
 use crate::constant_buffer::TransformConstants;
 use crate::input::InputState;
-use super::{AlkashEngine, UpdateBreakdownMs, NUM_CASCADES, NEXT_FENCE_VALUE, AltexParseCache, ChunkLoadResult};
+use super::{AlkashEngine, UpdateBreakdownMs, NUM_CASCADES, NEXT_FENCE_VALUE, AltexParseCache, ChunkLoadResult, GraphicsSettings, MSAA_SAMPLES};
 
 impl AlkashEngine {
     pub fn new(width: u32, height: u32) -> Self {
@@ -39,6 +39,17 @@ impl AlkashEngine {
         Self {
             scheduler: Arc::new(EngineScheduler::new()),
             update_breakdown_ms: UpdateBreakdownMs::default(),
+            // ДОБАВЛЕНО (runtime-переключаемые SSAO/bloom/volumetric/
+            // shadows/MSAA — по прямому запросу пользователя): значения по
+            // умолчанию — полное качество, БИТ В БИТ то же поведение, что
+            // было у движка до этой правки (ни один существующий бинарник,
+            // который не вызывает `set_graphics_settings`, не заметит
+            // разницы). `msaa_samples` вычислен здесь же из
+            // `GraphicsSettings::default().msaa` (см. `MSAA_SAMPLES`) —
+            // `set_graphics_settings` пересчитывает его заново, если
+            // приложение вызовет её ДО `init()`.
+            graphics_settings: GraphicsSettings::default(),
+            msaa_samples: MSAA_SAMPLES,
             renderer: None,
             meshes: Vec::new(),
             mesh_instances: Vec::new(),
@@ -164,6 +175,14 @@ impl AlkashEngine {
             ssao_srv_gpu_depth: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
             ssao_constant_buffer: None,
             ssao_is_srv: false,
+            ssao_blur_texture: None,
+            ssao_blur_rtv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+            ssao_blur_rtv_heap: None,
+            ssao_blur_srv_heap: None,
+            ssao_blur_srv_raw_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
+            ssao_blur_srv_mid_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
+            ssao_blur_cb_x: None,
+            ssao_blur_cb_y: None,
 
             depth_srv_heap: None,
             depth_srv_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
@@ -203,6 +222,19 @@ impl AlkashEngine {
         self.clear_color = [r, g, b, a];
     }
 
+    /// ДОБАВЛЕНО (по прямому запросу пользователя — включение/выключение
+    /// SSAO/MSAA/bloom/volumetric/shadows переменной из кода бинарника, а
+    /// не хардкодом внутри движка): вызывать ДО `init()` — значения читаются
+    /// при построении рендер-пайплайна (шейдеры/PSO/ресурсы) и при попытке
+    /// поменять их ПОСЛЕ `init()` эффекта не будет (потребовалась бы
+    /// полная пересборка пайплайна, которую этот метод не делает). Без
+    /// вызова этого метода движок ведёт себя ТОЧНО как раньше — полное
+    /// качество, MSAA включён (см. `GraphicsSettings::default()`).
+    pub fn set_graphics_settings(&mut self, settings: GraphicsSettings) {
+        self.msaa_samples = if settings.msaa { MSAA_SAMPLES } else { 1 };
+        self.graphics_settings = settings;
+    }
+
     pub fn init(&mut self) -> Result<()> {
         println!("[ENGINE] Initializing Alkash3D Engine v{}...", VERSION);
 
@@ -231,7 +263,7 @@ impl AlkashEngine {
             }
             println!("[ENGINE] ✓ Fence created");
 
-            let renderer = Renderer::new(self.width, self.height, 2)?;
+            let renderer = Renderer::new(self.width, self.height, 2, self.msaa_samples)?;
             self.renderer = Some(renderer);
             println!("[ENGINE] ✓ Renderer created");
         }
@@ -283,6 +315,25 @@ impl AlkashEngine {
         self.create_ssao_root_signature()?;
         self.create_ssao_pipeline_state()?;
         self.create_ssao_resources()?;
+
+        // ДОБАВЛЕНО (runtime-переключаемые shadows — по прямому запросу
+        // пользователя): безопасно переиспользует уже существующий
+        // `disable_shadows_for_diagnostics()` (тот же, что уже использует
+        // `bin/benchmark.rs`/`bin/example_minimal.rs`) — он обнуляет только
+        // `shadow_pipeline_state` (пропускает РЕНДЕР В shadow map), а не
+        // сами текстуры shadow map, поэтому ничего не может остаться
+        // висячим дескриптором в main pass, который их читает. bloom/
+        // volumetric/SSAO НАМЕРЕННО не переключаются так же здесь — их
+        // "diagnostics"-версии обнуляют САМИ ТЕКСТУРЫ (см. комментарий у
+        // `disable_bloom_for_diagnostics`), а composite-проход БЕЗУСЛОВНО
+        // читает их SRV-слоты каждый кадр — обнулить текстуру означало бы
+        // оставить в этих слотах дескриптор на уже уничтоженный ресурс.
+        // Для них `graphics_settings.bloom/volumetric/ssao` проверяется
+        // ПРЯМО в `render_frame` (см. там) — ресурсы остаются живыми, само
+        // вычисление просто пропускается.
+        if !self.graphics_settings.shadows {
+            self.disable_shadows_for_diagnostics();
+        }
 
         unsafe {
             ShowWindow(self.hwnd.unwrap(), SW_SHOW);

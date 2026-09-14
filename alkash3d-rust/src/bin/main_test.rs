@@ -30,16 +30,38 @@
 //! "✓ Точка спавна прочитана: (10.00, 0.00, 5.00), yaw=45.0°" И красный
 //! куб виден прямо перед камерой на первом кадре — весь путь работает.
 
-use alkash3d_rs::engine::AlkashEngine;
+use alkash3d_rs::engine::{AlkashEngine, GraphicsSettings};
 use alkash3d_rs::input::keys;
 use alkash3d_rs::math::Vec3;
 use alkash3d_rs::{AlworldFile, GlobalObject, GLOBAL_OBJECT_FLAG_SPAWN_POINT};
+// ДОБАВЛЕНО (перенос света из эдитора в main_test.rs — по прямому запросу
+// пользователя, баг: "накидывал свет в эдиторе, но он не переносился в
+// main_test.rs"): `LightConfig` — тот же реэкспорт с корня крейта, что
+// использует `main.rs::setup_lights` (модуль `plugin` приватный — см.
+// комментарий там же про E0603). Сам `.alfar` читается не напрямую (тип
+// `AlfarFile` тут не нужен), а через `AlkashEngine::load_lights_from_alfar`.
+// `windows::core::Interface` нужен только ради `.as_raw()` на D3D12-device.
+use alkash3d_rs::LightConfig;
 use std::time::Instant;
+use windows::core::Interface;
 
 const WINDOW_WIDTH: u32 = 1024;
 const WINDOW_HEIGHT: u32 = 576;
 const EYE_HEIGHT: f32 = 1.6;
 const TEST_WORLD_PATH: &str = "test.alworld";
+// ДОБАВЛЕНО (перенос света из эдитора в main_test.rs): свет — ОТДЕЛЬНЫЙ от
+// .alworld формат (эдитор экспортирует его через "Lighting to .alfar..."
+// в меню, не через "Scene to .alworld" — см. converters/alfar.rs и
+// alworld.rs в alkash3d-editorapp), поэтому рядом с test.alworld ищем свой
+// test.alfar. В отличие от test.alworld, синтетический test.alfar НЕ
+// генерируется, если его нет — сцена спавна и без света валидна сама по
+// себе, свет тут строго опционален.
+const TEST_ALFAR_PATH: &str = "test.alfar";
+/// Тот же путь к FirstFires, что и в `main.rs` (см. подробный комментарий
+/// там про relative-путь и ловушку "firstfires.dll" без подчёркивания) —
+/// оба bin-файла запускаются из одной и той же рабочей директории
+/// (`alkash3d-rust/`), так что путь идентичен.
+const FIRSTFIRES_DLL_PATH: &str = "./alkash3d_firstfires.dll";
 
 // Тестовые координаты/угол точки спавна — специально не (0,0,0)/0°, чтобы
 // проверка не могла случайно "пройти" из-за того, что 0 — это ещё и
@@ -48,6 +70,18 @@ const SPAWN_X: f32 = 10.0;
 const SPAWN_Y: f32 = 0.0;
 const SPAWN_Z: f32 = 5.0;
 const SPAWN_YAW_DEG: f32 = 45.0;
+
+// ДОБАВЛЕНО (переключаемые графические настройки — по прямому запросу
+// пользователя: "а в коде можно задать типо true или false"): простые
+// константы вместо переменных окружения — поменял значение здесь,
+// пересобрал, готово. Читаются один раз в `main()` и передаются в
+// `engine.set_graphics_settings()` ДО `engine.init()` (см. `GraphicsSettings`
+// в engine/mod.rs).
+const ENABLE_MSAA: bool = false;
+const ENABLE_SSAO: bool = false;
+const ENABLE_BLOOM: bool = false;
+const ENABLE_VOLUMETRIC: bool = false;
+const ENABLE_SHADOWS: bool = false;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     alkash3d_rs::console_log::init_console_log_to_file("engine_test_log.txt");
@@ -76,13 +110,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[MAIN_TEST] ✓ {} создан (синтетическая точка спавна: ({:.1}, {:.1}, {:.1}), yaw={:.1}°)", TEST_WORLD_PATH, SPAWN_X, SPAWN_Y, SPAWN_Z, SPAWN_YAW_DEG);
     }
 
+    // ДОБАВЛЕНО (переключаемые графические настройки — по прямому запросу
+    // пользователя): значения берутся из констант ENABLE_* выше — поменяй
+    // их там (true/false) и пересобери, никаких переменных окружения.
+    let graphics_settings = GraphicsSettings {
+        msaa: ENABLE_MSAA,
+        ssao: ENABLE_SSAO,
+        bloom: ENABLE_BLOOM,
+        volumetric: ENABLE_VOLUMETRIC,
+        shadows: ENABLE_SHADOWS,
+    };
+    println!(
+        "[MAIN_TEST] GraphicsSettings: msaa={} ssao={} bloom={} volumetric={} shadows={} (правь константы ENABLE_* в начале файла)",
+        graphics_settings.msaa, graphics_settings.ssao, graphics_settings.bloom,
+        graphics_settings.volumetric, graphics_settings.shadows
+    );
+
     let mut engine = AlkashEngine::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+    // ВАЖНО: ДО init() — настройки читаются один раз при построении
+    // шейдеров/PSO/ресурсов, после init() эффекта уже не будет (см.
+    // подробный комментарий у `set_graphics_settings` в lifecycle.rs).
+    engine.set_graphics_settings(graphics_settings);
     if let Err(e) = engine.init() {
         eprintln!("[MAIN_TEST] Failed to initialize engine: {:?}", e);
         return Err(e.into());
     }
 
     engine.set_clear_color(0.05, 0.05, 0.12, 1.0);
+
+    // ДОБАВЛЕНО (по прямому запросу пользователя: "сделай ночь, я не
+    // понимаю этот свет там есть или нету"): по умолчанию `time_of_day`
+    // движка — 12.0 (полдень, см. `AlkashEngine::new`), и `update_day_night`
+    // каждый кадр заливает сцену ярким дневным ambient+directional светом
+    // (см. тот же комментарий в `main.rs::setup_lights`) — на этом фоне
+    // маленькие точечные фонари из .alfar (если они вообще есть и загрузились)
+    // визуально неотличимы от их отсутствия. Фиксируем ночь (22:00, тот же
+    // час, что и `main.rs`) ДО загрузки мира — только тогда разница
+    // "фонарь горит" vs "фонаря нет" станет видна глазом. `day_night_speed`
+    // по умолчанию 0 (см. `AlkashEngine::new`), так что время суток само
+    // не "уедет" обратно к дню за время теста.
+    engine.set_time_of_day(22.0);
+
+    setup_lights_from_alfar(&mut engine);
 
     match engine.load_world(TEST_WORLD_PATH, None) {
         Ok(()) => println!("[MAIN_TEST] ✓ {} загружен", TEST_WORLD_PATH),
@@ -155,6 +224,57 @@ fn create_test_world(path: &str) -> std::io::Result<()> {
     });
 
     world.save(path)
+}
+
+/// ДОБАВЛЕНО (перенос света из эдитора в main_test.rs): подключает
+/// FirstFires и, если рядом с exe лежит `test.alfar` (эдитор: File >
+/// "Lighting to .alfar..."), загружает из него источники света — тот же
+/// путь данных, что `main.rs::setup_lights` использует для
+/// `night_city_demo.alfar`, только БЕЗ генерации синтетической сцены:
+/// этот бинарник проверяет ИМЕННО перенос СВОЕГО света пользователя, а не
+/// демонстрирует захардкоженную демку.
+///
+/// Ни отсутствие FirstFires.dll, ни отсутствие `test.alfar` не считаются
+/// ошибкой теста — оба этапа опциональны, тест точки спавна (ради которого
+/// этот бинарник изначально существует) должен продолжать работать даже
+/// без единого источника света рядом.
+fn setup_lights_from_alfar(engine: &mut AlkashEngine) {
+    let device_ptr = match alkash3d_rs::get_device() {
+        Ok(device) => device.as_raw(),
+        Err(e) => {
+            eprintln!("[MAIN_TEST] Не удалось получить D3D12 device для FirstFires: {:?} — свет не будет загружен", e);
+            return;
+        }
+    };
+
+    // Те же значения LightConfig, что в main.rs::setup_lights — этот
+    // бинарник не имеет собственной причины настраивать каллинг иначе, а
+    // совпадение параметров упрощает сравнение поведения между двумя bin.
+    let config = LightConfig {
+        max_lights: 64,
+        tile_size: 16,
+        far_plane: 200.0,
+        lod_distances: [30.0, 60.0, 200.0],
+        grid_cell_size: 20.0,
+    };
+
+    if let Err(e) = engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config) {
+        eprintln!(
+            "[MAIN_TEST] FirstFires не загружен ({}): {:?} — свет из {} (если он есть) пропущен",
+            FIRSTFIRES_DLL_PATH, e, TEST_ALFAR_PATH
+        );
+        return;
+    }
+
+    if !std::path::Path::new(TEST_ALFAR_PATH).exists() {
+        println!("[MAIN_TEST] {} не найден рядом с exe — сцена без света (это нормально, если ты его не экспортировал)", TEST_ALFAR_PATH);
+        return;
+    }
+
+    match engine.load_lights_from_alfar(TEST_ALFAR_PATH) {
+        Ok(count) => println!("[MAIN_TEST] ✓ Загружено {} источников света из {}", count, TEST_ALFAR_PATH),
+        Err(e) => eprintln!("[MAIN_TEST] ✗ Не удалось загрузить {}: {:?}", TEST_ALFAR_PATH, e),
+    }
 }
 
 /// Тот же ввод (WASD/стрелки/ESC), что и в `main.rs::run_loop` — скопирован

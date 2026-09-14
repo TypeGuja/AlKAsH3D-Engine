@@ -79,19 +79,30 @@ impl AlkashEngine {
         }
         "#;
 
-        let ps_source = r#"
-        // ИЗМЕНЕНО (максимальная графика — MSAA): основной depth-таргет
-        // (`Renderer::depth_stencil`) теперь многосэмпловый (см.
-        // MSAA_SAMPLES) — SRV на такой ресурс ОБЯЗАН быть Texture2DMS, а
-        // не обычный Texture2D (иначе ошибка валидации D3D12 при создании
-        // SRV, см. `RenderTexture::create_depth_srv`). Читаем ТОЛЬКО
-        // сэмпл 0 (через .Load, Texture2DMS не поддерживает .Sample) —
-        // не честное разрешение (average/min по всем сэмплам), а
-        // сознательное упрощение: этот проход и так уже работает в
-        // half-res с point-сэмплированием (см. шапку файла), небольшая
-        // потеря точности глубины на границах геометрии в god ray
-        // раймарче незаметна на фоне уже применяемых упрощений.
-        Texture2DMS<float> DepthBuffer : register(t0);
+        // ДОБАВЛЕНО (runtime-переключаемый MSAA — по прямому запросу
+        // пользователя, см. GraphicsSettings в engine/mod.rs и тот же
+        // приём в `compile_ssao_shaders`): при MSAA включён основной
+        // depth-таргет многосэмпловый — SRV на него ОБЯЗАН быть
+        // Texture2DMS, а не обычный Texture2D (иначе ошибка валидации
+        // D3D12 при создании SRV, см. `RenderTexture::create_depth_srv`).
+        // `.Load`/`.GetDimensions` имеют разную сигнатуру между ними —
+        // изолируем разницу в двух HLSL-функциях (LoadDepth/GetDepthDims)
+        // вместо дублирования всего raymarch-алгоритма ниже в двух копиях.
+        let msaa = self.msaa_samples > 1;
+        let (tex_decl, depth_helpers) = if msaa {
+            (
+                "Texture2DMS<float> DepthBuffer : register(t0);",
+                "float LoadDepth(int2 coord) { return DepthBuffer.Load(coord, 0).r; }\n        void GetDepthDims(out uint w, out uint h) { uint s; DepthBuffer.GetDimensions(w, h, s); }",
+            )
+        } else {
+            (
+                "Texture2D<float> DepthBuffer : register(t0);",
+                "float LoadDepth(int2 coord) { return DepthBuffer.Load(int3(coord, 0)).r; }\n        void GetDepthDims(out uint w, out uint h) { DepthBuffer.GetDimensions(w, h); }",
+            )
+        };
+
+        let ps_source_template = r#"
+        __TEX_DECL__
         Texture2D ShadowMap : register(t1);
         SamplerState PointSampler : register(s0);
         SamplerComparisonState ShadowSampler : register(s1);
@@ -132,15 +143,17 @@ impl AlkashEngine {
 
         static const int NUM_STEPS = 24;
 
+        __DEPTH_HELPERS__
+
         float4 main(PS_INPUT input) : SV_TARGET {
-            // Texture2DMS.Load адресуется ЦЕЛЫМИ пиксельными координатами
+            // LoadDepth адресуется ЦЕЛЫМИ пиксельными координатами
             // исходного (полноразмерного) depth-таргета, не [0,1] UV —
-            // GetDimensions даёт его реальный размер (может отличаться от
+            // GetDepthDims даёт его реальный размер (может отличаться от
             // размера ЭТОГО, half-res, render target'а).
-            uint depthW, depthH, depthSamples;
-            DepthBuffer.GetDimensions(depthW, depthH, depthSamples);
+            uint depthW, depthH;
+            GetDepthDims(depthW, depthH);
             int2 depthCoord = int2(input.uv * float2(depthW, depthH));
-            float depth = DepthBuffer.Load(depthCoord, 0).r;
+            float depth = LoadDepth(depthCoord);
 
             // depth == 1.0 (дальняя плоскость очистки, см.
             // create_depth_stencil::clear_value) означает "нет геометрии в
@@ -215,10 +228,14 @@ impl AlkashEngine {
         }
         "#;
 
-        self.volumetric_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
-        self.volumetric_ps = Some(ShaderBlob::compile(ps_source, "ps_5_0", "main")?);
+        let ps_source = ps_source_template
+            .replace("__TEX_DECL__", tex_decl)
+            .replace("__DEPTH_HELPERS__", depth_helpers);
 
-        println!("[ENGINE] ✓ Volumetric shaders compiled (screen-space raymarch, {} шагов)", 24);
+        self.volumetric_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
+        self.volumetric_ps = Some(ShaderBlob::compile(&ps_source, "ps_5_0", "main")?);
+
+        println!("[ENGINE] ✓ Volumetric shaders compiled (screen-space raymarch, {} шагов, MSAA={}x)", 24, self.msaa_samples);
         Ok(())
     }
 

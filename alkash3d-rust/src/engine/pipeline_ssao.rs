@@ -51,12 +51,35 @@ impl AlkashEngine {
         }
         "#;
 
-        let ps_source = r#"
-        // ИЗМЕНЕНО (максимальная графика — MSAA): основной depth-таргет
-        // теперь многосэмпловый (см. MSAA_SAMPLES) — читаем сэмпл 0 через
-        // Texture2DMS.Load, тот же приём и то же обоснование, что уже
-        // применяется в volumetric (compile_volumetric_shaders).
-        Texture2DMS<float> DepthBuffer : register(t0);
+        // ДОБАВЛЕНО (runtime-переключаемый MSAA — по прямому запросу
+        // пользователя, см. GraphicsSettings в engine/mod.rs): при MSAA
+        // включён (self.msaa_samples > 1) основной depth-таргет
+        // многосэмпловый — SRV на него ОБЯЗАН быть Texture2DMS (иначе
+        // ошибка валидации D3D12 при создании SRV, см.
+        // `RenderTexture::create_depth_srv`, который уже сам выбирает
+        // MS/не-MS форму дескриптора по факту `sample_count` ресурса — но
+        // ТИП ресурса в самом HLSL "зашит" на этапе компиляции шейдера и
+        // должен совпадать). `.Load`/`.GetDimensions` имеют РАЗНУЮ
+        // сигнатуру между Texture2DMS и Texture2D — изолируем эту разницу
+        // в двух маленьких HLSL-функциях (LoadDepth/GetDepthDims) вместо
+        // дублирования ВСЕГО алгоритма SSAO (~90 строк ниже) в двух
+        // копиях — единственное, что реально меняется между режимами, это
+        // объявление ресурса и тело этих двух функций.
+        let msaa = self.msaa_samples > 1;
+        let (tex_decl, depth_helpers) = if msaa {
+            (
+                "Texture2DMS<float> DepthBuffer : register(t0);",
+                "float LoadDepth(int2 coord) { return DepthBuffer.Load(coord, 0).r; }\n        void GetDepthDims(out uint w, out uint h) { uint s; DepthBuffer.GetDimensions(w, h, s); }",
+            )
+        } else {
+            (
+                "Texture2D<float> DepthBuffer : register(t0);",
+                "float LoadDepth(int2 coord) { return DepthBuffer.Load(int3(coord, 0)).r; }\n        void GetDepthDims(out uint w, out uint h) { DepthBuffer.GetDimensions(w, h); }",
+            )
+        };
+
+        let ps_source_template = r#"
+        __TEX_DECL__
         SamplerState PointSampler : register(s0);
 
         cbuffer SSAOParams : register(b0) {
@@ -76,6 +99,8 @@ impl AlkashEngine {
 
         static const int NUM_SAMPLES = 12;
 
+        __DEPTH_HELPERS__
+
         float hash1(float2 p, float2 seed) {
             return frac(sin(dot(p + seed, float2(12.9898, 78.233))) * 43758.5453);
         }
@@ -94,10 +119,10 @@ impl AlkashEngine {
         }
 
         float4 main(PS_INPUT input) : SV_TARGET {
-            uint depthW, depthH, depthSamples;
-            DepthBuffer.GetDimensions(depthW, depthH, depthSamples);
+            uint depthW, depthH;
+            GetDepthDims(depthW, depthH);
             int2 depthCoord = int2(input.uv * float2(depthW, depthH));
-            float depth = DepthBuffer.Load(depthCoord, 0).r;
+            float depth = LoadDepth(depthCoord);
 
             // depth == 1.0 — небо/пустота, окклюзии в принципе нет.
             if (depth >= 0.9999) {
@@ -155,7 +180,7 @@ impl AlkashEngine {
                 if (sampleUV.x < 0.0 || sampleUV.x > 1.0 || sampleUV.y < 0.0 || sampleUV.y > 1.0) continue;
 
                 int2 sampleDepthCoord = int2(sampleUV * float2(depthW, depthH));
-                float sceneDepth = DepthBuffer.Load(sampleDepthCoord, 0).r;
+                float sceneDepth = LoadDepth(sampleDepthCoord);
                 if (sceneDepth >= 0.9999) continue; // небо в этом направлении — окклюдировать нечем
 
                 float3 sceneWorldPos = reconstructWorldPos(sampleUV, sceneDepth);
@@ -176,10 +201,14 @@ impl AlkashEngine {
         }
         "#;
 
-        self.ssao_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
-        self.ssao_ps = Some(ShaderBlob::compile(ps_source, "ps_5_0", "main")?);
+        let ps_source = ps_source_template
+            .replace("__TEX_DECL__", tex_decl)
+            .replace("__DEPTH_HELPERS__", depth_helpers);
 
-        println!("[ENGINE] ✓ SSAO shaders compiled ({} сэмплов, без normal G-buffer/blur-прохода)", 12);
+        self.ssao_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
+        self.ssao_ps = Some(ShaderBlob::compile(&ps_source, "ps_5_0", "main")?);
+
+        println!("[ENGINE] ✓ SSAO shaders compiled ({} сэмплов, без normal G-buffer/blur-прохода, MSAA={}x)", 12, self.msaa_samples);
         Ok(())
     }
 
@@ -397,6 +426,18 @@ impl AlkashEngine {
         Ok(())
     }
 
+    /// ДОБАВЛЕНО (по прямому запросу пользователя — переключаемые графические
+    /// настройки, см. `GraphicsSettings` в engine/mod.rs): тот же приём, что
+    /// уже есть у bloom/volumetric/shadows (`disable_bloom_for_diagnostics`/
+    /// `disable_volumetric_for_diagnostics`/`disable_shadows_for_diagnostics`,
+    /// уже используемые `bin/benchmark.rs`/`bin/example_minimal.rs`) —
+    /// `render_frame()` пропускает весь SSAO-блок (сырой AO + blur), если
+    /// `ssao_texture.is_none()`.
+    pub fn disable_ssao_for_diagnostics(&mut self) {
+        println!("[DIAG] SSAO-проход принудительно отключён (SSAO=false в GraphicsSettings)");
+        self.ssao_texture = None;
+    }
+
     /// Создаёт half-res AO render target + его RTV/SRV heap (depth @ t0,
     /// СВОЯ копия, не разделяемая с volumetric — тот же принцип, что уже
     /// применяет `create_volumetric_resources` для своего depth SRV: каждый
@@ -448,6 +489,83 @@ impl AlkashEngine {
         println!("[ENGINE] ✓ SSAO resources created: {}x{} half-res target", ao_width, ao_height);
 
         self.create_ssao_final_srv()?;
+        self.create_ssao_blur_resources(ao_width, ao_height)?;
+
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (устранение видимой зернистости SSAO — см. подробный
+    /// комментарий у полей `ssao_blur_*` в `engine/mod.rs`): создаёт
+    /// scratch-таргет + дескрипторы под двухпроходный separable blur
+    /// СЫРОГО AO. Вызывается из `create_ssao_resources` — на том же
+    /// разрешении (`ao_width`/`ao_height`) и с той же частотой
+    /// пересоздания (init + каждый resize через `window.rs`).
+    fn create_ssao_blur_resources(&mut self, ao_width: u32, ao_height: u32) -> Result<()> {
+        let blur_texture = crate::render::RenderTexture::create_hdr_target(
+            ao_width, ao_height, 1,
+            windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET,
+        )?;
+
+        let rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(1)?;
+        // 2 смежных SRV: индекс 0 = ssao_texture (сырой AO, вход
+        // горизонтального прохода), индекс 1 = ssao_blur_texture (после
+        // горизонтали, вход вертикального прохода) — тот же паттерн
+        // смежных дескрипторов A/B, что и у `create_bloom_resources`.
+        let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(2)?;
+
+        let rtv_size = {
+            let state = STATE.lock().unwrap();
+            state.rtv_descriptor_size
+        };
+        let cbv_srv_uav_size = {
+            let state = STATE.lock().unwrap();
+            state.cbv_srv_uav_descriptor_size
+        };
+
+        let rtv = crate::heap::DescriptorHeap::get_cpu_handle(&rtv_heap, 0, rtv_size);
+        blur_texture.create_rtv(rtv)?;
+
+        let raw_srv_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, 0, cbv_srv_uav_size);
+        let raw_srv_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_heap, 0, cbv_srv_uav_size);
+        let mid_srv_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, 1, cbv_srv_uav_size);
+        let mid_srv_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_heap, 1, cbv_srv_uav_size);
+
+        let raw_texture = self.ssao_texture.as_ref().ok_or_else(|| {
+            eprintln!("[ENGINE] ERROR: create_ssao_blur_resources() called before ssao_texture created");
+            Error::from_hresult(HRESULT(1))
+        })?;
+        raw_texture.create_srv(raw_srv_cpu)?;
+        blur_texture.create_srv(mid_srv_cpu)?;
+
+        self.ssao_blur_texture = Some(blur_texture);
+        self.ssao_blur_rtv = rtv;
+        self.ssao_blur_rtv_heap = Some(rtv_heap);
+        self.ssao_blur_srv_heap = Some(srv_heap);
+        self.ssao_blur_srv_raw_gpu = raw_srv_gpu;
+        self.ssao_blur_srv_mid_gpu = mid_srv_gpu;
+
+        // texel_size — единственное, от чего зависит результат этого
+        // прохода (кроме самой картинки) — не меняется без ресайза, так
+        // что оба буфера пишутся здесь ОДИН раз, а не каждый кадр (см.
+        // подробное объяснение у полей `ssao_blur_cb_x/y` в engine/mod.rs
+        // про то, почему `render_frame` НЕ должен их перезаписывать).
+        // Формат {threshold, texel_size, padding} — тот, который ожидает
+        // переиспользуемый `bloom_blur_ps` (BloomParams); threshold здесь
+        // ни на что не влияет (blur-шейдер его не читает), оставлен 0.0.
+        let cb_x = Buffer::create_constant_buffer(256)?;
+        let params_x: [f32; 4] = [0.0, 1.0 / ao_width as f32, 0.0, 0.0];
+        cb_x.update_constant_buffer(unsafe {
+            std::slice::from_raw_parts(params_x.as_ptr() as *const u8, 16)
+        })?;
+        let cb_y = Buffer::create_constant_buffer(256)?;
+        let params_y: [f32; 4] = [0.0, 0.0, 1.0 / ao_height as f32, 0.0];
+        cb_y.update_constant_buffer(unsafe {
+            std::slice::from_raw_parts(params_y.as_ptr() as *const u8, 16)
+        })?;
+        self.ssao_blur_cb_x = Some(cb_x);
+        self.ssao_blur_cb_y = Some(cb_y);
+
+        println!("[ENGINE] ✓ SSAO blur resources created: {}x{} scratch target (устраняет зернистость 12-сэмпловой SSAO)", ao_width, ao_height);
 
         Ok(())
     }
