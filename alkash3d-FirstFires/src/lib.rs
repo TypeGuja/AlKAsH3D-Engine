@@ -426,9 +426,7 @@ impl LightState {
         );
         let frustum = Frustum::from_view_proj(&view_proj_mat);
 
-        let mut culled_lod = 0;
-        let mut culled_dist = 0;
-        let mut culled_frustum = 0;
+        let culled_dist = 0;
 
         // ИСПРАВЛЕНО (баг: уличные фонари резко гаснут/загораются при
         // ходьбе игрока): раньше здесь был ДОПОЛНИТЕЛЬНЫЙ тест `distance >
@@ -450,11 +448,29 @@ impl LightState {
         // кадре"; отдельный жёсткий cutoff по `range` только дублировал их
         // менее подходящим порогом.
 
-        // Параллельный каллинг
-        let visible: Vec<(usize, u32, f32, Vector3<f32>)> = self.lights
+        // ИЗМЕНЕНО (perf — см. `examples/perf_test.rs`, добавленный по
+        // прямому запросу пользователя на замер производительности:
+        // culling света оказался ощутимо дороже per-item, чем физика
+        // Inertial на сопоставимом числе объектов): раньше здесь было ДВА
+        // прохода по всем светам за кадр — этот, параллельный (реальный
+        // результат), и отдельный ПОСЛЕДОВАТЕЛЬНЫЙ ниже, который заново
+        // считал distance/frustum test ТОЛЬКО ради статистики
+        // (`culled_lod`/`culled_frustum`) — то есть самый дорогой тест
+        // (`frustum.test_sphere`) выполнялся для каждого света дважды за
+        // кадр. Теперь причина отбраковки (LOD/frustum) возвращается прямо
+        // из ТОГО ЖЕ параллельного прохода через `LightCullOutcome`, и
+        // счётчики статистики считаются во время группировки результата —
+        // второй проход убран целиком.
+        enum LightCullOutcome {
+            Visible(usize, u32, f32, Vector3<f32>),
+            CulledLod,
+            CulledFrustum,
+        }
+
+        let outcomes: Vec<LightCullOutcome> = self.lights
             .par_iter()
             .enumerate()
-            .filter_map(|(idx, light)| {
+            .map(|(idx, light)| {
                 let distance = (light.position - camera).magnitude();
 
                 // LOD culling
@@ -465,25 +481,26 @@ impl LightState {
                 } else if distance < self.config.lod_distances[2] {
                     2
                 } else {
-                    return None;
+                    return LightCullOutcome::CulledLod;
                 };
 
                 // Frustum culling
                 if !frustum.test_sphere(light.position, light.range) {
-                    return None;
+                    return LightCullOutcome::CulledFrustum;
                 }
 
-                Some((idx, lod, distance, light.position))
+                LightCullOutcome::Visible(idx, lod, distance, light.position)
             })
             .collect();
 
-        // Подсчёт статистики
-        for light in &self.lights {
-            let distance = (light.position - camera).magnitude();
-            if distance >= self.config.lod_distances[2] {
-                culled_lod += 1;
-            } else if !frustum.test_sphere(light.position, light.range) {
-                culled_frustum += 1;
+        let mut visible: Vec<(usize, u32, f32, Vector3<f32>)> = Vec::with_capacity(outcomes.len());
+        let mut culled_lod = 0u32;
+        let mut culled_frustum = 0u32;
+        for outcome in outcomes {
+            match outcome {
+                LightCullOutcome::Visible(idx, lod, distance, pos) => visible.push((idx, lod, distance, pos)),
+                LightCullOutcome::CulledLod => culled_lod += 1,
+                LightCullOutcome::CulledFrustum => culled_frustum += 1,
             }
         }
 
