@@ -8,6 +8,12 @@ pub struct Keyframe<T: Clone> {
     pub time: f32,
     pub value: T,
     pub easing: EasingType,
+    /// ДОБАВЛЕНО (по прямому запросу пользователя: "поставить 1 точку (над
+    /// ней её название) ... поставить 2 точку (со своим названием)") —
+    /// подписывается над маркером во вьюпорте (см. `EditorApp::
+    /// draw_keyframe_markers`) и редактируется в списке keyframe'ов в
+    /// инспекторе.
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -21,8 +27,21 @@ impl<T: Clone + Interpolatable> AnimationTrack<T> {
         Self { keyframes: Vec::new(), looped: false }
     }
 
-    pub fn add_keyframe(&mut self, time: f32, value: T, easing: EasingType) {
-        self.keyframes.push(Keyframe { time, value, easing });
+    /// ИЗМЕНЕНО (редактирование keyframe'ов из инспектора — см. `ui/
+    /// inspector.rs`): повторный вызов на уже существующем времени (в
+    /// пределах эпсилон) теперь ЗАМЕНЯЕТ значение/easing этого keyframe'а,
+    /// а не добавляет дубликат рядом — иначе типичный workflow "перейти к
+    /// keyframe'у, подправить позу, снова нажать Add Keyframe" копил бы
+    /// два (или больше) keyframe'а на одном времени вместо обновления
+    /// одного.
+    pub fn add_keyframe(&mut self, time: f32, value: T, easing: EasingType, name: String) {
+        if let Some(existing) = self.keyframes.iter_mut().find(|k| (k.time - time).abs() < 1e-4) {
+            existing.value = value;
+            existing.easing = easing;
+            existing.name = name;
+            return;
+        }
+        self.keyframes.push(Keyframe { time, value, easing, name });
         self.keyframes.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
     }
 

@@ -55,9 +55,18 @@ impl ParticleSystem {
     pub fn update(&mut self, delta_time: f32) {
         if !self.enabled { return; }
 
+        // ИСПРАВЛЕНО (частицы никогда не эмитились): старая формула
+        // `self.emission_timer.fract() / self.emission_rate` делит остаток
+        // ЕЩЁ РАЗ на emission_rate при каждом кадре — вместо накопления
+        // времени до следующей эмиссии таймер экспоненциально стремится к
+        // нулю (для emission_rate=10 сходится к ~0.0018 и никогда не
+        // достигает 0.1, нужных для первой частицы), так что
+        // particles_to_emit оставался 0 всегда. Правильно — вычесть именно
+        // ту часть времени, которая была "потрачена" на уже эмитированные
+        // частицы, остаток накапливается на следующий кадр как обычно.
         self.emission_timer += delta_time;
         let particles_to_emit = (self.emission_timer * self.emission_rate) as usize;
-        self.emission_timer = self.emission_timer.fract() / self.emission_rate;
+        self.emission_timer -= particles_to_emit as f32 / self.emission_rate;
 
         let remaining = self.max_particles - self.particles.len();
         for _ in 0..particles_to_emit.min(remaining) {

@@ -105,6 +105,21 @@ pub fn export_scene_to_alfar_file(scene: &Scene, path: &str) -> Result<()> {
         .map_err(|e| anyhow!("Не удалось сохранить .alfar '{}': {}", path, e))
 }
 
+/// Строит `LightComponent` из одной записи `.alfar` — общий код между
+/// `import_alfar_to_scene` (весь файл разом, новая сцена) и точечным
+/// назначением ОДНОГО светильника уже существующему Light-объекту (см.
+/// `load_lights_for_picker` ниже и кнопку "📂 Load from .alfar..." в
+/// `ui/inspector.rs`).
+fn individual_light_to_component(light: &IndividualLight) -> LightComponent {
+    LightComponent {
+        light_type: alfar_light_type_to_editor(light.light_type, light.spot_inner_angle, light.spot_outer_angle),
+        color: light.color,
+        intensity: light.intensity,
+        range: light.range,
+        enabled: light.enabled != 0,
+    }
+}
+
 /// Импортирует все источники света из `.alfar` как Light-объекты новой
 /// сцены (ambient сцены берётся из `AlfarFile::ambient`). Direction/up не
 /// восстанавливаются как поворот объекта — см. комментарий в шапке файла.
@@ -120,8 +135,8 @@ pub fn import_alfar_to_scene(path: &str, log: &mut dyn FnMut(String)) -> Result<
 
     let mut directional_or_spot_count = 0;
     for light in &alfar.lights {
-        let editor_type = alfar_light_type_to_editor(light.light_type, light.spot_inner_angle, light.spot_outer_angle);
-        if !matches!(editor_type, EditorLightType::Point) {
+        let component = individual_light_to_component(light);
+        if !matches!(component.light_type, EditorLightType::Point) {
             directional_or_spot_count += 1;
         }
 
@@ -131,16 +146,7 @@ pub fn import_alfar_to_scene(path: &str, log: &mut dyn FnMut(String)) -> Result<
             .cloned()
             .unwrap_or_else(|| "Light".to_string());
 
-        let mut obj = GameObject::new(
-            &light_name,
-            ObjectType::Light(LightComponent {
-                light_type: editor_type,
-                color: light.color,
-                intensity: light.intensity,
-                range: light.range,
-                enabled: light.enabled != 0,
-            }),
-        );
+        let mut obj = GameObject::new(&light_name, ObjectType::Light(component));
         obj.transform.position = crate::math::Vec3::new(light.position[0], light.position[1], light.position[2]);
         scene.add_object(obj);
     }
@@ -153,6 +159,29 @@ pub fn import_alfar_to_scene(path: &str, log: &mut dyn FnMut(String)) -> Result<
     }
 
     Ok(scene)
+}
+
+/// Читает список источников света `.alfar` для точечного выбора — НЕ
+/// создаёт объекты и не трогает сцену (в отличие от `import_alfar_to_scene`
+/// выше), только возвращает (имя, параметры) для каждой записи, чтобы
+/// вызывающий код (инспектор) сам решил, какую применить к уже
+/// существующему Light-объекту. Позиция намеренно не возвращается — при
+/// точечном назначении объект остаётся там, где его разместили в сцене.
+pub fn load_lights_for_picker(path: &str) -> Result<Vec<(String, LightComponent)>> {
+    let alfar = AlfarFile::load(path).map_err(|e| anyhow!("Не удалось прочитать .alfar '{}': {}", path, e))?;
+    let out = alfar
+        .lights
+        .iter()
+        .map(|light| {
+            let name = alfar
+                .strings
+                .get(light.name_id as usize)
+                .cloned()
+                .unwrap_or_else(|| "Light".to_string());
+            (name, individual_light_to_component(light))
+        })
+        .collect();
+    Ok(out)
 }
 
 #[cfg(test)]

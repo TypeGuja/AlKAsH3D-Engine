@@ -12,6 +12,7 @@ mod converters;
 mod gpu;
 mod app;
 mod memory;
+mod discord_presence;
 
 use app::EditorApp;
 

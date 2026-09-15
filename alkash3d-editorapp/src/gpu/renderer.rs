@@ -59,6 +59,16 @@ pub struct GpuRenderer {
     // Меши
     pub meshes: Vec<GpuMesh>,
 
+    // ДОБАВЛЕНО (рендер частиц — см. `ParticleInstance`/`render()` ниже):
+    // отдельный alpha-blend пайплайн поверх основного (тот рисует
+    // непрозрачные меши с BlendState::REPLACE, для частиц это не годится).
+    // Динамический vertex-буфер растёт по тому же паттерну, что и
+    // `model_buffer` выше (`ensure_particle_capacity`) — 6 вершин
+    // (billboard-квад из 2 треугольников) на частицу.
+    particle_pipeline: wgpu::RenderPipeline,
+    particle_vertex_buffer: Option<wgpu::Buffer>,
+    particle_capacity: u32,
+
     // Текстура глубины
     pub depth_texture: wgpu::Texture,
     pub depth_view: wgpu::TextureView,
@@ -131,6 +141,15 @@ pub struct GpuMesh {
 pub struct GpuMaterial {
     pub buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
+}
+
+/// Один частица-инстанс для `GpuRenderer::render()` — уже в мировых
+/// координатах (см. `EditorApp::get_gpu_particle_instances`), рендерер сам
+/// разворачивает её в billboard-квад лицом к камере.
+pub struct ParticleInstance {
+    pub position: [f32; 3],
+    pub size: f32,
+    pub color: [f32; 4],
 }
 
 // ============================================================
@@ -215,9 +234,74 @@ impl Vertex3D {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ParticleVertex {
+    position: [f32; 3],
+    color: [f32; 4],
+}
+
+impl ParticleVertex {
+    fn vertex_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 12,
+                    shader_location: 1,
+                },
+            ],
+        }
+    }
+}
+
 // ============================================================
 // Шейдер WGSL
 // ============================================================
+
+// Безосвещённый alpha-blend шейдер для частиц — billboard-квады уже
+// развёрнуты на CPU (см. `GpuRenderer::render`), здесь только проекция и
+// вывод цвета/альфы как есть. `Camera`-структура продублирована из
+// PBR_SHADER ниже (не импортируется — отдельный shader module), но layout
+// идентичен: переиспользуется тот же `camera_bind_group`.
+const PARTICLE_SHADER: &str = r#"
+struct Camera {
+    view_proj: mat4x4<f32>,
+    view_position: vec3<f32>,
+}
+
+@group(0) @binding(0) var<uniform> camera: Camera;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+}
+
+struct VertexOutput {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+
+@vertex
+fn vs_particle(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_pos = camera.view_proj * vec4<f32>(in.position, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_particle(in: VertexOutput) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#;
 
 const PBR_SHADER: &str = r#"
 struct Camera {
@@ -346,6 +430,17 @@ impl CameraData {
             // (500 000).
             far: 500_000.0,
         }
+    }
+
+    /// Единичные right/up векторы камеры в мировых координатах — та же
+    /// пара (s, u), что строит `view_matrix()` ниже, вынесена отдельно для
+    /// CPU-billboard'а частиц (`GpuRenderer::render`): каждый частица-квад
+    /// разворачивается лицом к камере этими же осями.
+    pub fn right_up(&self) -> (Vec3, Vec3) {
+        let f = (self.target - self.position).normalize();
+        let s = f.cross(self.up).normalize();
+        let u = s.cross(f);
+        (s, u)
     }
 
     fn view_matrix(&self) -> [[f32; 4]; 4] {
@@ -645,6 +740,64 @@ impl GpuRenderer {
             cache: None,
         });
 
+        // Particle pipeline — отдельный от основного `pipeline` выше:
+        // alpha blend вместо REPLACE, без записи в depth (частицы не должны
+        // затенять друг друга по глубине), но с depth-тестом против уже
+        // отрисованных мешей (та же `depth_view`, см. `render()`). Только
+        // camera bind group — шейдер не использует свет/модель/материал.
+        let particle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Particle Shader"),
+            source: wgpu::ShaderSource::Wgsl(PARTICLE_SHADER.into()),
+        });
+        let particle_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Particle Pipeline Layout"),
+            bind_group_layouts: &[&camera_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let particle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Particle Pipeline"),
+            layout: Some(&particle_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &particle_shader,
+                entry_point: Some("vs_particle"),
+                compilation_options: Default::default(),
+                buffers: &[ParticleVertex::vertex_layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &particle_shader,
+                entry_point: Some("fs_particle"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
         // Depth texture
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
@@ -690,6 +843,9 @@ impl GpuRenderer {
             material_bind_group_layout,
             materials: vec![default_material],
             meshes: Vec::new(),
+            particle_pipeline,
+            particle_vertex_buffer: None,
+            particle_capacity: 0,
             depth_texture,
             depth_view,
             output_texture: None,
@@ -733,6 +889,24 @@ impl GpuRenderer {
             }],
         });
         self.model_capacity = new_capacity;
+    }
+
+    /// Гарантирует, что `particle_vertex_buffer` вмещает `needed` частиц
+    /// (6 вершин каждая) — тот же паттерн роста, что `ensure_model_capacity`
+    /// выше, буфер целиком перезаписывается каждый кадр в `render()`, так
+    /// что сохранять его прошлое содержимое при пересоздании не нужно.
+    fn ensure_particle_capacity(&mut self, needed: u32) {
+        if needed <= self.particle_capacity && self.particle_vertex_buffer.is_some() {
+            return;
+        }
+        let new_capacity = needed.max(self.particle_capacity.saturating_mul(2)).max(64);
+        self.particle_vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Particle Vertex Buffer"),
+            size: new_capacity as u64 * 6 * std::mem::size_of::<ParticleVertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.particle_capacity = new_capacity;
     }
 
     /// Проверяет, нужно ли пересоздавать output текстуру
@@ -808,6 +982,7 @@ impl GpuRenderer {
     pub fn render(
         &mut self,
         render_objects: &[(usize, [[f32; 4]; 4], usize)],
+        particles: &[ParticleInstance],
         width: u32,
         height: u32,
     ) {
@@ -840,6 +1015,37 @@ impl GpuRenderer {
             let offset = i as u64 * self.model_stride;
             self.queue.write_buffer(&self.model_buffer, offset, bytemuck::cast_slice(&[model_uniform]));
         }
+
+        // Billboard-развёртка частиц в вершины и запись в GPU-буфер — ДО
+        // заимствования `self.output_view` ниже (не после): `ensure_particle_
+        // capacity` требует `&mut self`, а `output_view` ниже держит
+        // заимствование `self.output_view` до конца функции, с которым
+        // любой последующий вызов `&mut self`-метода конфликтовал бы.
+        let particle_vertex_count: u32 = if particles.is_empty() {
+            0
+        } else {
+            let (right, up) = self.camera.right_up();
+            let mut particle_vertices: Vec<ParticleVertex> = Vec::with_capacity(particles.len() * 6);
+            for p in particles {
+                let center = Vec3::new(p.position[0], p.position[1], p.position[2]);
+                let half = p.size * 0.5;
+                let r = right * half;
+                let u = up * half;
+                let corners = [center - r - u, center + r - u, center + r + u, center - r + u];
+                let vert = |c: Vec3| ParticleVertex { position: [c.x, c.y, c.z], color: p.color };
+                particle_vertices.push(vert(corners[0]));
+                particle_vertices.push(vert(corners[1]));
+                particle_vertices.push(vert(corners[2]));
+                particle_vertices.push(vert(corners[0]));
+                particle_vertices.push(vert(corners[2]));
+                particle_vertices.push(vert(corners[3]));
+            }
+            self.ensure_particle_capacity(particles.len() as u32);
+            if let Some(buf) = &self.particle_vertex_buffer {
+                self.queue.write_buffer(buf, 0, bytemuck::cast_slice(&particle_vertices));
+            }
+            particle_vertices.len() as u32
+        };
 
         let output_view = match &self.output_view {
             Some(v) => v,
@@ -911,6 +1117,38 @@ impl GpuRenderer {
                     self.triangles_rendered += mesh.index_count / 3;
                 }
             }
+        }
+
+        // Второй проход — частицы, поверх уже нарисованных мешей в ТОМ ЖЕ
+        // encoder'е (LoadOp::Load сохраняет содержимое цвета/глубины из
+        // прохода выше вместо очистки). Billboard-развёртка (4 угла на
+        // частицу из right/up камеры) считается на CPU — при типичных для
+        // редактора количествах частиц (сотни-тысячи) это на порядки
+        // дешевле кадра, чем сама отрисовка, и не требует geometry/compute
+        // шейдеров.
+        if particle_vertex_count > 0 {
+            let mut particle_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Particle Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: output_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            particle_pass.set_pipeline(&self.particle_pipeline);
+            particle_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            if let Some(buf) = &self.particle_vertex_buffer {
+                particle_pass.set_vertex_buffer(0, buf.slice(..));
+                particle_pass.draw(0..particle_vertex_count, 0..1);
+            }
+            self.draw_calls += 1;
         }
 
         // ИЗМЕНЕНО: раньше здесь был `copy_texture_to_buffer` в readback-буфер

@@ -175,6 +175,14 @@ pub fn render_menu_bar(ctx: &egui::Context, app: &mut crate::EditorApp) {
                     app.create_scripted_entity();
                     ui.close_menu();
                 }
+                if ui.button("🎥 Camera").clicked() {
+                    app.create_camera();
+                    ui.close_menu();
+                }
+                if ui.button("✨ Particle System").clicked() {
+                    app.create_particle_system();
+                    ui.close_menu();
+                }
                 ui.menu_button("3D Object", |ui| {
                     if ui.button("Cube").clicked() {
                         app.create_primitive("Cube", crate::mesh::Mesh::create_cube());

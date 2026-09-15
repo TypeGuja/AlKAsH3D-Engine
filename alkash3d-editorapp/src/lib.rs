@@ -12,6 +12,7 @@ pub mod assets;
 pub mod converters;
 pub mod gpu;
 pub mod memory;  // ← ДОБАВЬТЕ ЭТУ СТРОКУ
+pub mod discord_presence;
 
 mod app;
 

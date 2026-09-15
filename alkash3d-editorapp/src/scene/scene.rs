@@ -173,6 +173,43 @@ impl Scene {
         if self.playing {
             self.animation_time += delta_time;
         }
+
+        // ДОБАВЛЕНО (частицы теперь реально симулируются, а не только
+        // хранятся — см. `gpu/renderer.rs` про их отрисовку): каждый
+        // ParticleSystem-объект эмитит/двигает/старит свои частицы каждый
+        // кадр. `transform` синкается из локального transform объекта
+        // ПЕРЕД update() (а не world-transform через `get_world_transform`)
+        // — родительская иерархия для частиц пока не учитывается, чтобы не
+        // тянуть сюда заимствование всей `Scene` изнутри `values_mut()`;
+        // для объектов верхнего уровня (без родителя) разницы нет.
+        for obj in self.objects.values_mut() {
+            if let super::object_type::ObjectType::ParticleSystem(p) = &mut obj.object_type {
+                if !p.enabled { continue; }
+                p.system.transform = obj.transform.clone();
+                p.system.update(delta_time);
+            }
+        }
+
+        // ДОБАВЛЕНО (анимации теперь реально проигрываются — см. `ui/
+        // inspector.rs` про авторинг keyframe'ов): играющая анимация
+        // объекта КАЖДЫЙ кадр перезаписывает его `transform` целиком (а не
+        // складывается с ним) — покуда `playing == false`, `transform`
+        // остаётся полностью под ручным контролем (Transform-секция
+        // инспектора), ровно как до появления этой фичи. Если у объекта
+        // играют НЕСКОЛЬКО анимаций разом — что сама структура данных
+        // (`HashMap<String, Animation>`) формально допускает — выигрывает
+        // та, что идёт последней в порядке обхода HashMap (недетерминировано);
+        // это осознанное упрощение: инспектор не мешает включить Play на
+        // нескольких сразу, но одновременное проигрывание нескольких
+        // анимаций на одном объекте — редкий, не поддерживаемый пока кейс.
+        for obj in self.objects.values_mut() {
+            for anim in obj.animations.values_mut() {
+                anim.update(delta_time);
+                if anim.playing {
+                    anim.apply_to_transform(&mut obj.transform);
+                }
+            }
+        }
     }
 }
 #[cfg(test)]

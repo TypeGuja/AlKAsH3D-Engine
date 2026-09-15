@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::collections::HashMap;
 use crate::gpu::GpuRenderer;
 use crate::math::Vec3;
-use crate::scene::{Scene, GameObject, ObjectType, MeshComponent, LightComponent, LightType, AudioSourceComponent, ScriptedEntityComponent};
+use crate::scene::{Scene, GameObject, ObjectType, MeshComponent, LightComponent, LightType, AudioSourceComponent, ScriptedEntityComponent, CameraComponent, ParticleSystemComponent};
 use crate::editor::{Gizmo, CommandHistory, EditorTool};
 use crate::systems::*;
 use crate::assets::AssetLibrary;
@@ -102,6 +102,16 @@ pub struct EditorApp {
     pub mesh_gizmo_drag: Option<crate::editor::GizmoDrag>,
     pub mesh_gizmo_hover_axis: Option<crate::editor::GizmoAxisSel>,
 
+    // ДОБАВЛЕНО (по прямому запросу пользователя: показывать все
+    // анимационные точки во вьюпорте, чтобы их можно было двигать рукой) —
+    // независимое от gizmo_drag/mesh_gizmo_drag состояние: маркер
+    // keyframe'а перетаскивается напрямую мышью по плоскости, повёрнутой
+    // лицом к камере (см. `screen_delta_to_world`/
+    // `handle_keyframe_marker_input`), без оси/gizmo-хендлов — так как
+    // маркеров может быть много одновременно (по одному на keyframe), а не
+    // один на объект.
+    pub dragging_keyframe: Option<DraggingKeyframe>,
+
     // ИСПРАВЛЕНО (по прямому запросу пользователя — прошлая версия
     // защищала ТОЛЬКО стартовое выравнивание выделения самого с собой, а
     // не притягивала к другим вершинам меша по ходу драга, что пользователь
@@ -171,6 +181,11 @@ pub struct EditorApp {
     pub assembly_editor: AssemblyEditorState,
     pub car_preset_editor: CarPresetEditorState,
     pub material_library_editor: MaterialLibraryEditorState,
+
+    // ДОБАВЛЕНО (по прямому запросу пользователя: "Discord Rich Presence
+    // статус"): см. src/discord_presence.rs — тихий no-op, пока не задан
+    // реальный DISCORD_CLIENT_ID.
+    pub discord_presence: crate::discord_presence::DiscordPresence,
 }
 
 /// Состояние окна "🔊 Sound Bank Editor" — см. `ui/sound_bank_editor.rs`.
@@ -285,6 +300,18 @@ pub struct UploadTask {
     pub estimated_bytes: usize,
 }
 
+/// Какой именно keyframe сейчас тащат мышью во вьюпорте — см.
+/// `EditorApp::dragging_keyframe`/`handle_keyframe_marker_input`. `index` —
+/// позиция в `Animation::position_track.keyframes` (единственный трек,
+/// маркеры которого показываются/двигаются — Rotation/Scale двигать мышью
+/// в 3D неестественно, их правят через Transform-секцию после перехода к
+/// нужному времени, см. `ui/inspector.rs`).
+pub struct DraggingKeyframe {
+    pub object_id: Uuid,
+    pub animation_name: String,
+    pub index: usize,
+}
+
 impl EditorApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui::setup_egui_style(&cc.egui_ctx);
@@ -372,6 +399,7 @@ impl EditorApp {
             edit_selected_faces: std::collections::BTreeSet::new(),
             mesh_gizmo_drag: None,
             mesh_gizmo_hover_axis: None,
+            dragging_keyframe: None,
             mesh_gizmo_snap_candidates: Vec::new(),
             mesh_gizmo_snap_start_value: 0.0,
             mesh_gizmo_snap_applied_value: 0.0,
@@ -387,6 +415,7 @@ impl EditorApp {
             assembly_editor: AssemblyEditorState::default(),
             car_preset_editor: CarPresetEditorState::default(),
             material_library_editor: MaterialLibraryEditorState::default(),
+            discord_presence: crate::discord_presence::DiscordPresence::new(),
         };
 
         app.init_gpu();
@@ -512,6 +541,7 @@ impl EditorApp {
         self.process_upload_queue(self.max_upload_bytes_per_frame);
 
         let render_objects = self.get_gpu_render_objects();
+        let particle_instances = self.get_gpu_particle_instances();
 
         if let Some(ref mut renderer) = self.gpu_renderer {
             renderer.camera.position = self.camera_position;
@@ -527,7 +557,7 @@ impl EditorApp {
             // напрямую в egui_wgpu (см. GpuRenderer::ensure_output_texture),
             // так что `get_egui_texture()` ниже сразу видит этот же кадр,
             // без промежуточного шага чтения обратно на CPU.
-            renderer.render(&render_objects, width, height);
+            renderer.render(&render_objects, &particle_instances, width, height);
 
             // Отображаем текстуру
             if let Some(tex_id) = renderer.get_egui_texture() {
@@ -571,6 +601,7 @@ impl EditorApp {
 
         self.draw_gizmo(ui, rect);
         self.draw_mesh_edit_overlay(ui, rect);
+        self.draw_keyframe_markers(ui, rect);
     }
 
     fn get_gpu_render_objects(&self) -> Vec<(usize, [[f32; 4]; 4], usize)> {
@@ -618,6 +649,27 @@ impl EditorApp {
         }
 
         objects
+    }
+
+    /// Живые частицы всех ParticleSystem-объектов сцены в мировых
+    /// координатах, готовые для `GpuRenderer::render` — сама симуляция
+    /// (эмиссия/движение/старение) уже сделана в `Scene::update`, здесь
+    /// только плоский список для отрисовки.
+    fn get_gpu_particle_instances(&self) -> Vec<crate::gpu::renderer::ParticleInstance> {
+        let mut instances = Vec::new();
+        for obj in self.scene.objects.values() {
+            if !obj.visible { continue; }
+            if let ObjectType::ParticleSystem(p) = &obj.object_type {
+                for particle in &p.system.particles {
+                    instances.push(crate::gpu::renderer::ParticleInstance {
+                        position: [particle.position.x, particle.position.y, particle.position.z],
+                        size: particle.size,
+                        color: particle.color,
+                    });
+                }
+            }
+        }
+        instances
     }
 
     pub fn import_model_async(&mut self, path: &str) {
@@ -837,6 +889,28 @@ impl EditorApp {
         ))
     }
 
+    /// Обратная операция к `world_to_screen` для перетаскивания точки
+    /// мышью (см. `handle_keyframe_marker_input`): переводит дельту мыши в
+    /// пикселях в мировую дельту на плоскости, перпендикулярной направлению
+    /// камеры и проходящей через `at_world_pos` — та же проекционная
+    /// математика, что у `world_to_screen`, только "в обратную сторону",
+    /// так что курсор мыши весь драг остаётся ровно над точкой (в отличие
+    /// от gizmo-осей здесь нет ограничения по одной оси — точка свободно
+    /// скользит по экранной плоскости, как и ожидается от простого
+    /// "потащить точку мышью").
+    fn screen_delta_to_world(&self, mouse_delta: Vec2, at_world_pos: Vec3, rect: Rect) -> Vec3 {
+        let dir = (self.camera_target - self.camera_position).normalize();
+        let right = dir.cross(self.camera_up).normalize();
+        let up = right.cross(dir).normalize();
+        let rel = at_world_pos - self.camera_position;
+        let dist = rel.dot(dir).max(0.01);
+        let tf = (self.camera_fov * std::f32::consts::PI / 180.0 / 2.0).tan();
+        let half_h = rect.height() * 0.5;
+        let dr = mouse_delta.x * dist * tf / half_h;
+        let du = -mouse_delta.y * dist * tf / half_h;
+        right * dr + up * du
+    }
+
     // =====================================================================
     // ДОБАВЛЕНО (полноценный эдитор — экспорт/импорт родных форматов
     // движка): см. src/converters/{altex,alworld,alfar}.rs — там настоящие
@@ -949,6 +1023,28 @@ impl EditorApp {
                 sound_name: String::new(),
                 volume: 1.0,
                 spatial_blend: 1.0,
+                enabled: true,
+            }),
+        )
+    }
+
+    pub fn create_camera(&mut self) -> Uuid {
+        self.spawn_object(
+            "Camera",
+            ObjectType::Camera(CameraComponent {
+                fov: 60.0,
+                near: 0.1,
+                far: 1000.0,
+                orthographic: false,
+            }),
+        )
+    }
+
+    pub fn create_particle_system(&mut self) -> Uuid {
+        self.spawn_object(
+            "Particle System",
+            ObjectType::ParticleSystem(ParticleSystemComponent {
+                system: crate::particle::ParticleSystem::new(),
                 enabled: true,
             }),
         )
@@ -2368,7 +2464,7 @@ impl EditorApp {
     /// удаление), которые меняют число вершин/индексов, а не только их
     /// значения (см. `GpuRenderer::update_mesh_vertices` про то, почему
     /// именно они не могут переиспользовать существующий буфер).
-    fn refresh_gpu_mesh_structural(&mut self, id: Uuid) {
+    pub fn refresh_gpu_mesh_structural(&mut self, id: Uuid) {
         let Some(obj) = self.scene.get_object(id) else { return; };
         let ObjectType::Mesh(m) = &obj.object_type else { return; };
         if let Some(renderer) = self.gpu_renderer.as_mut() {
@@ -2643,6 +2739,118 @@ impl EditorApp {
         }
     }
 
+    /// ДОБАВЛЕНО (по прямому запросу пользователя: показывать все
+    /// анимационные точки во вьюпорте, чтобы их можно было двигать рукой):
+    /// для каждого ВЫДЕЛЕННОГО объекта — маркер на позиции каждого
+    /// keyframe'а любой его анимации с `show_keyframes == true`, плюс
+    /// тонкая линия между соседними по времени keyframe'ами (чтобы был
+    /// виден путь). Только `position_track` — см. комментарий у
+    /// `DraggingKeyframe` про то, почему Rotation/Scale не рисуются как
+    /// точки в 3D. Чистая отрисовка, ввод — в `handle_keyframe_marker_input`
+    /// ниже (та же схема разделения, что у `draw_gizmo`/`handle_gizmo_input`).
+    pub fn draw_keyframe_markers(&self, ui: &Ui, rect: Rect) {
+        let painter = ui.painter();
+        for &id in &self.scene.selected_ids {
+            let Some(obj) = self.scene.get_object(id) else { continue; };
+            for anim in obj.animations.values() {
+                if !anim.show_keyframes { continue; }
+                let points: Vec<Pos2> = anim.position_track.keyframes.iter()
+                    .filter_map(|kf| self.world_to_screen(kf.value, rect))
+                    .collect();
+                for pair in points.windows(2) {
+                    painter.line_segment([pair[0], pair[1]], Stroke::new(1.0, Color32::from_rgb(255, 170, 60)));
+                }
+                for (i, kf) in anim.position_track.keyframes.iter().enumerate() {
+                    let Some(p) = self.world_to_screen(kf.value, rect) else { continue; };
+                    let dragging_this = self.dragging_keyframe.as_ref()
+                        .map(|d| d.object_id == id && d.animation_name == anim.name && d.index == i)
+                        .unwrap_or(false);
+                    let (radius, color) = if dragging_this {
+                        (7.0, Color32::WHITE)
+                    } else {
+                        (5.0, Color32::from_rgb(255, 170, 60))
+                    };
+                    painter.circle_filled(p, radius, color);
+                    painter.circle_stroke(p, radius, Stroke::new(1.0, Color32::BLACK));
+                    if !kf.name.is_empty() {
+                        painter.text(
+                            Pos2::new(p.x, p.y - radius - 4.0),
+                            Align2::CENTER_BOTTOM,
+                            &kf.name,
+                            FontId::proportional(11.0),
+                            Color32::WHITE,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ввод для маркеров из `draw_keyframe_markers` — вызывается ДО
+    /// `handle_gizmo_input` (см. eframe::App::update ниже) и "поглощает"
+    /// клик/драг тем же способом (возврат true), если он попал по маркеру
+    /// или маркер уже тащат: `handle_gizmo_input`/`handle_viewport_input`
+    /// в этот кадр тогда не выполняются вовсе (short-circuit ||), чтобы
+    /// перетаскивание точки не путалось с обычным gizmo объекта или сбросом
+    /// выделения кликом по вьюпорту.
+    fn handle_keyframe_marker_input(&mut self, ui: &mut Ui, rect: Rect) -> bool {
+        if let Some(drag) = &self.dragging_keyframe {
+            if ui.input(|i| i.pointer.primary_down()) {
+                let mouse_delta = ui.input(|i| i.pointer.delta());
+                if mouse_delta.length_sq() > 0.0 {
+                    let object_id = drag.object_id;
+                    let animation_name = drag.animation_name.clone();
+                    let index = drag.index;
+                    let current_pos = self.scene.get_object(object_id)
+                        .and_then(|obj| obj.animations.get(&animation_name))
+                        .and_then(|anim| anim.position_track.keyframes.get(index))
+                        .map(|kf| kf.value);
+                    if let Some(pos) = current_pos {
+                        let world_delta = self.screen_delta_to_world(mouse_delta, pos, rect);
+                        if let Some(obj) = self.scene.get_object_mut(object_id) {
+                            if let Some(anim) = obj.animations.get_mut(&animation_name) {
+                                if let Some(kf) = anim.position_track.keyframes.get_mut(index) {
+                                    kf.value = kf.value + world_delta;
+                                }
+                            }
+                        }
+                    }
+                }
+                return true;
+            } else {
+                self.dragging_keyframe = None;
+                return true;
+            }
+        }
+
+        let Some(p) = ui.input(|i| i.pointer.hover_pos()) else { return false; };
+        if !rect.contains(p) { return false; }
+
+        let mut best: Option<(Uuid, String, usize, f32)> = None;
+        for &id in &self.scene.selected_ids {
+            let Some(obj) = self.scene.get_object(id) else { continue; };
+            for anim in obj.animations.values() {
+                if !anim.show_keyframes { continue; }
+                for (i, kf) in anim.position_track.keyframes.iter().enumerate() {
+                    let Some(marker) = self.world_to_screen(kf.value, rect) else { continue; };
+                    let d = (marker - p).length();
+                    if d < 10.0 && best.as_ref().map(|(_, _, _, bd)| d < *bd).unwrap_or(true) {
+                        best = Some((id, anim.name.clone(), i, d));
+                    }
+                }
+            }
+        }
+
+        if let Some((object_id, animation_name, index, _)) = best {
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                self.dragging_keyframe = Some(DraggingKeyframe { object_id, animation_name, index });
+            }
+            return true;
+        }
+
+        false
+    }
+
     /// Чистая отрисовка (без чтения ввода) — состояние наведения/драга уже
     /// посчитано в `handle_gizmo_input` этим же кадром. `pub`, т.к. вызывается
     /// и из GPU-пути (render_gpu_viewport выше), и из CPU-фолбэка
@@ -2808,6 +3016,10 @@ impl eframe::App for EditorApp {
         self.check_pending_imports();
         self.scene.update(0.016);
 
+        let discord_details = format!("Editing '{}'", self.scene.name);
+        let discord_state = format!("{} objects", self.scene.objects.len());
+        self.discord_presence.update(&discord_details, &discord_state);
+
         ctx.input(|i| {
             if i.key_pressed(Key::W) { self.current_tool = EditorTool::Move; }
             if i.key_pressed(Key::E) {
@@ -2908,7 +3120,7 @@ impl eframe::App for EditorApp {
             let gizmo_active = if self.edit_mode {
                 self.handle_mesh_edit_input(ui, rect)
             } else {
-                self.handle_gizmo_input(ui, rect)
+                self.handle_keyframe_marker_input(ui, rect) || self.handle_gizmo_input(ui, rect)
             };
             self.handle_viewport_input(ui, rect, gizmo_active || self.edit_mode);
 
