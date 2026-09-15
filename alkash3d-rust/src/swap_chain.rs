@@ -72,7 +72,7 @@ impl SwapChain {
         Ok(())
     }
 
-    pub unsafe fn resize(&self, width: u32, height: u32) -> Result<()> {
+    pub unsafe fn resize(&self, width: u32, height: u32) -> Result<()> { unsafe {
         println!("[SWAPCHAIN] Resizing: {}x{}", width, height);
         let mut state = STATE.lock().unwrap();
         if let Some(swap_chain) = &state.swap_chain {
@@ -81,7 +81,7 @@ impl SwapChain {
             println!("[SWAPCHAIN] Resize completed, new frame index: {}", state.frame_index);
         }
         Ok(())
-    }
+    }}
 
     pub fn get_back_buffer(&self, index: u32) -> Result<ID3D12Resource> {
         let state = STATE.lock().unwrap();

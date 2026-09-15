@@ -408,7 +408,12 @@ impl AlkashEngine {
 
         let mut gpu_hung = false;
         {
-            let state = STATE.lock().unwrap();
+            // .unwrap_or_else(...) вместо .unwrap(): shutdown() вызывается из
+            // Drop и должен пройти до конца даже если STATE уже отравлен
+            // паникой на другом пути (иначе тут случилась бы повторная
+            // паника поверх текущего unwind → abort в обход GPU-hang-таймаута
+            // выше и force-exit ниже).
+            let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
             if let (Some(queue), Some(fence)) = (&state.command_queue, &state.fence) {
                 let fence_value = NEXT_FENCE_VALUE.fetch_add(1, Ordering::SeqCst);
                 unsafe {
@@ -519,13 +524,13 @@ impl AlkashEngine {
         self.texture_cache.clear();
 
         {
-            let mut state = STATE.lock().unwrap();
+            let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.info_queue = None;
         }
 
         println!("[ENGINE] Resetting global state...");
         {
-            let mut state = STATE.lock().unwrap();
+            let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
 
             state.fence = None;
             state.fence_values.clear();

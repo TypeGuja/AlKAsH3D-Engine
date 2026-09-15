@@ -435,7 +435,7 @@ fn breadcrumb_op_name(op: D3D12_AUTO_BREADCRUMB_OP) -> String {
 /// движок сейчас не называет GPU-ресурсы, так что реалистично ожидать
 /// "<безымянный>" почти везде; сам `AllocationType` (буфер/текстура/куча
 /// и т.п.) всё равно сужает круг подозреваемых.
-unsafe fn print_dred_allocation_chain(label: &str, mut node_ptr: *const D3D12_DRED_ALLOCATION_NODE) {
+unsafe fn print_dred_allocation_chain(label: &str, mut node_ptr: *const D3D12_DRED_ALLOCATION_NODE) { unsafe {
     if node_ptr.is_null() {
         return;
     }
@@ -450,7 +450,7 @@ unsafe fn print_dred_allocation_chain(label: &str, mut node_ptr: *const D3D12_DR
         eprintln!("[DRED]     - type={:?} name='{}'", node.AllocationType, name);
         node_ptr = node.pNext;
     }
-}
+}}
 
 /// ДОБАВЛЕНО (диагностика воспроизведённого на живой машине
 /// `DXGI_ERROR_DEVICE_HUNG` на "кадре 2" — см. комментарий про DRED в

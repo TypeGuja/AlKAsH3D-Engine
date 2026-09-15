@@ -138,7 +138,6 @@ fn yaw_to_quat(yaw: f32) -> [f32; 4] {
 /// после `engine.update()`, используется камерой/UI между кадрами вместо
 /// повторных FFI-вызовов `get_physics_body`).
 struct PlayerCar {
-    entity: EntityId,
     wheel_entities: [EntityId; 4],
     dims: CarDimensions,
     body_id: i32,
@@ -600,7 +599,6 @@ fn spawn_player_car(engine: &mut AlkashEngine, start_pos: Vec3, start_yaw: f32) 
     println!("✅ Car ready at ({:.1}, {:.1}, {:.1}), yaw={:.2}", start_pos.x, dims.root_y, start_pos.z, start_yaw);
 
     PlayerCar {
-        entity,
         wheel_entities,
         dims,
         body_id,

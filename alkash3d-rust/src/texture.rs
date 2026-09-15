@@ -282,7 +282,7 @@ impl Texture {
         dst_resource: &ID3D12Resource,
         format: DXGI_FORMAT,
         mips: &[(u32, u32, Vec<u8>)],
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         const D3D12_TEXTURE_DATA_PITCH_ALIGNMENT: usize = 256;
 
         let command_allocator: ID3D12CommandAllocator =
@@ -425,7 +425,7 @@ impl Texture {
         drop(upload_resources);
 
         Ok(())
-    }
+    }}
 
     /// ДОБАВЛЕНО (см. подробное объяснение бага у `create_texture2d`
     /// выше). Загружает `pixels` (row_pitch байт на строку, `height`
@@ -445,7 +445,7 @@ impl Texture {
         format: DXGI_FORMAT,
         pixels: &[u8],
         row_pitch: usize,
-    ) -> Result<()> {
+    ) -> Result<()> { unsafe {
         // D3D12 требует, чтобы row pitch промежуточного upload-буфера был
         // выровнен на D3D12_TEXTURE_DATA_PITCH_ALIGNMENT (256 байт) — это
         // ОТДЕЛЬНОЕ требование от исходных данных (`pixels`, обычный
@@ -598,7 +598,7 @@ impl Texture {
         }
 
         Ok(())
-    }
+    }}
 
     pub fn create_render_target(width: u32, height: u32, format: DXGI_FORMAT) -> Result<Self> {
         println!("[TEXTURE] Creating render target: {}x{}, format={:?}", width, height, format);
