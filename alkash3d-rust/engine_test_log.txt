@@ -5,10 +5,10 @@ Alkash3D Engine v0.1.0 — MAIN_TEST
 ==========================================
 WASD — ходьба, стрелки — осмотреться, ESC — выход
 
-[MAIN_TEST] ✓ test.alworld создан (синтетическая точка спавна: (10.0, 0.0, 5.0), yaw=45.0°)
-[MAIN_TEST] GraphicsSettings: msaa=false ssao=false bloom=true volumetric=true shadows=true (выключить: ALKASH3D_TEST_NO_MSAA/_SSAO/_BLOOM/_VOLUMETRIC/_SHADOWS)
+[MAIN_TEST] test.alworld уже существует — использую как есть (не перезаписываю)
+[MAIN_TEST] GraphicsSettings: msaa=false ssao=false bloom=false volumetric=false shadows=false (правь константы ENABLE_* в начале файла)
 [ENGINE] Initializing Alkash3D Engine v0.1.0...
-[ENGINE] Window created: HWND=0x280B30
+[ENGINE] Window created: HWND=0x2207EC
 [ENGINE] ✓ Window created
 [DEVICE] ========== CREATING D3D12 DEVICE ==========
 [DEVICE] ✓ D3D12 debug layer enabled
@@ -32,7 +32,7 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [QUEUE] ✓ Command queue created
 [ENGINE] ✓ Command queue created
 [SWAPCHAIN] ========== CREATING SWAP CHAIN ==========
-[SWAPCHAIN] HWND: 0x280B30, Width: 1024, Height: 576, Buffer count: 2
+[SWAPCHAIN] HWND: 0x2207EC, Width: 1024, Height: 576, Buffer count: 2
 [SWAPCHAIN] Command queue obtained
 [SWAPCHAIN] Creating DXGI factory...
 [SWAPCHAIN] DXGI factory created
@@ -105,10 +105,10 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [PSO] Blend state created
 [PSO] Creating depth stencil state (ENABLED)...
 [PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL
-[PSO] Root signature: 0x91518feee0
+[PSO] Root signature: 0x13cb8feb00
 [PSO] Pipeline state descriptor created
 [PSO] Calling CreateGraphicsPipelineState...
-[PSO] ✓ PSO created successfully! PSO: 0x91518fcc68
+[PSO] ✓ PSO created successfully! PSO: 0x13cb8fc948
 [ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, 1x MSAA)
 [BUFFER] Creating constant buffer ARRAY: 256 slots x 768 bytes = 196608 bytes total
 [BUFFER] Creating constant buffer, size: 196608 bytes
@@ -205,6 +205,7 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ SSAO blur resources created: 512x288 scratch target (устраняет зернистость 12-сэмпловой SSAO)
+[DIAG] Shadow mapping принудительно отключён для диагностики зависания
 [ENGINE] Handling resize: 1008x537
 [RENDERER] ========== CREATING RENDERER ==========
 [RENDERER] Width: 1008, Height: 537, Buffer count: 2
@@ -285,15 +286,11 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [ENGINE] ✓ Initialization complete
 [ENGINE] './alkash3d_firstfires.dll' не найден, пробую запасной путь '.\deps\alkash3d_firstfires.dll' (Cargo не скопировал .dll из deps/)
 [ENGINE] Failed to load light plugin '.\deps\alkash3d_firstfires.dll': Plugin not found: .\deps\alkash3d_firstfires.dll
-[MAIN_TEST] FirstFires не загружен (./alkash3d_firstfires.dll): Error { code: HRESULT(0x000000[ENGINE] ✓ Мир загружен: test.alworld (0 чанков по 64м, дальность загрузки 200м/выгрузки 250м)
-01)[MAIN_TEST] ✓ test.alworld загружен
-, [MAIN_TEST] ✓ Точка спавна прочитана: (10.00, 0.00, 5.00), yaw=45.0°
-message: "Неверная функция." } — свет из test.alfar (если он есть) пропущен
+[MAIN_TEST] FirstFires не загружен (./alkash3d_firstfires.dll): Error { code: HRESULT(0x00000001), [ENGINE] ✓ Мир загружен: test.alworld (0 чанков по 64м, дальность загрузки 200м/выгрузки 250м)
+message: "[MAIN_TEST] ✓ test.alworld загружен
+Неверная функция.[MAIN_TEST] ✓ Точка спавна прочитана: (10.00, 0.00, 5.00), yaw=45.0°
+" } — свет из test.alfar (если он есть) пропущен
 [ENGINE] Mesh added, total meshes: 1
-[BUFFER] Creating constant buffer ARRAY: 384 slots x 256 bytes = 98304 bytes total
-[BUFFER] Creating constant buffer, size: 98304 bytes
-[BUFFER] Constant buffer created successfully
-[ENGINE] Shadow constant buffer (re)allocated: 64 slots/(кадр*каскад) x2 x3 каскада = 384 слотов
 [HEAP] Creating CBV/SRV/UAV heap with 19 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
 [ENGINE] shadow_srv_heap перевыделен под материалы: 19 слотов всего (3 каскадов + 16 материалов, 0 текстур перерегистрировано)
@@ -309,7 +306,7 @@ message: "Неверная функция." } — свет из test.alfar (ес
 [MAIN_TEST] Первый кадр отрендерен. Camera pos=(10.00,1.60,5.00) target=(10.71,1.60,5.71)
 [ENGINE] WM_CLOSE received - stopping engine loop
 [ENGINE] Shutting down...
-[ENGINE] Signaling fence (value=383)...
+[ENGINE] Signaling fence (value=950)...
 [ENGINE] Waiting for GPU to finish...
 [ENGINE] GPU idle
 [ENGINE] Clearing meshes...

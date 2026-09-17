@@ -18,26 +18,43 @@ pub fn array_to_mat4(arr: &[[f32; 4]; 4]) -> Mat4 {
     Mat4::from_cols_array_2d(arr)
 }
 
-/// Перспективная проекция для DirectX (Left-Handed)
-/// Используем новый API из glam::camera
+/// ИСПРАВЛЕНО (баг: "карта отзеркалена в движке, хотя в эдиторе всё
+/// нормально" — прямой запрос пользователя): `perspective`/`look_at`/
+/// `orthographic` ниже использовали Left-Handed модуль glam::camera (`lh::`)
+/// без какой-либо связанной с этим причины — ни один шейдер/PSO движка не
+/// зависит от рукости view/projection матриц, `CullMode` у ВСЕХ конвейеров
+/// (`pso.rs`, `pipeline_*.rs`) — `D3D12_CULL_MODE_NONE`, то есть backface-
+/// culling вообще не используется, а глубина уже была в диапазоне [0,1]
+/// независимо от рукости (`directx::` вариант). При этом РЕДАКТОР
+/// (`alkash3d-editorapp/src/math/transform.rs::view_matrix`) вручную
+/// реализует классический Right-Handed lookAt (`s = forward.cross(up)`, тот
+/// же порядок, что даёт `glam::camera::rh::view`), и сам движок в
+/// `camera.rs::move_right` тоже считает "право" как `forward.cross(up)` —
+/// то есть ВЕЗДЕ в кодовой базе, кроме этих трёх функций, предполагается
+/// Right-Handed конвенция. Left-Handed `look_at` при ТЕХ ЖЕ eye/target/up
+/// даёт `right`-вектор с ПРОТИВОПОЛОЖНЫМ знаком (`up.cross(forward)` вместо
+/// `forward.cross(up)`), а проекция этот знак не компенсирует — экранная
+/// X-координата получается зеркальной по сравнению с эдитором для одних и
+/// тех же мировых координат объектов. Переключение всех трёх функций на
+/// `rh::` (с сохранением `directx::`, то есть тем же диапазоном глубины
+/// [0,1]) убирает рассинхрон, ничего не ломая в культинге (его просто нет).
 pub fn perspective(fov: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
-    // Используем правильный модуль для DirectX
-    glam::camera::lh::proj::directx::perspective(fov, aspect, near, far)
+    glam::camera::rh::proj::directx::perspective(fov, aspect, near, far)
 }
 
-/// View матрица для DirectX (Left-Handed)
+/// View матрица для DirectX (Right-Handed — см. комментарий у `perspective`).
 pub fn look_at(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
-    glam::camera::lh::view::look_at_mat4(eye, target, up)
+    glam::camera::rh::view::look_at_mat4(eye, target, up)
 }
 
 /// ДОБАВЛЕНО (Фаза 6 плана по реализму/фонарям — тени): ортографическая
-/// проекция для DirectX (Left-Handed, NDC Z в [0,1] — тот же диапазон,
-/// что и у `perspective` выше) — нужна для shadow map directional-света
-/// ("солнца"): в отличие от обычной камеры, свет не имеет точки схода
-/// лучей (все лучи параллельны), поэтому его проекция ортографическая, а
-/// не перспективная.
+/// проекция для DirectX (Right-Handed — см. комментарий у `perspective`
+/// выше; NDC Z в [0,1], тот же диапазон, что и у `perspective`) — нужна
+/// для shadow map directional-света ("солнца"): в отличие от обычной
+/// камеры, свет не имеет точки схода лучей (все лучи параллельны),
+/// поэтому его проекция ортографическая, а не перспективная.
 pub fn orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> Mat4 {
-    glam::camera::lh::proj::directx::orthographic(left, right, bottom, top, near, far)
+    glam::camera::rh::proj::directx::orthographic(left, right, bottom, top, near, far)
 }
 
 /// Матрица трансляции
