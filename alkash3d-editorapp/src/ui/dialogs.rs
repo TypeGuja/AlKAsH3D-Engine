@@ -112,7 +112,12 @@ fn render_import_dialog(ctx: &egui::Context, app: &mut EditorApp) {
                         }
 
                         // ЗАПУСКАЕМ АСИНХРОННЫЙ ИМПОРТ
-                        app.import_model_async(&path_str);
+                        let place_at = if app.scene.selected_ids.len() == 1 {
+                            Some(app.scene.get_world_transform(app.scene.selected_ids[0]).position)
+                        } else {
+                            None
+                        };
+                        app.import_model_async(&path_str, place_at);
                         app.show_import_dialog = false;
                         app.log(&format!("📥 Importing {} ({:.1} MB)...", path_str, size_mb), Color32::YELLOW);
                     }

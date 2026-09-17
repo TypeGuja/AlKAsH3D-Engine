@@ -3,6 +3,12 @@ use uuid::Uuid;
 use crate::math::Vec3;
 use super::game_object::GameObject;
 
+// ДОБАВЛЕНО (по прямому запросу пользователя: "блять что так эдитор
+// лагает" — экспорт в .alworld теперь фоновая задача, см.
+// `EditorApp::export_scene_to_alworld_dialog` в app.rs): нужно передать
+// снимок сцены в фоновый поток, а не держать заимствование `&Scene` с
+// главного потока на всё время экспорта.
+#[derive(Clone)]
 pub struct Scene {
     pub name: String,
     pub objects: HashMap<Uuid, GameObject>,

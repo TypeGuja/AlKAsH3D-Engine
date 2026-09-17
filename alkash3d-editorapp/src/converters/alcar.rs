@@ -274,6 +274,7 @@ fn add_car_lights(scene: &mut Scene, root_id: Uuid, lights: &[CarLight; 4], coun
             intensity: l.intensity,
             range: l.range,
             enabled: true,
+            color_group: None,
         }));
         obj.transform.position = Vec3::new(l.position[0], l.position[1], l.position[2]);
         let id = scene.add_object(obj);

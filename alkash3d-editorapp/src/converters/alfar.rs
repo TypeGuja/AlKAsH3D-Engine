@@ -57,14 +57,26 @@ pub fn export_scene_to_alfar(scene: &Scene) -> AlfarFile {
         };
 
         let (light_type, spot_inner, spot_outer) = editor_light_type_to_u32(&light.light_type);
-        let forward = obj.transform.forward();
-        let up = obj.transform.up();
+        // ИСПРАВЛЕНО (по прямому запросу пользователя: свет, добавленный
+        // на выбранный объект — т.е. созданный как его РЕБЁНОК, см.
+        // `EditorApp::spawn_object` — должен получать ту же высоту, что и
+        // этот объект) — `obj.transform` тут ЛОКАЛЬНЫЙ (см. комментарий у
+        // `GameObject::parent`), а .alfar читает мировые координаты
+        // напрямую движком, без какой-либо иерархии. Раньше сюда шёл
+        // именно локальный transform, так что дочерний свет с локальной
+        // позицией (0,0,0) экспортировался в мировой origin вместо высоты
+        // родителя. `Scene::get_world_transform` поднимается по цепочке
+        // `parent` и для объекта без родителя возвращает тот же результат,
+        // что и раньше.
+        let world = scene.get_world_transform(obj.id);
+        let forward = world.forward();
+        let up = world.up();
 
         let record = IndividualLight {
             id: 0,        // перезаписывается AlfarFile::add_light
             name_id: 0,   // перезаписывается AlfarFile::add_light
             light_type,
-            position: [obj.transform.position.x, obj.transform.position.y, obj.transform.position.z],
+            position: [world.position.x, world.position.y, world.position.z],
             direction: [forward.x, forward.y, forward.z],
             up: [up.x, up.y, up.z],
             color: light.color,
@@ -117,6 +129,7 @@ fn individual_light_to_component(light: &IndividualLight) -> LightComponent {
         intensity: light.intensity,
         range: light.range,
         enabled: light.enabled != 0,
+        color_group: None,
     }
 }
 
@@ -201,6 +214,7 @@ mod tests {
                 intensity: 3.5,
                 range: 25.0,
                 enabled: true,
+                color_group: None,
             }),
         );
         obj.transform.position = crate::math::Vec3::new(1.0, 2.0, 3.0);

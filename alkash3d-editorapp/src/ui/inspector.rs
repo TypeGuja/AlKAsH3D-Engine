@@ -330,6 +330,82 @@ fn render_light_fields(ui: &mut Ui, app: &mut crate::EditorApp, l: &mut LightCom
         }
     }
 
+    // ДОБАВЛЕНО (по прямому запросу пользователя: "id света чтобы каждый
+    // раз на свет не загружать almat для нужного оттенка") — переиспользуемый
+    // оттенок по числовому ID (см. assets/groups.rs::LightColorGroup):
+    // назначить уже существующий цвет/яркость другому светильнику можно из
+    // выпадающего списка ниже, без диалога открытия файла каждый раз, а
+    // правка самой группы применяется сразу ко всем светильникам с этим ID.
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label("Color Group:");
+        let current_label = l.color_group
+            .and_then(|gid| app.light_color_groups.get(&gid))
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "(none)".to_string());
+        egui::ComboBox::from_id_salt("light_color_group_combo")
+            .selected_text(current_label)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(l.color_group.is_none(), "(none)").clicked() {
+                    l.color_group = None;
+                }
+                let mut ids: Vec<u32> = app.light_color_groups.keys().copied().collect();
+                ids.sort();
+                for gid in ids {
+                    let name = app.light_color_groups[&gid].name.clone();
+                    if ui.selectable_label(l.color_group == Some(gid), &name).clicked() {
+                        let g = app.light_color_groups[&gid].clone();
+                        l.color_group = Some(gid);
+                        l.color = g.color;
+                        l.intensity = g.intensity;
+                    }
+                }
+            });
+        if ui.small_button("➕ Save as group")
+            .on_hover_text("Запомнить текущий цвет/яркость под новым ID для переиспользования на других светильниках")
+            .clicked()
+        {
+            let gid = app.next_light_color_group_id;
+            app.next_light_color_group_id += 1;
+            app.light_color_groups.insert(gid, crate::assets::LightColorGroup {
+                name: format!("Shade {}", gid),
+                color: l.color,
+                intensity: l.intensity,
+            });
+            l.color_group = Some(gid);
+            app.save_asset_groups();
+        }
+    });
+    if let Some(gid) = l.color_group {
+        if let Some(group) = app.light_color_groups.get(&gid).cloned() {
+            let mut name = group.name.clone();
+            let mut color = group.color;
+            let mut intensity = group.intensity;
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Group name:");
+                if ui.text_edit_singleline(&mut name).changed() { changed = true; }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Group color:");
+                if ui.color_edit_button_rgb(&mut color).changed() { changed = true; }
+                ui.label("Intensity:");
+                if ui.add(egui::Slider::new(&mut intensity, 0.0..=20.0)).changed() { changed = true; }
+            });
+            if changed {
+                if let Some(g) = app.light_color_groups.get_mut(&gid) {
+                    g.name = name;
+                    g.color = color;
+                    g.intensity = intensity;
+                }
+                app.sync_light_color_group(gid);
+                app.save_asset_groups();
+            }
+            ui.weak("Правка группы применяется сразу ко всем светильникам с этим оттенком.");
+        }
+    }
+    ui.separator();
+
     let mut kind = match l.light_type {
         LightType::Point => 0,
         LightType::Directional => 1,

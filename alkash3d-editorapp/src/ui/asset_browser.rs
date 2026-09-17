@@ -105,6 +105,7 @@ pub fn render_asset_browser(ctx: &egui::Context, app: &mut crate::EditorApp) {
                     if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                         app.asset_browser_root = dir;
                         app.asset_tree = None;
+                        app.load_asset_groups();
                     }
                 }
                 if ui.button("🔄 Rescan").clicked() {

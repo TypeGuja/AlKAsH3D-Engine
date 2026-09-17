@@ -52,6 +52,13 @@ pub struct EditorApp {
     pub cpu_render_limit: usize,
     pub pending_imports: Vec<PendingImport>,
     pub import_progress: f32,
+    // ДОБАВЛЕНО (по прямому запросу пользователя: "блять что так эдитор
+    // лагает" — во время File > Export Scene to .alworld): см. подробный
+    // комментарий у `export_scene_to_alworld_dialog` — тот же паттерн
+    // фоновой задачи + опроса по кадрам, что `pending_imports` уже
+    // использует для импорта моделей.
+    pub pending_exports: Vec<PendingExport>,
+    pub pending_world_imports: Vec<PendingWorldImport>,
     pub gpu_renderer: Option<GpuRenderer>,
     pub gpu_mesh_map: HashMap<uuid::Uuid, usize>,
     pub gpu_material_map: HashMap<uuid::Uuid, usize>,
@@ -77,6 +84,13 @@ pub struct EditorApp {
     pub show_asset_browser: bool,
     pub asset_browser_root: std::path::PathBuf,
     pub asset_tree: Option<crate::ui::asset_browser::AssetNode>,
+
+    // ДОБАВЛЕНО (по прямому запросу пользователя: сворачиваемые группы
+    // объектов в Hierarchy + переиспользуемые "оттенки" света по ID — см.
+    // assets/groups.rs про то, почему это одно хранилище/файл на двоих).
+    pub asset_groups: Vec<crate::assets::AssetGroup>,
+    pub light_color_groups: HashMap<u32, crate::assets::LightColorGroup>,
+    pub next_light_color_group_id: u32,
 
     // ДОБАВЛЕНО (редактор вершин/граней — по прямому запросу пользователя:
     // "сделай возможность редактировать фигуры, делать новые"): Tab
@@ -284,6 +298,26 @@ impl Default for MaterialLibraryEditorState {
 pub struct PendingImport {
     pub path: String,
     pub receiver: mpsc::Receiver<Result<ImportResult, String>>,
+    pub place_at: Option<Vec3>,
+}
+
+/// См. `export_scene_to_alworld_dialog` — фоновая задача экспорта сцены в
+/// `.alworld`, опрашивается каждый кадр в `check_pending_exports`.
+pub struct PendingExport {
+    pub receiver: mpsc::Receiver<Result<String, String>>,
+}
+
+/// ДОБАВЛЕНО (по прямому запросу пользователя: "я говорил про alworld
+/// импорт а не про obj" — тот же класс лага, что был у экспорта, оказался и
+/// у ОТКРЫТИЯ `.alworld` обратно в эдитор, см. `import_alworld_from_path`):
+/// для мира с большим числом чанков (в т.ч. честно нарезанного большого
+/// `.obj` — см. `split_mesh_by_chunk`) чтение КАЖДОГО `.alwchunk` и КАЖДОГО
+/// `.altex` внутри него — отдельный файловый syscall, то есть тот же
+/// I/O-bound профиль, что и у записи при экспорте. Тот же паттерн фоновой
+/// задачи + опроса по кадрам.
+pub struct PendingWorldImport {
+    pub path: String,
+    pub receiver: mpsc::Receiver<(Vec<String>, Result<Scene, String>)>,
 }
 
 #[derive(Debug)]
@@ -367,6 +401,8 @@ impl EditorApp {
             cpu_render_limit: 5000000,
             pending_imports: Vec::new(),
             import_progress: 0.0,
+            pending_exports: Vec::new(),
+            pending_world_imports: Vec::new(),
             gpu_renderer: None,
             gpu_mesh_map: HashMap::new(),
             gpu_material_map: HashMap::new(),
@@ -391,6 +427,9 @@ impl EditorApp {
                 .and_then(|d| d.parent().map(|p| p.to_path_buf()))
                 .unwrap_or_else(|| std::path::PathBuf::from(".")),
             asset_tree: None,
+            asset_groups: Vec::new(),
+            light_color_groups: HashMap::new(),
+            next_light_color_group_id: 1,
 
             edit_mode: false,
             edit_mesh_object: None,
@@ -418,9 +457,52 @@ impl EditorApp {
             discord_presence: crate::discord_presence::DiscordPresence::new(),
         };
 
+        app.load_asset_groups();
         app.init_gpu();
         app.log("🚀 Editor started with GPU acceleration!", Color32::GREEN);
         app
+    }
+
+    /// Путь к файлу с группами ассетов/оттенками света для ТЕКУЩЕГО проекта
+    /// — см. заголовок assets/groups.rs про то, почему это рядом с
+    /// `asset_browser_root`, а не в глобальных настройках эдитора.
+    fn asset_groups_file_path(&self) -> std::path::PathBuf {
+        self.asset_browser_root.join(".alkash3d_asset_groups.json")
+    }
+
+    pub fn load_asset_groups(&mut self) {
+        let file = crate::assets::EditorGroupsFile::load(&self.asset_groups_file_path());
+        self.asset_groups = file.asset_groups;
+        self.light_color_groups = file.light_color_groups;
+        self.next_light_color_group_id = file.next_light_color_group_id.max(1);
+    }
+
+    pub fn save_asset_groups(&self) {
+        let file = crate::assets::EditorGroupsFile {
+            asset_groups: self.asset_groups.clone(),
+            light_color_groups: self.light_color_groups.clone(),
+            next_light_color_group_id: self.next_light_color_group_id,
+        };
+        if let Err(e) = file.save(&self.asset_groups_file_path()) {
+            eprintln!("[WARN] Не удалось сохранить группы ассетов: {}", e);
+        }
+    }
+
+    /// Рассылает цвет/интенсивность группы `gid` всем светильникам сцены,
+    /// у которых `LightComponent::color_group == Some(gid)` — вызывается
+    /// после правки самой группы в инспекторе (см. ui/inspector.rs), чтобы
+    /// не пришлось руками находить и поправлять каждый светильник с этим
+    /// оттенком.
+    pub fn sync_light_color_group(&mut self, gid: u32) {
+        let Some(group) = self.light_color_groups.get(&gid).cloned() else { return; };
+        for obj in self.scene.objects.values_mut() {
+            if let ObjectType::Light(l) = &mut obj.object_type {
+                if l.color_group == Some(gid) {
+                    l.color = group.color;
+                    l.intensity = group.intensity;
+                }
+            }
+        }
     }
 
     pub fn log(&mut self, msg: &str, color: Color32) {
@@ -605,7 +687,10 @@ impl EditorApp {
     }
 
     fn get_gpu_render_objects(&self) -> Vec<(usize, [[f32; 4]; 4], usize)> {
-        let mut objects = Vec::new();
+        // Предвыделяем под размер сцены — без этого Vec растёт удвоением с
+        // нуля и на 3000+ объектах успевает несколько раз перевыделиться
+        // за кадр просто на пуш в цикле ниже.
+        let mut objects = Vec::with_capacity(self.scene.objects.len());
 
         let forward = (self.camera_target - self.camera_position).normalize();
 
@@ -672,7 +757,7 @@ impl EditorApp {
         instances
     }
 
-    pub fn import_model_async(&mut self, path: &str) {
+    pub fn import_model_async(&mut self, path: &str, place_at: Option<Vec3>) {
         let path_owned = path.to_string();
         let (tx, rx) = mpsc::channel();
         let path_clone = path_owned.clone();
@@ -706,6 +791,7 @@ impl EditorApp {
         self.pending_imports.push(PendingImport {
             path: path_owned,
             receiver: rx,
+            place_at,
         });
 
         self.log(
@@ -725,7 +811,7 @@ impl EditorApp {
         for (i, imp) in self.pending_imports.iter().enumerate() {
             if let Ok(r) = imp.receiver.try_recv() {
                 completed_indices.push(i);
-                results.push((imp.path.clone(), r));
+                results.push((imp.path.clone(), imp.place_at, r));
             }
         }
 
@@ -733,7 +819,7 @@ impl EditorApp {
             self.pending_imports.remove(i);
         }
 
-        for (_path, result) in results {
+        for (_path, place_at, result) in results {
             match result {
                 Ok(ir) => {
                     let mut total_tris = 0;
@@ -749,7 +835,7 @@ impl EditorApp {
 
                         self.asset_library.meshes.insert(name.clone(), mesh.clone());
 
-                        let obj = GameObject::new(
+                        let mut obj = GameObject::new(
                             &name,
                             ObjectType::Mesh(MeshComponent {
                                 mesh: mesh.clone(),
@@ -764,6 +850,9 @@ impl EditorApp {
                                 double_sided: false,
                             }),
                         );
+                        if let Some(pos) = place_at {
+                            obj.transform.position = pos;
+                        }
 
                         let id = obj.id;
                         self.scene.add_object(obj);
@@ -958,18 +1047,25 @@ impl EditorApp {
     /// с выделенным родителем создаёт дочерний объект), иначе — объектом
     /// верхнего уровня, размещённым в точке, куда сейчас смотрит камера
     /// (`camera_target`), чтобы новый объект сразу было видно во вьюпорте.
+    /// Позиция новых объектов из меню ("Add > Cube" и т.п.): та же логика,
+    /// что и у `import_asset_path` (см. её комментарий/`single_selected_height`)
+    /// — если выделен ровно один объект-ориентир, новый берёт его МИРОВУЮ
+    /// позицию напрямую в свой (некорневой, но и не дочерний) transform, а не
+    /// становится его ребёнком. Раньше здесь стоял `obj.parent = Some(...)`
+    /// с локальным transform.position, оставленным в (0,0,0) — из-за
+    /// композиции в `get_world_transform` куб визуально оказывался на нужной
+    /// высоте, но Inspector показывал локальные 0 (выглядело как будто
+    /// высота не подхватилась), а удаление объекта-ориентира каскадно
+    /// удаляло и все объекты, случайно "припарконенные" к нему через
+    /// выделение.
     pub fn spawn_object(&mut self, name: &str, object_type: ObjectType) -> Uuid {
         let mut obj = GameObject::new(name, object_type);
 
-        let parent = if self.scene.selected_ids.len() == 1 {
-            Some(self.scene.selected_ids[0])
+        obj.transform.position = if self.scene.selected_ids.len() == 1 {
+            self.scene.get_world_transform(self.scene.selected_ids[0]).position
         } else {
-            None
+            self.camera_target
         };
-        obj.parent = parent;
-        if parent.is_none() {
-            obj.transform.position = self.camera_target;
-        }
 
         let id = obj.id;
         if let ObjectType::Mesh(m) = &obj.object_type {
@@ -1012,6 +1108,7 @@ impl EditorApp {
                 intensity: 2.0,
                 range: 15.0,
                 enabled: true,
+                color_group: None,
             }),
         )
     }
@@ -1162,13 +1259,61 @@ impl EditorApp {
     }
 
     /// File > Export Scene to .alworld...
+    ///
+    /// ИСПРАВЛЕНО (по прямому запросу пользователя: "блять что так эдитор
+    /// лагает" — в момент экспорта): с тех пор как экспорт стал реально
+    /// резать геометрию по чанкам (`split_mesh_by_chunk` в
+    /// `converters/alworld.rs`) вместо простой записи позиции объекта, для
+    /// одного огромного меша на всю карту (типичный импортированный `.obj`)
+    /// это заметная по времени CPU-работа — раньше вызов был практически
+    /// мгновенным, и синхронный вызов прямо на UI-потоке не был заметен.
+    /// Уводим экспорт в фоновый поток — тот же паттерн, что
+    /// `import_model_async` уже использует для импорта моделей (клонируем
+    /// сцену, mpsc-канал, опрос в `check_pending_exports` каждый кадр),
+    /// чтобы интерфейс не подвисал на всё время экспорта. Клонирование
+    /// `Scene` само по себе — простое копирование данных (Vec/HashMap),
+    /// на порядки быстрее, чем разрезание меша по чанкам, поэтому его
+    /// оставляем синхронным (эдитор всё равно однопоточно владеет `self.scene`).
     pub fn export_scene_to_alworld_dialog(&mut self) {
         let Some(dir) = rfd::FileDialog::new().pick_folder() else { return; };
         let dir_str = dir.to_string_lossy().to_string();
 
-        match crate::converters::alworld::export_scene_to_alworld(&self.scene, &dir_str) {
-            Ok(world_path) => self.log(&format!("✅ Мир экспортирован: {}", world_path), Color32::GREEN),
-            Err(e) => self.log(&format!("❌ Ошибка экспорта .alworld: {}", e), Color32::RED),
+        let scene_clone = self.scene.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::converters::alworld::export_scene_to_alworld(&scene_clone, &dir_str)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+        self.pending_exports.push(PendingExport { receiver: rx });
+        self.log("⏳ Экспортирую сцену в .alworld (в фоне)...", Color32::YELLOW);
+    }
+
+    /// Опрашивается каждый кадр из `update()` — см. комментарий у
+    /// `export_scene_to_alworld_dialog`. Тот же паттерн, что
+    /// `check_pending_imports` уже использует для фонового импорта моделей.
+    fn check_pending_exports(&mut self) {
+        if self.pending_exports.is_empty() {
+            return;
+        }
+
+        let mut completed_indices = Vec::new();
+        let mut results = Vec::new();
+        for (i, pending) in self.pending_exports.iter().enumerate() {
+            if let Ok(r) = pending.receiver.try_recv() {
+                completed_indices.push(i);
+                results.push(r);
+            }
+        }
+        for &i in completed_indices.iter().rev() {
+            self.pending_exports.remove(i);
+        }
+
+        for result in results {
+            match result {
+                Ok(world_path) => self.log(&format!("✅ Мир экспортирован: {}", world_path), Color32::GREEN),
+                Err(e) => self.log(&format!("❌ Ошибка экспорта .alworld: {}", e), Color32::RED),
+            }
         }
     }
 
@@ -1182,19 +1327,60 @@ impl EditorApp {
     }
 
     /// Общее ядро — см. комментарий у `import_altex_from_path`.
+    ///
+    /// ИСПРАВЛЕНО (по прямому запросу пользователя: "я говорил про alworld
+    /// импорт а не про obj" — тот же лаг эдитора, что чинили у экспорта,
+    /// оказался и здесь): чтение мира с большим числом чанков — то же
+    /// количество мелких файловых операций (по чанку + по `.altex` каждого
+    /// объекта в нём), что и запись при экспорте, то есть тот же I/O-bound
+    /// профиль. Уводим в фоновый поток — тот же паттерн, что уже используют
+    /// `export_scene_to_alworld_dialog`/`import_model_async` (канал +
+    /// опрос в `check_pending_world_imports` каждый кадр).
     pub fn import_alworld_from_path(&mut self, path_str: &str) {
-        let mut messages = Vec::new();
-        let result = crate::converters::alworld::import_alworld_to_scene(path_str, &mut |m| messages.push(m));
-        for m in messages {
-            self.log(&m, Color32::YELLOW);
+        let path_owned = path_str.to_string();
+        let path_for_thread = path_owned.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut messages = Vec::new();
+            let result = crate::converters::alworld::import_alworld_to_scene(&path_for_thread, &mut |m| messages.push(m))
+                .map_err(|e| e.to_string());
+            let _ = tx.send((messages, result));
+        });
+        self.pending_world_imports.push(PendingWorldImport { path: path_owned, receiver: rx });
+        self.log("⏳ Загружаю .alworld (в фоне)...", Color32::YELLOW);
+    }
+
+    /// Опрашивается каждый кадр из `update()` — см. комментарий у
+    /// `import_alworld_from_path`.
+    fn check_pending_world_imports(&mut self) {
+        if self.pending_world_imports.is_empty() {
+            return;
         }
-        match result {
-            Ok(scene) => {
-                let count = scene.objects.len();
-                self.replace_scene(scene);
-                self.log(&format!("✅ Мир загружен: {} объект(ов) из {}", count, path_str), Color32::GREEN);
+
+        let mut completed_indices = Vec::new();
+        let mut results = Vec::new();
+        for (i, pending) in self.pending_world_imports.iter().enumerate() {
+            if let Ok(r) = pending.receiver.try_recv() {
+                completed_indices.push(i);
+                results.push((pending.path.clone(), r));
             }
-            Err(e) => self.log(&format!("❌ Ошибка открытия .alworld: {}", e), Color32::RED),
+        }
+        for &i in completed_indices.iter().rev() {
+            self.pending_world_imports.remove(i);
+        }
+
+        for (path, (messages, result)) in results {
+            for m in messages {
+                self.log(&m, Color32::YELLOW);
+            }
+            match result {
+                Ok(scene) => {
+                    let count = scene.objects.len();
+                    self.replace_scene(scene);
+                    self.log(&format!("✅ Мир загружен: {} объект(ов) из {}", count, path), Color32::GREEN);
+                }
+                Err(e) => self.log(&format!("❌ Ошибка открытия .alworld: {}", e), Color32::RED),
+            }
         }
     }
 
@@ -2893,16 +3079,35 @@ impl EditorApp {
     /// по хэндлу gizmo ДОПОЛНИТЕЛЬНО переключал бы выделение на "ближайший
     /// к камере объект" (см. цикл ниже), что не то поведение, которое
     /// ожидается при перетаскивании gizmo.
-    /// Обратная проекция экранной точки в мировую позицию на плоскости
-    /// земли (y=0) — тот же камерный базис (`dir`/`right`/`up`, тот же tan
+    /// Мировая Y-высота единственного выделенного объекта — по прямому
+    /// запросу пользователя ("если спавнить что-то от другого объекта, то
+    /// принимать его высоту, иначе они уходят под карту"): раньше
+    /// `screen_to_ground_position` всегда целилась в плоскость Y=0, что для
+    /// сцены, где реальный "пол" (крыша здания, палуба машины и т.п.) лежит
+    /// выше или ниже нуля, роняло новый объект под видимую геометрию или
+    /// оставляло его висеть в воздухе. Если объект-ориентир выбран, новый
+    /// ассет спавнится на его высоте; иначе — прежнее поведение (Y=0).
+    fn single_selected_height(&self) -> Option<f32> {
+        if self.scene.selected_ids.len() == 1 {
+            Some(self.scene.get_world_transform(self.scene.selected_ids[0]).position.y)
+        } else {
+            None
+        }
+    }
+
+    /// Обратная проекция экранной точки в мировую позицию на горизонтальной
+    /// плоскости — тот же камерный базис (`dir`/`right`/`up`, тот же tan
     /// от `camera_fov`), что и `world_to_screen`, только в обратную
     /// сторону, чтобы 2D-точка курсора и 3D-луч, который она задаёт,
     /// оставались согласованы. Используется, чтобы поставить объект,
     /// перетащенный из браузера ассетов, ровно туда, куда его бросили, а
-    /// не в случайное/фиксированное место. Если луч не пересекает землю
-    /// перед камерой (смотрим вверх, или земля позади), откатывается на
+    /// не в случайное/фиксированное место. Высота плоскости — Y выделенного
+    /// объекта-ориентира, если он один выбран (см. `single_selected_height`),
+    /// иначе Y=0. Если луч не пересекает эту плоскость перед камерой
+    /// (смотрим вверх, или плоскость позади), откатывается на
     /// `camera_target` — на неё в любом случае сейчас смотрит пользователь.
     pub fn screen_to_ground_position(&self, screen: Pos2, rect: Rect) -> Vec3 {
+        let plane_y = self.single_selected_height().unwrap_or(0.0);
         let dir = (self.camera_target - self.camera_position).normalize();
         let right = dir.cross(self.camera_up).normalize();
         let up = right.cross(dir).normalize();
@@ -2919,7 +3124,7 @@ impl EditorApp {
         let ray_dir = (dir + right * (x * tf) + up * (y * tf)).normalize();
 
         if ray_dir.y.abs() > 1e-4 {
-            let t = -self.camera_position.y / ray_dir.y;
+            let t = (plane_y - self.camera_position.y) / ray_dir.y;
             if t > 0.0 {
                 return self.camera_position + ray_dir * t;
             }
@@ -2930,13 +3135,24 @@ impl EditorApp {
     /// Импортирует файл ассета (по расширению) и, если задано, ставит
     /// результат в мировую позицию `place_at` — общая точка входа и для
     /// двойного клика, и для drag-and-drop из браузера ассетов
-    /// (ui/asset_browser.rs).
+    /// (ui/asset_browser.rs). Если `place_at` не задан явно (двойной клик) и
+    /// ровно один объект выделен, спавним новый ассет в его позиции — та же
+    /// причина, что у `single_selected_height`: без этого объект уходил в
+    /// (0,0,0), что для приподнятой/заглублённой сцены часто означает "под
+    /// картой".
     pub fn import_asset_path(&mut self, path: &std::path::Path, place_at: Option<Vec3>) {
         let path_str = path.to_string_lossy().to_string();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let place_at = place_at.or_else(|| {
+            if self.scene.selected_ids.len() == 1 {
+                Some(self.scene.get_world_transform(self.scene.selected_ids[0]).position)
+            } else {
+                None
+            }
+        });
         match ext.as_str() {
             "altex" => self.import_altex_from_path(&path_str, place_at),
-            "obj" | "fbx" | "gltf" | "glb" | "blend" => self.import_model_async(&path_str),
+            "obj" | "fbx" | "gltf" | "glb" | "blend" => self.import_model_async(&path_str, place_at),
             "alworld" => self.import_alworld_from_path(&path_str),
             "alfar" => self.import_alfar_from_path(&path_str),
             _ => self.log(&format!("⚠️ Не знаю, как импортировать: {}", path_str), Color32::YELLOW),
@@ -3014,6 +3230,26 @@ impl eframe::App for EditorApp {
         let now = ctx.input(|i| i.time);
         self.last_update_time = now;
         self.check_pending_imports();
+        self.check_pending_exports();
+        self.check_pending_world_imports();
+        // ИСПРАВЛЕНО (по прямому запросу пользователя: "так у него всё равно
+        // в 1 кадр рендер" — уже ПОСЛЕ того, как экспорт стал фоновой
+        // задачей): вынести тяжёлую работу в отдельный поток было
+        // недостаточно — egui/eframe по умолчанию перерисовывает окно ТОЛЬКО
+        // по событию ввода (клик/движение мыши/клавиша), а не непрерывно.
+        // Пока пользователь просто ждёт результат, не трогая мышь/клавиши,
+        // окно не перерисовывается ВООБЩЕ — не потому что поток блокирует
+        // UI (он больше не блокирует), а потому что egui попросту не знает,
+        // что стоит перерисоваться. Со стороны это неотличимо от зависания:
+        // ничего не меняется на экране, а затем, как только придёт следующий
+        // input-эвент, окно рисует уже готовый результат — то есть "в один
+        // кадр". Пока есть фоновая задача (импорт ИЛИ экспорт), явно просим
+        // перерисовку на следующий кадр — тогда лог/статус реально обновятся
+        // сразу, как только фоновый поток пришлёт результат, а не только
+        // после случайного шевеления мышью.
+        if !self.pending_imports.is_empty() || !self.pending_exports.is_empty() || !self.pending_world_imports.is_empty() {
+            ctx.request_repaint();
+        }
         self.scene.update(0.016);
 
         let discord_details = format!("Editing '{}'", self.scene.name);

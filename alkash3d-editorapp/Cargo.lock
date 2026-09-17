@@ -68,6 +68,8 @@ dependencies = [
  "rand 0.10.1",
  "rayon",
  "rfd",
+ "serde",
+ "serde_json",
  "tobj",
  "uuid 1.23.1",
  "wgpu 27.0.1",

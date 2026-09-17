@@ -57,7 +57,40 @@ pub struct GpuRenderer {
     pub materials: Vec<GpuMaterial>,
 
     // Меши
+    //
+    // ИСПРАВЛЕНО (по прямому запросу пользователя: "8 фпс" на сцене с
+    // тысячами объектов после честной резки большой .obj-карты по чанкам
+    // при экспорте — см. `converters/alworld.rs::split_mesh_by_chunk`):
+    // раньше КАЖДЫЙ `GpuMesh` владел СВОИМИ `vertex_buffer`/`index_buffer`
+    // — на сцену из N объектов это означало N отдельных
+    // `set_vertex_buffer`+`set_index_buffer` вызовов КАЖДЫЙ кадр (см.
+    // `render()`), помимо самих N `draw_indexed`. Для сцены из тысяч
+    // мелких объектов (типичный результат чанк-резки большой карты) это
+    // тысячи лишних вызовов wgpu/драйвера в кадр — GPU-время на саму
+    // геометрию мизерное, а вот CPU-время на ПОДГОТОВКУ каждого draw call
+    // (валидация, смена состояния) — нет.
+    //
+    // Теперь ВСЕ меши лежат в ДВУХ общих растущих буферах
+    // (`shared_vertex_buffer`/`shared_index_buffer`, см. `ensure_shared_
+    // vertex_capacity`/`ensure_shared_index_capacity` — тот же паттерн
+    // роста-с-удвоением, что `model_buffer`/`ensure_model_capacity`, но с
+    // копированием СТАРЫХ данных в новый буфер при росте, потому что, в
+    // отличие от `model_buffer`, геометрия НЕ перезаписывается каждый
+    // кадр целиком — она загружается один раз в `add_mesh` и должна
+    // пережить рост буфера). `GpuMesh` теперь хранит не буферы, а смещения
+    // в этих общих буферах (`vertex_offset`/`index_offset`) — `render()`
+    // вызывает `set_vertex_buffer`/`set_index_buffer` РОВНО ОДИН РАЗ на
+    // кадр (а не на объект), а per-object индивидуальность обеспечивает
+    // `draw_indexed(index_offset..+index_count, vertex_offset, ..)` —
+    // штатный механизм wgpu/D3D12 для рисования из общего буфера с
+    // разными под-диапазонами БЕЗ переключения самих буферов.
     pub meshes: Vec<GpuMesh>,
+    shared_vertex_buffer: wgpu::Buffer,
+    shared_index_buffer: wgpu::Buffer,
+    shared_vertex_len: u32,
+    shared_vertex_capacity: u32,
+    shared_index_len: u32,
+    shared_index_capacity: u32,
 
     // ДОБАВЛЕНО (рендер частиц — см. `ParticleInstance`/`render()` ниже):
     // отдельный alpha-blend пайплайн поверх основного (тот рисует
@@ -132,8 +165,12 @@ pub struct LightData {
 }
 
 pub struct GpuMesh {
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
+    // ИЗМЕНЕНО: смещения в общих `GpuRenderer::shared_vertex_buffer`/
+    // `shared_index_buffer` вместо собственных `wgpu::Buffer` на меш — см.
+    // подробный комментарий у поля `GpuRenderer::meshes`.
+    pub vertex_offset: u32,
+    pub vertex_count: u32,
+    pub index_offset: u32,
     pub index_count: u32,
     pub visible: bool,
 }
@@ -815,6 +852,27 @@ impl GpuRenderer {
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Общие буферы геометрии — см. подробный комментарий у поля
+        // `GpuRenderer::meshes`. Начальная ёмкость — с запасом на
+        // "обычную" сцену без немедленного роста-с-копированием на первых
+        // же нескольких `add_mesh`; `COPY_SRC` обязателен — без него
+        // `ensure_shared_*_capacity` не сможет скопировать старые данные в
+        // новый, больший буфер при росте.
+        const INITIAL_SHARED_VERTEX_CAPACITY: u32 = 65536;
+        const INITIAL_SHARED_INDEX_CAPACITY: u32 = 65536;
+        let shared_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shared Vertex Buffer"),
+            size: INITIAL_SHARED_VERTEX_CAPACITY as u64 * std::mem::size_of::<Vertex3D>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let shared_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shared Index Buffer"),
+            size: INITIAL_SHARED_INDEX_CAPACITY as u64 * 4,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
         // Default material
         let default_material = GpuMaterial::new(
             &device,
@@ -843,6 +901,12 @@ impl GpuRenderer {
             material_bind_group_layout,
             materials: vec![default_material],
             meshes: Vec::new(),
+            shared_vertex_buffer,
+            shared_index_buffer,
+            shared_vertex_len: 0,
+            shared_vertex_capacity: INITIAL_SHARED_VERTEX_CAPACITY,
+            shared_index_len: 0,
+            shared_index_capacity: INITIAL_SHARED_INDEX_CAPACITY,
             particle_pipeline,
             particle_vertex_buffer: None,
             particle_capacity: 0,
@@ -889,6 +953,70 @@ impl GpuRenderer {
             }],
         });
         self.model_capacity = new_capacity;
+    }
+
+    /// Гарантирует, что `shared_vertex_buffer` вмещает `needed` вершин —
+    /// см. подробный комментарий у поля `GpuRenderer::meshes`. В ОТЛИЧИЕ от
+    /// `ensure_model_capacity`/`ensure_particle_capacity` выше, буфер здесь
+    /// НЕ перезаписывается целиком каждый кадр — геометрия загружается
+    /// ОДИН раз в `add_mesh` и должна пережить рост буфера, поэтому при
+    /// пересоздании копируем старое содержимое в новый буфер через
+    /// `copy_buffer_to_buffer` (для чего исходный буфер и создан с
+    /// `COPY_SRC`), а не просто заменяем его пустым.
+    fn ensure_shared_vertex_capacity(&mut self, needed: u32) {
+        if needed <= self.shared_vertex_capacity {
+            return;
+        }
+
+        let new_capacity = needed.max(self.shared_vertex_capacity.saturating_mul(2)).max(1024);
+        let stride = std::mem::size_of::<Vertex3D>() as u64;
+
+        let new_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shared Vertex Buffer"),
+            size: new_capacity as u64 * stride,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        if self.shared_vertex_len > 0 {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Grow Shared Vertex Buffer"),
+            });
+            encoder.copy_buffer_to_buffer(&self.shared_vertex_buffer, 0, &new_buffer, 0, self.shared_vertex_len as u64 * stride);
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        self.shared_vertex_buffer = new_buffer;
+        self.shared_vertex_capacity = new_capacity;
+    }
+
+    /// Индексный аналог `ensure_shared_vertex_capacity` выше — те же
+    /// причины и тот же приём (`copy_buffer_to_buffer` вместо пустого
+    /// пересоздания).
+    fn ensure_shared_index_capacity(&mut self, needed: u32) {
+        if needed <= self.shared_index_capacity {
+            return;
+        }
+
+        let new_capacity = needed.max(self.shared_index_capacity.saturating_mul(2)).max(1024);
+
+        let new_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Shared Index Buffer"),
+            size: new_capacity as u64 * 4,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        if self.shared_index_len > 0 {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Grow Shared Index Buffer"),
+            });
+            encoder.copy_buffer_to_buffer(&self.shared_index_buffer, 0, &new_buffer, 0, self.shared_index_len as u64 * 4);
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        self.shared_index_buffer = new_buffer;
+        self.shared_index_capacity = new_capacity;
     }
 
     /// Гарантирует, что `particle_vertex_buffer` вмещает `needed` частиц
@@ -1009,11 +1137,32 @@ impl GpuRenderer {
         // открытия render pass, одним проходом, без разделения одного слота
         // между несколькими draw-вызовами (см. комментарий у поля
         // model_buffer выше).
+        // ИЗМЕНЕНО (по прямому запросу пользователя: "давай попробуем
+        // выжимать" — после фикса draw call'ов следующий по величине
+        // источник тех же N лишних вызовов драйверу за кадр): раньше здесь
+        // был отдельный `queue.write_buffer` НА КАЖДЫЙ объект (N вызовов
+        // на N объектов). `model_stride` больше `size_of::<ModelUniform>()`
+        // (выровнен под `min_uniform_buffer_offset_alignment`, обычно
+        // 256 байт против 64 байт самой матрицы) — то есть между
+        // соседними слотами есть padding, и просто взять `render_objects`
+        // как один плотный `&[ModelUniform]` для ОДНОГО `write_buffer`
+        // нельзя: байты легли бы не на те офсеты, которые ожидает шейдер
+        // (dynamic offset в `set_bind_group` считает именно по `model_stride`,
+        // не по `size_of::<ModelUniform>()`). Поэтому собираем один
+        // CPU-side `Vec<u8>` РОВНО такого же макета, как сам GPU-буфер
+        // (с padding-зазорами между матрицами), и пишем его ОДНИМ вызовом
+        // — N вызовов драйверу становится 1, при том же самом итоговом
+        // содержимом буфера.
         self.ensure_model_capacity(render_objects.len() as u32);
+        let mut model_data = vec![0u8; self.model_stride as usize * render_objects.len()];
+        let model_item_size = std::mem::size_of::<ModelUniform>();
         for (i, obj) in render_objects.iter().enumerate() {
             let model_uniform = ModelUniform { model: obj.1 };
-            let offset = i as u64 * self.model_stride;
-            self.queue.write_buffer(&self.model_buffer, offset, bytemuck::cast_slice(&[model_uniform]));
+            let start = i * self.model_stride as usize;
+            model_data[start..start + model_item_size].copy_from_slice(bytemuck::bytes_of(&model_uniform));
+        }
+        if !model_data.is_empty() {
+            self.queue.write_buffer(&self.model_buffer, 0, &model_data);
         }
 
         // Billboard-развёртка частиц в вершины и запись в GPU-буфер — ДО
@@ -1083,6 +1232,15 @@ impl GpuRenderer {
             rp.set_bind_group(0, &self.camera_bind_group, &[]);
             rp.set_bind_group(1, &self.light_bind_group, &[]);
 
+            // ИЗМЕНЕНО (по прямому запросу пользователя: "8 фпс" на сцене
+            // из тысяч объектов — см. подробный комментарий у поля
+            // `meshes`): ВСЯ геометрия сцены лежит в этих двух буферах, так
+            // что связать их достаточно ОДИН раз на кадр, а не на каждый
+            // объект — per-object индивидуальность даёт `draw_indexed`
+            // ниже через свой диапазон индексов + `base_vertex`.
+            rp.set_vertex_buffer(0, self.shared_vertex_buffer.slice(..));
+            rp.set_index_buffer(self.shared_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
             // Группируем по материалам — индексы в render_objects, а не
             // сами кортежи, чтобы у каждого объекта остался его собственный
             // офсет (i * model_stride) в общем model_buffer.
@@ -1107,10 +1265,10 @@ impl GpuRenderer {
                     let offset = i as u64 * self.model_stride;
                     rp.set_bind_group(2, &self.model_bind_group, &[offset as u32]);
 
-                    rp.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                     if mesh.index_count > 0 {
-                        rp.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                        rp.draw_indexed(0..mesh.index_count, 0, 0..1);
+                        let start = mesh.index_offset;
+                        let end = mesh.index_offset + mesh.index_count;
+                        rp.draw_indexed(start..end, mesh.vertex_offset as i32, 0..1);
                     }
 
                     self.draw_calls += 1;
@@ -1181,30 +1339,29 @@ impl GpuRenderer {
             });
         }
 
-        let vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Vertex Buffer"),
-            size: (vertices.len() * std::mem::size_of::<Vertex3D>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: true,
-        });
-        vertex_buffer.slice(..).get_mapped_range_mut()
-            .copy_from_slice(bytemuck::cast_slice(&vertices));
-        vertex_buffer.unmap();
+        // ИЗМЕНЕНО: аппендим в ОБЩИЕ `shared_vertex_buffer`/
+        // `shared_index_buffer` вместо создания собственных буферов под
+        // этот меш — см. подробный комментарий у поля `GpuRenderer::meshes`.
+        // Индексы пишем КАК ЕСТЬ, без перенумерации (они и так локальны для
+        // этого меша, начинаются с 0) — абсолютное смещение в общем буфере
+        // вершин обеспечивает `base_vertex` в `draw_indexed` при рендере, а
+        // не перезапись самих чисел индексов здесь.
+        let vertex_offset = self.shared_vertex_len;
+        self.ensure_shared_vertex_capacity(self.shared_vertex_len + vertices.len() as u32);
+        let vertex_stride = std::mem::size_of::<Vertex3D>() as u64;
+        self.queue.write_buffer(&self.shared_vertex_buffer, vertex_offset as u64 * vertex_stride, bytemuck::cast_slice(&vertices));
+        self.shared_vertex_len += vertices.len() as u32;
 
-        let index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Index Buffer"),
-            size: (mesh.indices.len() * 4) as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: true,
-        });
-        index_buffer.slice(..).get_mapped_range_mut()
-            .copy_from_slice(bytemuck::cast_slice(&mesh.indices));
-        index_buffer.unmap();
+        let index_offset = self.shared_index_len;
+        self.ensure_shared_index_capacity(self.shared_index_len + mesh.indices.len() as u32);
+        self.queue.write_buffer(&self.shared_index_buffer, index_offset as u64 * 4, bytemuck::cast_slice(&mesh.indices));
+        self.shared_index_len += mesh.indices.len() as u32;
 
         let idx = self.meshes.len();
         self.meshes.push(GpuMesh {
-            vertex_buffer,
-            index_buffer,
+            vertex_offset,
+            vertex_count: vertices.len() as u32,
+            index_offset,
             index_count: mesh.indices.len() as u32,
             visible: true,
         });
@@ -1234,11 +1391,17 @@ impl GpuRenderer {
     pub fn update_mesh_vertices(&mut self, mesh_idx: usize, mesh: &Mesh) -> bool {
         let Some(gpu_mesh) = self.meshes.get(mesh_idx) else { return false; };
 
-        let expected_vertex_bytes = (mesh.vertices.len() * std::mem::size_of::<Vertex3D>()) as u64;
-        let expected_index_bytes = (mesh.indices.len() * 4) as u64;
-        if gpu_mesh.vertex_buffer.size() != expected_vertex_bytes || gpu_mesh.index_buffer.size() != expected_index_bytes {
+        // ИЗМЕНЕНО: раньше проверялся размер СОБСТВЕННОГО буфера меша;
+        // теперь у меша нет своего буфера (см. `GpuRenderer::meshes`) —
+        // сверяем количество вершин/индексов напрямую. Смысл проверки тот
+        // же: число элементов не должно было измениться (иначе они не
+        // влезут в уже выделенный для этого меша диапазон общего буфера).
+        if gpu_mesh.vertex_count != mesh.vertices.len() as u32 || gpu_mesh.index_count != mesh.indices.len() as u32 {
             return false;
         }
+
+        let vertex_offset = gpu_mesh.vertex_offset;
+        let index_offset = gpu_mesh.index_offset;
 
         let mut vertices = Vec::with_capacity(mesh.vertices.len());
         for i in 0..mesh.vertices.len() {
@@ -1250,12 +1413,13 @@ impl GpuRenderer {
             });
         }
 
-        self.queue.write_buffer(&gpu_mesh.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        let vertex_stride = std::mem::size_of::<Vertex3D>() as u64;
+        self.queue.write_buffer(&self.shared_vertex_buffer, vertex_offset as u64 * vertex_stride, bytemuck::cast_slice(&vertices));
         // Индексы при простом перемещении вершин не меняются, но пишем их
         // тоже — эта функция вызывается и после операций, где порядок
         // индексов мог быть переставлен без изменения ИХ ЧИСЛА (сейчас
         // таких нет, но дешёвая защита на будущее не помешает).
-        self.queue.write_buffer(&gpu_mesh.index_buffer, 0, bytemuck::cast_slice(&mesh.indices));
+        self.queue.write_buffer(&self.shared_index_buffer, index_offset as u64 * 4, bytemuck::cast_slice(&mesh.indices));
 
         true
     }
