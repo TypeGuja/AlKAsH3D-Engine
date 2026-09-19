@@ -19,9 +19,13 @@
 // ДРУГОЕ ОГРАНИЧЕНИЕ: новые вершины при экструзии не дублируются под
 // "жёсткие" грани (каждая грань — свою копию вершины ради плоского
 // шейдинга) — они просто продолжают уже существующий индекс, ровно как
-// это уже делают все примитивы этого движка (см. mesh/primitives.rs —
-// куб, например, состоит всего из 8 вершин на 6 граней, тоже без
-// дублирования под жёсткие рёбра). Разделение вершин под flat shading —
+// это уже делают ЗАКРУГЛЁННЫЕ примитивы этого движка (сфера/цилиндр/тор —
+// см. mesh/primitives.rs, там общие вершины между соседними треугольниками
+// нужны ради гладкого шейдинга). `create_cube()`, для сравнения, с правки
+// "честная UV-развёртка примитивов" уже не разделяет вершины между гранями
+// (у каждой грани свои 4 вершины) — но и то не ради flat-shading экструзии,
+// а чтобы UV не схлопывалась в углах (см. mesh/uv.rs). Разделение вершин
+// под flat shading для ВСЕХ операций редактора (не только примитивов) —
 // отдельное, самостоятельное улучшение, не требуется, чтобы экструзия
 // работала корректно геометрически.
 
@@ -228,6 +232,7 @@ pub fn detach_faces_from_neighbors(mesh: &mut Mesh, selected_faces: &BTreeSet<us
 
     mesh.recalculate_normals();
     mesh.recalculate_bounds();
+    mesh.recalculate_uv();
     result
 }
 
@@ -258,6 +263,7 @@ pub fn move_vertices(mesh: &mut Mesh, selected: &BTreeSet<usize>, delta: Vec3) {
     }
     mesh.recalculate_normals();
     mesh.recalculate_bounds();
+    mesh.recalculate_uv();
 }
 
 /// Экструдирует выбранный "пятачок" граней: дублирует их вершины, строит
@@ -358,6 +364,7 @@ pub fn extrude_faces(mesh: &mut Mesh, selected_faces: &BTreeSet<usize>, amount: 
 
     mesh.recalculate_normals();
     mesh.recalculate_bounds();
+    mesh.recalculate_uv();
 
     old_to_new.values().copied().collect()
 }
@@ -382,6 +389,7 @@ pub fn delete_faces(mesh: &mut Mesh, selected_faces: &BTreeSet<usize>) {
     mesh.indices = new_indices;
     mesh.recalculate_normals();
     mesh.recalculate_bounds();
+    mesh.recalculate_uv();
 }
 
 /// Удаляет выбранные ВЕРШИНЫ — сначала убирает любую грань, ссылающуюся
@@ -424,6 +432,7 @@ pub fn delete_vertices(mesh: &mut Mesh, selected: &BTreeSet<usize>) {
     mesh.indices = kept_indices;
     mesh.recalculate_normals();
     mesh.recalculate_bounds();
+    mesh.recalculate_uv();
 }
 
 #[cfg(test)]
@@ -460,32 +469,45 @@ mod tests {
 
     #[test]
     fn detach_faces_from_neighbors_isolates_shared_vertices() {
-        let mut mesh = Mesh::create_cube();
+        // ОБНОВЛЕНО (честная UV-развёртка примитивов): раньше этот тест
+        // гонял `Mesh::create_cube()` — у куба КАЖДЫЙ угол был общим сразу
+        // для 3 граней, идеальный подопытный для detach. После правки куб
+        // сам по себе уже "жёсткий" (у каждой грани свои 4 вершины, см.
+        // mesh/primitives.rs), то есть больше не иллюстрирует сценарий
+        // "разделяемая соседями вершина" вообще — используем
+        // `Mesh::create_plane()` (2 треугольника квада, честно делят между
+        // собой 2 из 4 вершин) как подопытного вместо куба; сама проверяемая
+        // ЛОГИКА detach не изменилась.
+        let mut mesh = Mesh::create_plane();
         let vertex_count_before = mesh.vertices.len();
-        // Один из двух треугольников верхней грани (см. mesh/primitives.rs:
-        // "top" — грани 10 (3,6,2) и 11 (3,7,6)). ВСЕ ТРИ вершины этого
-        // треугольника — угловые вершины куба, а у куба КАЖДЫЙ угол общий
-        // сразу для 3 граней (не только для пары top-треугольников) — так
-        // что общими с какой-нибудь НЕвыделенной гранью окажутся все 3, не
-        // только те 2, что треугольник 10 делит именно с треугольником 11.
-        let one_triangle = selected(&[10]);
+        // Плоскость — квад из 2 треугольников: 0=(0,1,2), 1=(2,3,0) (см.
+        // mesh/primitives.rs::create_plane). Вершины 0 и 2 — общее ребро
+        // диагонали, делят их ОБА треугольника; вершина 1 — только у
+        // треугольника 0, вершина 3 — только у треугольника 1.
+        let one_triangle = selected(&[0]);
 
         let new_verts = detach_faces_from_neighbors(&mut mesh, &one_triangle);
 
-        assert_eq!(mesh.vertices.len(), vertex_count_before + 3, "у куба каждая вершина треугольника — угол, общий сразу с несколькими гранями");
+        assert_eq!(mesh.vertices.len(), vertex_count_before + 2, "у квада общее с соседом — только диагональное ребро (2 вершины)");
+        // `new_verts` — ВСЕ вершины выделенной грани ПОСЛЕ remap'а (не
+        // только реально продублированные) — для одного треугольника это
+        // всегда 3, вне зависимости от того, сколько из них было общими с
+        // соседом (см. `result` в конце `detach_faces_from_neighbors`).
         assert_eq!(new_verts.len(), 3);
 
-        // Грань 11 (сосед по top-паре) должна остаться на СТАРЫХ вершинах —
+        // Грань 1 (сосед по диагонали) должна остаться на СТАРЫХ вершинах —
         // её индексы вообще не должны были поменяться.
-        assert_eq!(face_vertex_indices(&mesh, 11), Some([3, 7, 6]));
+        assert_eq!(face_vertex_indices(&mesh, 1), Some([2, 3, 0]));
 
-        // Грань 10 теперь ссылается ТОЛЬКО на новые (продублированные)
-        // индексы — ни один из старых (2, 3, 6) в ней больше не встречается.
-        let updated = face_vertex_indices(&mesh, 10).unwrap();
-        assert!(!updated.contains(&2) && !updated.contains(&3) && !updated.contains(&6));
+        // Грань 0 теперь ссылается на НОВЫЕ (продублированные) индексы там,
+        // где делила вершины с соседом (0 и 2) — но сохраняет старый индекс
+        // вершины 1, которую ни с кем делить и не приходилось.
+        let updated = face_vertex_indices(&mesh, 0).unwrap();
+        assert!(!updated.contains(&0) && !updated.contains(&2), "общие с соседом вершины должны смениться на новые копии");
+        assert!(updated.contains(&1), "вершина, ни с кем не общая, не должна была дублироваться");
 
         // Повторный вызов на УЖЕ оторванном выделении не должен ничего
-        // менять — новые вершины 10-й грани теперь ничьи, кроме неё самой.
+        // менять — новые вершины грани 0 теперь ничьи, кроме неё самой.
         let vertex_count_after_first = mesh.vertices.len();
         detach_faces_from_neighbors(&mut mesh, &one_triangle);
         assert_eq!(mesh.vertices.len(), vertex_count_after_first, "повторный отрыв уже независимого выделения — no-op");
@@ -508,7 +530,8 @@ mod tests {
         let vertex_count_before = mesh.vertices.len();
         let face_count_before = face_count(&mesh);
 
-        // Верхняя грань куба (индексы 3,6,2 и 3,7,6 — см. mesh/primitives.rs).
+        // Верхняя грань куба — грани 10 и 11, последний квад из 6 (см.
+        // порядок в mesh/primitives.rs::create_cube).
         let top_faces = selected(&[10, 11]);
         let new_verts = extrude_faces(&mut mesh, &top_faces, 1.0);
 
@@ -547,7 +570,13 @@ mod tests {
     fn delete_vertices_removes_dependent_faces_and_reindexes() {
         let mut mesh = Mesh::create_cube();
         let before_faces = face_count(&mesh);
-        // Вершина 0 участвует в нескольких гранях куба (back/left/bottom).
+        let before_vertices = mesh.vertices.len();
+        // ОБНОВЛЕНО (честная UV-развёртка примитивов): с "жёсткими" гранями
+        // куба (см. mesh/primitives.rs) вершина 0 принадлежит только ОДНОЙ
+        // грани (обоим её треугольникам), а не трём сразу, как было со
+        // старой shared-vertex топологией — но сама проверяемая логика
+        // (удаление вершины удаляет ровно те грани, что её используют, и
+        // компактно переиндексирует остальное) от этого не меняется.
         let faces_using_v0 = (0..before_faces)
             .filter(|&f| face_vertex_indices(&mesh, f).unwrap().contains(&0))
             .count();
@@ -555,7 +584,7 @@ mod tests {
 
         delete_vertices(&mut mesh, &selected(&[0]));
 
-        assert_eq!(mesh.vertices.len(), 7);
+        assert_eq!(mesh.vertices.len(), before_vertices - 1);
         assert_eq!(face_count(&mesh), before_faces - faces_using_v0);
         // Все оставшиеся индексы должны быть в новых границах.
         for &idx in &mesh.indices {

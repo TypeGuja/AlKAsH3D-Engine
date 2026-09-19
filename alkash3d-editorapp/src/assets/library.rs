@@ -75,6 +75,20 @@ impl AssetLibrary {
         let mut all_vertices = Vec::new();
         let mut all_indices = Vec::new();
         let mut vertex_offset = 0u32;
+        // ДОБАВЛЕНО (текстуры материалов — по прямому запросу пользователя):
+        // tobj парсит `vt`-координаты из .obj не хуже позиций/индексов, но
+        // раньше этот код их даже не читал — итоговый `Mesh` всегда получал
+        // только автоматическую планарную UV-проекцию из `Mesh::new()`
+        // (см. `mesh/uv.rs::recalculate_uv`), даже когда у модели была
+        // честная развёртка автора. Собираем `all_uvs` параллельно
+        // `all_vertices` и, если ОНА ЕСТЬ У ВСЕХ моделей файла целиком,
+        // подменяем ею автоматическую проекцию через `Mesh::set_uv()` ниже
+        // — частичная/отсутствующая развёртка у части моделей молча
+        // оставляет автоматическую проекцию для ВСЕГО меша (лучше
+        // консистентный fallback, чем наполовину честная, наполовину
+        // произвольная UV на одном объекте).
+        let mut all_uvs = Vec::new();
+        let mut all_models_have_uv = true;
 
         for (idx, model) in models.iter().enumerate() {
             let mesh = &model.mesh;
@@ -96,6 +110,18 @@ impl AssetLibrary {
                 ));
             }
 
+            let has_texcoords = mesh.texcoords.len() >= vertex_count * 2;
+            all_models_have_uv &= has_texcoords;
+            if has_texcoords {
+                // OBJ (как и большинство форматов, унаследовавших OpenGL-
+                // конвенцию) хранит V снизу вверх, а движок/материалы этого
+                // редактора ожидают V сверху вниз (та же причина уже была
+                // учтена в неиспользуемом converters/obj.rs) — переворачиваем.
+                for i in 0..vertex_count {
+                    all_uvs.push([mesh.texcoords[i * 2], 1.0 - mesh.texcoords[i * 2 + 1]]);
+                }
+            }
+
             // Добавляем индексы со смещением
             for &idx in &mesh.indices {
                 all_indices.push(idx as u32 + vertex_offset);
@@ -111,7 +137,11 @@ impl AssetLibrary {
         println!("[ASSET] Total: {} vertices, {} indices",
                  all_vertices.len(), all_indices.len());
 
-        Ok(Mesh::new(all_vertices, all_indices))
+        let mut result = Mesh::new(all_vertices, all_indices);
+        if all_models_have_uv {
+            result.set_uv(all_uvs);
+        }
+        Ok(result)
     }
 
     pub fn get_mesh(&self, name: &str) -> Option<&Mesh> {
@@ -124,5 +154,61 @@ impl AssetLibrary {
 
     pub fn list_materials(&self) -> Vec<String> {
         self.materials.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ДОБАВЛЕНО (по прямому запросу пользователя: "попробуй теперь сделать
+    /// фонарный столб obj файлом") — `assets/models/street_lamp.obj`,
+    /// процедурно сгенерированный тестовый пропс (основание+столб+рычаг+
+    /// корпус плафона+рассеиватель, честные `vt`/`vn` в файле), нужен для
+    /// того, чтобы реально прогнать через `parse_obj` НЕ примитив редактора,
+    /// а импортированную модель — именно тот путь, для которого делалась
+    /// правка "не выбрасывать texcoords из tobj" (см. `parse_obj` выше).
+    /// Регрессионный тест держит две вещи разом: (1) файл вообще валиден
+    /// для tobj и парсится без ошибок, (2) UV реально долетают до
+    /// `Mesh::uv`, а не остаются автоматической fallback-проекцией
+    /// (`recalculate_uv()`), которую `set_uv()` должен была подменить.
+    #[test]
+    fn street_lamp_obj_imports_with_real_uv() {
+        let mut library = AssetLibrary::new();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/models/street_lamp.obj");
+
+        let names = library.import_model(path).expect("street_lamp.obj must import");
+        assert_eq!(names, vec!["street_lamp".to_string()]);
+
+        let mesh = library.get_mesh("street_lamp").expect("imported mesh must be registered");
+        assert!(!mesh.vertices.is_empty());
+        assert_eq!(mesh.uv.len(), mesh.vertices.len());
+        assert_eq!(mesh.normals.len(), mesh.vertices.len());
+        assert!(!mesh.indices.is_empty());
+        assert_eq!(mesh.indices.len() % 3, 0);
+
+        // Модель ~3.5 м в высоту (столб+рычаг+плафон), стоит на y=0 — грубая
+        // проверка масштаба/происхождения, а не точных чисел геометрии.
+        let (min, max) = mesh.bounds;
+        assert!(min.y.abs() < 0.05, "base should sit on y=0, got {}", min.y);
+        assert!(max.y > 3.0 && max.y < 4.0, "lamp head should be ~3-4m up, got {}", max.y);
+
+        // Настоящая UV-развёртка из файла, а не автоматическая fallback-
+        // проекция `recalculate_uv()` (планарная проекция по доминирующей
+        // оси нормали КАЖДОЙ вершины, нормализованная в [0,1] по bounds
+        // ВСЕГО меша — см. mesh/uv.rs). У КАЖДОГО кольца каждого цилиндра
+        // (основание/столб/рычаг/рассеиватель) v-координата в файле — РОВНО
+        // 0.0 (нижнее кольцо) или РОВНО 1.0 (верхнее) у ВСЕХ вершин кольца
+        // разом (десятки вершин на кольцо) — у fallback-проекции ровно 0/1
+        // попадает почти исключительно в единственную самую крайнюю по Y
+        // вершину всего меша, а не во множество вершин на разных кольцах
+        // на разной высоте. Это надёжно отличает "долетевший до Mesh::uv
+        // файл" от "set_uv() тихо не сработал, автопроекция осталась".
+        let exact_edge_v = mesh.uv.iter().filter(|uv| uv[1] == 0.0 || uv[1] == 1.0).count();
+        assert!(
+            exact_edge_v > 20,
+            "expected many vertices with exact v=0/1 from real per-ring cylinder UV, got {} (looks like the planar fallback projection, not the imported UV)",
+            exact_edge_v
+        );
     }
 }

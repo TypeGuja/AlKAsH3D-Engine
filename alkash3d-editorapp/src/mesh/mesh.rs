@@ -5,6 +5,16 @@ pub struct Mesh {
     pub vertices: Vec<Vec3>,
     pub indices: Vec<u32>,
     pub normals: Vec<Vec3>,
+    // ДОБАВЛЕНО (текстуры материалов — по прямому запросу пользователя:
+    // "добавь altex чтобы можно было загружать текстуру предмета
+    // картинкой"): UV-координаты, по одной паре на вершину (тот же индекс,
+    // что `vertices`/`normals`) — без них экспортированный `.altex` нёс
+    // только заглушку `uv=[0,0]` для каждой вершины (см. старую версию
+    // `converters/altex.rs::build_altex`), так что назначенная материалу
+    // albedo-текстура выглядела бы в движке одним растянутым в точку
+    // пикселем на весь меш. Заполняется `recalculate_uv()` — см. её
+    // комментарий про способ проекции и известное ограничение.
+    pub uv: Vec<[f32; 2]>,
     pub bounds: (Vec3, Vec3),
 }
 
@@ -14,6 +24,7 @@ impl Mesh {
             vertices: vertices.clone(),
             indices: indices.clone(),
             normals: vec![Vec3::ZERO; vertices.len()],
+            uv: Vec::new(),
             bounds: (Vec3::ZERO, Vec3::ZERO),
         };
 
@@ -26,6 +37,7 @@ impl Mesh {
         mesh.bounds = (min, max);
 
         mesh.recalculate_normals();
+        mesh.recalculate_uv();
         mesh
     }
 

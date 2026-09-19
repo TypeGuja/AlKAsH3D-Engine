@@ -22,6 +22,17 @@ pub fn render_material_library_editor(ctx: &egui::Context, app: &mut EditorApp) 
     let mut do_save = false;
     let mut add_material = false;
     let mut remove_name: Option<String> = None;
+    // ДОБАВЛЕНО (текстуры материалов): назначение/снятие текстуры
+    // разбирается ПОСЛЕ закрытия `ScrollArea`-замыкания ниже (как и
+    // `remove_name`/`add_material` выше) — внутри замыкания уже держится
+    // `&mut mat` из `app.asset_library.materials.get_mut(name)`, а
+    // `rfd::FileDialog::pick_file()` синхронный и не трогает `app`, так что
+    // сам диалог можно открыть прямо там, но декодирование файла и запись
+    // результата в материал (второе мутабельное заимствование
+    // `app.asset_library.materials`) откладываются, чтобы не столкнуться с
+    // уже открытым `&mut mat`.
+    let mut texture_pick: Option<(String, String)> = None;
+    let mut texture_clear: Option<String> = None;
 
     egui::Window::new("🎨 Material Library Editor (.almat)")
         .open(&mut still_open)
@@ -71,6 +82,33 @@ pub fn render_material_library_editor(ctx: &egui::Context, app: &mut EditorApp) 
                                     mat.emissive = [emissive4[0], emissive4[1], emissive4[2]];
                                 }
                             });
+                            ui.horizontal(|ui| {
+                                ui.label("Albedo Texture:");
+                                match &mat.albedo_texture {
+                                    Some(tex) => {
+                                        let file_label = tex.source_path.as_deref()
+                                            .and_then(|p| std::path::Path::new(p).file_name())
+                                            .and_then(|n| n.to_str())
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| "(embedded)".to_string());
+                                        ui.weak(format!("{} ({}x{})", file_label, tex.width, tex.height));
+                                        if ui.small_button("✖").clicked() {
+                                            texture_clear = Some(name.clone());
+                                        }
+                                    }
+                                    None => {
+                                        ui.weak("(none)");
+                                    }
+                                }
+                                if ui.small_button("📂").on_hover_text("Загрузить картинку как albedo-текстуру").clicked() {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("Images", &["png", "jpg", "jpeg", "bmp", "tga", "gif", "webp"])
+                                        .pick_file()
+                                    {
+                                        texture_pick = Some((name.clone(), path.to_string_lossy().to_string()));
+                                    }
+                                }
+                            });
                         });
                     });
                 }
@@ -89,6 +127,23 @@ pub fn render_material_library_editor(ctx: &egui::Context, app: &mut EditorApp) 
 
     if let Some(name) = remove_name {
         app.asset_library.materials.remove(&name);
+    }
+    if let Some(name) = texture_clear {
+        if let Some(mat) = app.asset_library.materials.get_mut(&name) {
+            mat.albedo_texture = None;
+        }
+    }
+    if let Some((name, path)) = texture_pick {
+        match crate::material::TextureAsset::load_from_file(&path) {
+            Ok(tex) => {
+                let (w, h) = (tex.width, tex.height);
+                if let Some(mat) = app.asset_library.materials.get_mut(&name) {
+                    mat.albedo_texture = Some(tex);
+                }
+                app.log(&format!("✅ Текстура '{}' назначена материалу '{}' ({}x{})", path, name, w, h), Color32::GREEN);
+            }
+            Err(e) => app.log(&format!("❌ Не удалось загрузить текстуру '{}': {}", path, e), Color32::RED),
+        }
     }
     if add_material {
         let name = app.material_library_editor.new_material_name.trim().to_string();

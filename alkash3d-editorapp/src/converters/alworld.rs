@@ -76,10 +76,20 @@ fn bake_linear_transform(mesh: &crate::mesh::Mesh, world: &crate::math::Transfor
         .map(|&n| normal_linear.transform_point(n).normalize())
         .collect();
 
+    // UV не зависят от поворота/масштаба объекта (это чисто параметризация
+    // ПОВЕРХНОСТИ, не мировая геометрия) — переносим как есть, тем же
+    // порядком вершин, вместо пересчёта `recalculate_uv()` заново: та
+    // проекция по доминирующей оси нормали дала бы другой (не обязательно
+    // худший, но НЕконсистентный между исходным и запечённым мешем)
+    // результат, а честная UV из OBJ-импорта (см. `assets/library.rs::
+    // parse_obj`) вообще не пересчитывается заново — только переносится.
+    let uv = mesh.uv.clone();
+
     let mut baked = crate::mesh::Mesh {
         vertices,
         indices: mesh.indices.clone(),
         normals,
+        uv,
         bounds: mesh.bounds,
     };
     baked.recalculate_bounds();
@@ -114,6 +124,10 @@ fn split_mesh_by_chunk(
     struct CellBuilder {
         vertices: Vec<Vec3>,
         normals: Vec<Vec3>,
+        // ДОБАВЛЕНО (текстуры материалов): UV переносится тем же remap'ом,
+        // что и normals — см. комментарий у `uv` в `bake_linear_transform`
+        // про то, почему это перенос, а не пересчёт заново.
+        uv: Vec<[f32; 2]>,
         indices: Vec<u32>,
         remap: std::collections::HashMap<u32, u32>,
     }
@@ -136,13 +150,14 @@ fn split_mesh_by_chunk(
         // одновременных `&mut` на один и тот же `cell` и не скомпилировался
         // бы. Матчинг на `&mut CellBuilder` по полям (match ergonomics) даёт
         // РАЗНЫЕ независимые `&mut` на каждое поле — без этой проблемы.
-        let CellBuilder { vertices, normals, indices, remap } = cell;
+        let CellBuilder { vertices, normals, uv, indices, remap } = cell;
 
         for &orig_idx in &[i0, i1, i2] {
             let new_idx = *remap.entry(orig_idx).or_insert_with(|| {
                 let idx = vertices.len() as u32;
                 vertices.push(mesh.vertices[orig_idx as usize]);
                 normals.push(mesh.normals.get(orig_idx as usize).copied().unwrap_or(Vec3::UP));
+                uv.push(mesh.uv.get(orig_idx as usize).copied().unwrap_or([0.0, 0.0]));
                 idx
             });
             indices.push(new_idx);
@@ -156,6 +171,7 @@ fn split_mesh_by_chunk(
                 vertices: b.vertices,
                 indices: b.indices,
                 normals: b.normals,
+                uv: b.uv,
                 bounds: (Vec3::ZERO, Vec3::ZERO),
             };
             m.recalculate_bounds();

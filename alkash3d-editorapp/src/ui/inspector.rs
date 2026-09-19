@@ -128,6 +128,13 @@ fn render_single(ui: &mut Ui, app: &mut crate::EditorApp, id: Uuid) {
                         }
                     }
                 }
+                if ui.small_button("🗺 View UV Unwrap...")
+                    .on_hover_text("Показать UV-развёртку этого меша (только просмотр, см. Mesh::recalculate_uv)")
+                    .clicked()
+                {
+                    app.uv_viewer.open = true;
+                    app.uv_viewer.target = Some(id);
+                }
             });
             ui.collapsing("Material", |ui| {
                 ui.horizontal(|ui| {
@@ -199,6 +206,57 @@ fn render_single(ui: &mut Ui, app: &mut crate::EditorApp, id: Uuid) {
                     let mut e = m.material.emissive;
                     ui.color_edit_button_rgb(&mut e);
                     m.material.emissive = e;
+                });
+                // ДОБАВЛЕНО (текстуры материалов — по прямому запросу
+                // пользователя: "добавь altex чтобы можно было загружать
+                // текстуру предмета картинкой"): назначение albedo-картинки
+                // материалу этого объекта — сохраняется вместе с материалом
+                // (`m.material.albedo_texture`) и встраивается в `.altex`
+                // при экспорте (см. `converters/altex.rs::build_altex`).
+                // Тот же паттерн "меняем CPU-данные объекта, GPU-превью в
+                // 3D-вьюпорте эдитора не трогаем", что уже применяется
+                // выше для Albedo/Metallic/Roughness/Emissive — их правка
+                // тоже не обновляет `gpu_material_map` на лету, картинка
+                // ведёт себя единообразно с остальными свойствами
+                // материала, а не выборочно "особенно".
+                ui.horizontal(|ui| {
+                    ui.label("Albedo Texture:");
+                    match &m.material.albedo_texture {
+                        Some(tex) => {
+                            let file_label = tex.source_path.as_deref()
+                                .and_then(|p| std::path::Path::new(p).file_name())
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "(встроена в .altex, без файла)".to_string());
+                            ui.weak(format!("{} ({}x{})", file_label, tex.width, tex.height));
+                        }
+                        None => {
+                            ui.weak("(нет)");
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.small_button("📂 Browse...")
+                        .on_hover_text("Загрузить картинку (PNG/JPEG/BMP/TGA/...) как albedo-текстуру материала")
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Images", &["png", "jpg", "jpeg", "bmp", "tga", "gif", "webp"])
+                            .pick_file()
+                        {
+                            let path_str = path.to_string_lossy().to_string();
+                            match crate::material::TextureAsset::load_from_file(&path_str) {
+                                Ok(tex) => {
+                                    app.log(&format!("✅ Текстура '{}' загружена ({}x{})", path_str, tex.width, tex.height), Color32::GREEN);
+                                    m.material.albedo_texture = Some(tex);
+                                }
+                                Err(e) => app.log(&format!("❌ Не удалось загрузить текстуру '{}': {}", path_str, e), Color32::RED),
+                            }
+                        }
+                    }
+                    if m.material.albedo_texture.is_some() && ui.small_button("✖ Clear").clicked() {
+                        m.material.albedo_texture = None;
+                    }
                 });
             });
         }

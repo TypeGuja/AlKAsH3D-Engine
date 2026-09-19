@@ -13,5 +13,6 @@ pub mod script_editor;
 pub mod assembly_editor;
 pub mod car_preset_editor;
 pub mod material_library_editor;
+pub mod uv_viewer;
 
 pub use style::setup_egui_style;
