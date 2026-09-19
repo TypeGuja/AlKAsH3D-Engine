@@ -21,6 +21,21 @@ wgpu = "27.0.0"
 winit = "0.30.13"
 bytemuck = { version = "1", features = ["derive"] }
 lru = "0.18.0"
+# ДОБАВЛЕНО (текстуры материалов — по прямому запросу пользователя:
+# "добавь altex чтобы можно было загружать текстуру предмета картинкой"):
+# декодирование произвольных файлов изображений в сырые RGBA8-пиксели для
+# `material::TextureAsset` — тот же формат байт, что уже ожидает
+# `AltexFile::add_texture` в движке (см. alkash3d-rust/src/altex_format.rs).
+# Уже присутствовал ТРАНЗИТИВНО через `egui_extras`'ю feature "image" (см.
+# Cargo.lock — версия 0.25.10), здесь добавлен ПРЯМОЙ зависимостью с той же
+# версией — эдитору нужен сам API декодирования (`image::open`/`to_rgba8`).
+# `default-features = false` + явный список форматов — дефолтные фичи
+# `image` тянут ещё и avif (через `ravif`/`rav1e`, тяжёлый AV1-энкодер),
+# exr/hdr/qoi/pnm/dds/ico, которые для обычных игровых текстур не нужны и
+# ощутимо раздувают время сборки; оставлен тот же набор форматов, что уже
+# заявлен в фильтре диалога выбора файла (`ui/inspector.rs`/
+# `ui/material_library_editor.rs`: "Images" — png/jpg/jpeg/bmp/tga/gif/webp).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tga", "webp"] }
 # ДОБАВЛЕНО (по прямому запросу пользователя: "Discord Rich Presence
 # статус"): IPC-клиент к локальному десктоп-приложению Discord — см.
 # src/discord_presence.rs. Не имеет отношения к настоящему игровому
