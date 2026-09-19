@@ -195,6 +195,7 @@ pub struct EditorApp {
     pub assembly_editor: AssemblyEditorState,
     pub car_preset_editor: CarPresetEditorState,
     pub material_library_editor: MaterialLibraryEditorState,
+    pub uv_viewer: UvViewerState,
 
     // ДОБАВЛЕНО (по прямому запросу пользователя: "Discord Rich Presence
     // статус"): см. src/discord_presence.rs — тихий no-op, пока не задан
@@ -292,6 +293,22 @@ pub struct MaterialLibraryEditorState {
 impl Default for MaterialLibraryEditorState {
     fn default() -> Self {
         Self { open: false, new_material_name: String::new() }
+    }
+}
+
+/// Состояние окна "🗺 UV Unwrap Viewer" — см. `ui/uv_viewer.rs`. `target` —
+/// объект, чья развёртка показывается, фиксируется в момент открытия окна
+/// (кнопка "View UV Unwrap..." в инспекторе), а не читается из текущего
+/// выделения на каждый кадр — иначе смена выделения в сцене (или снятие
+/// выделения) молча меняла бы/закрывала содержимое уже открытого окна.
+pub struct UvViewerState {
+    pub open: bool,
+    pub target: Option<Uuid>,
+}
+
+impl Default for UvViewerState {
+    fn default() -> Self {
+        Self { open: false, target: None }
     }
 }
 
@@ -454,6 +471,7 @@ impl EditorApp {
             assembly_editor: AssemblyEditorState::default(),
             car_preset_editor: CarPresetEditorState::default(),
             material_library_editor: MaterialLibraryEditorState::default(),
+            uv_viewer: UvViewerState::default(),
             discord_presence: crate::discord_presence::DiscordPresence::new(),
         };
 
@@ -1443,7 +1461,12 @@ impl EditorApp {
         else { return; };
         let path_str = path.to_string_lossy().to_string();
 
-        match crate::converters::almat::export_materials_to_almat_file(&self.asset_library.materials, &path_str) {
+        let mut messages = Vec::new();
+        let result = crate::converters::almat::export_materials_to_almat_file(&self.asset_library.materials, &path_str, &mut |msg| messages.push(msg));
+        for msg in messages {
+            self.log(&msg, Color32::YELLOW);
+        }
+        match result {
             Ok(()) => self.log(&format!("✅ Библиотека материалов экспортирована ({} шт.): {}", self.asset_library.materials.len(), path_str), Color32::GREEN),
             Err(e) => self.log(&format!("❌ Ошибка экспорта .almat: {}", e), Color32::RED),
         }
@@ -3345,6 +3368,7 @@ impl eframe::App for EditorApp {
         crate::ui::assembly_editor::render_assembly_editor(ctx, self);
         crate::ui::car_preset_editor::render_car_preset_editor(ctx, self);
         crate::ui::material_library_editor::render_material_library_editor(ctx, self);
+        crate::ui::uv_viewer::render_uv_viewer(ctx, self);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.available_rect_before_wrap();
