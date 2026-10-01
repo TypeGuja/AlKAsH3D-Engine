@@ -1,0 +1,11 @@
+[package]
+name = "samara_alfar"
+version = "0.1.0"
+edition = "2021"
+
+# Отдельный маленький инструмент: .alfar пишется настоящими структурами
+# движка (alkash3d_rs::alfar_format), чтобы бинарная раскладка совпадала.
+[dependencies]
+alkash3d_rs = { path = "../../../alkash3d-rust" }
+
+[workspace]
