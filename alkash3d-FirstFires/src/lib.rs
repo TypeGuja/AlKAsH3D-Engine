@@ -418,13 +418,8 @@ impl LightState {
         let camera = Vector3::new(camera_pos[0], camera_pos[1], camera_pos[2]);
 
         // Создаём frustum из view_proj
-        let view_proj_mat = Matrix4::new(
-            view_proj[0], view_proj[1], view_proj[2], view_proj[3],
-            view_proj[4], view_proj[5], view_proj[6], view_proj[7],
-            view_proj[8], view_proj[9], view_proj[10], view_proj[11],
-            view_proj[12], view_proj[13], view_proj[14], view_proj[15],
-        );
-        let frustum = Frustum::from_view_proj(&view_proj_mat);
+        // view_proj от движка — по столбцам (см. `Frustum::from_column_major`)
+        let frustum = Frustum::from_column_major(view_proj);
 
         let culled_dist = 0;
 
