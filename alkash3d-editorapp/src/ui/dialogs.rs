@@ -16,6 +16,82 @@ pub fn render_dialogs(ctx: &egui::Context, app: &mut EditorApp) {
     if !app.pending_imports.is_empty() {
         render_import_progress(ctx, app);
     }
+
+    if app.city_import_dialog.is_some() {
+        render_city_import_dialog(ctx, app);
+    }
+    if app.pending_city_import.is_some() {
+        render_city_import_progress(ctx, app);
+    }
+}
+
+/// Настройка импорта города: весь или круг вокруг центра карты, с оценкой
+/// памяти — весь город (десятки млн треугольников) может не влезть в RAM.
+fn render_city_import_dialog(ctx: &egui::Context, app: &mut EditorApp) {
+    let mut start = false;
+    let mut cancel = false;
+    if let Some(d) = app.city_import_dialog.as_mut() {
+        egui::Window::new("🏙 Импорт города")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new(&d.info.name).strong());
+                ui.label(format!("Папка: {}", d.info.dir.display()));
+                ui.label(format!("Чанков {:.0}×{:.0} м: {}", d.info.chunk_size, d.info.chunk_size, d.info.chunks.len()));
+                ui.separator();
+                ui.checkbox(&mut d.whole_city, "Весь город целиком");
+                ui.add_enabled(
+                    !d.whole_city,
+                    egui::Slider::new(&mut d.radius_km, 0.5..=30.0).text("радиус от центра карты, км"),
+                );
+                let radius = if d.whole_city { None } else { Some(d.radius_km * 1000.0) };
+                let sel = d.info.select([0.0, 0.0], radius);
+                let (tris, ram, vram) = crate::assets::city_import::CityInfo::estimate(&sel);
+                ui.label(format!(
+                    "Будет загружено: {} чанков, ~{:.1} млн треугольников
+Память: ~{:.1} ГБ RAM (пик), ~{:.1} ГБ видеопамяти",
+                    sel.len(), tris as f64 / 1e6, ram, vram
+                ));
+                if ram > 4.0 {
+                    ui.colored_label(Color32::from_rgb(255, 170, 60),
+                        "⚠ Много. Если оперативки мало, возьми радиус поменьше — экспорт в .alworld всё равно режет по чанкам, город можно собирать частями.");
+                }
+                ui.label("Текстуры (albedo, normal, roughness) подтянутся из .mtl автоматически.
+Во вьюпорте материал показывается средним цветом текстуры, в движке — сами текстуры.");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Импортировать").clicked() {
+                        start = true;
+                    }
+                    if ui.button("Отмена").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+    }
+    if cancel {
+        app.city_import_dialog = None;
+    } else if start {
+        app.start_city_import();
+    }
+}
+
+fn render_city_import_progress(ctx: &egui::Context, app: &mut EditorApp) {
+    let Some(p) = app.pending_city_import.as_ref() else { return };
+    let done = p.progress.load(std::sync::atomic::Ordering::Relaxed);
+    let total = p.total.max(1);
+    egui::Window::new("🏙 Загрузка города")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(format!("Чанки: {} / {}", done, total));
+            ui.add(egui::ProgressBar::new(done as f32 / total as f32).show_percentage());
+            if done >= total {
+                ui.label("Собираю объекты сцены...");
+            }
+        });
 }
 
 fn render_new_scene_dialog(ctx: &egui::Context, app: &mut EditorApp) {

@@ -15,6 +15,14 @@ pub struct Material {
     // пользователя). См. `TextureAsset` и её комментарий про то, как это
     // поле доходит до движка через `.altex`/`.almat`.
     pub albedo_texture: Option<TextureAsset>,
+    // ДОБАВЛЕНО (импорт города с полным набором PBR-карт): tangent-space
+    // normal map (DirectX-конвенция, +Y вниз по картинке — как её читает
+    // main_ps.hlsl движка через TBN из экспортированных тангентов) и
+    // упакованная metallic-roughness карта (R = metallic, G = roughness —
+    // тот же порядок каналов, что `MetallicRoughnessMap.rg` в движке).
+    // Вьюпорт эдитора их не рисует, они доходят до движка через экспорт.
+    pub normal_texture: Option<TextureAsset>,
+    pub metallic_roughness_texture: Option<TextureAsset>,
 }
 
 impl Default for Material {
@@ -26,6 +34,8 @@ impl Default for Material {
             roughness: 0.5,
             emissive: [0.0, 0.0, 0.0],
             albedo_texture: None,
+            normal_texture: None,
+            metallic_roughness_texture: None,
         }
     }
 }

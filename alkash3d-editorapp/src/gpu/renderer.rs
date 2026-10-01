@@ -963,13 +963,21 @@ impl GpuRenderer {
     /// пересоздании копируем старое содержимое в новый буфер через
     /// `copy_buffer_to_buffer` (для чего исходный буфер и создан с
     /// `COPY_SRC`), а не просто заменяем его пустым.
-    fn ensure_shared_vertex_capacity(&mut self, needed: u32) {
-        if needed <= self.shared_vertex_capacity {
-            return;
+    ///
+    /// Возвращает `false`, если `needed` вершин не влезает в
+    /// `max_buffer_size` устройства — тогда буфер НЕ трогается (раньше
+    /// `create_buffer` сверх лимита ронял весь эдитор ошибкой валидации
+    /// wgpu). Рост удвоением тоже упирается в этот предел, а не выходит за него.
+    fn ensure_shared_vertex_capacity(&mut self, needed: u64) -> bool {
+        if needed <= self.shared_vertex_capacity as u64 {
+            return true;
         }
-
-        let new_capacity = needed.max(self.shared_vertex_capacity.saturating_mul(2)).max(1024);
         let stride = std::mem::size_of::<Vertex3D>() as u64;
+        let max_elems = (self.device.limits().max_buffer_size / stride).min(u32::MAX as u64);
+        if needed > max_elems {
+            return false;
+        }
+        let new_capacity = needed.max(self.shared_vertex_capacity as u64 * 2).max(1024).min(max_elems) as u32;
 
         let new_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shared Vertex Buffer"),
@@ -988,17 +996,21 @@ impl GpuRenderer {
 
         self.shared_vertex_buffer = new_buffer;
         self.shared_vertex_capacity = new_capacity;
+        true
     }
 
     /// Индексный аналог `ensure_shared_vertex_capacity` выше — те же
     /// причины и тот же приём (`copy_buffer_to_buffer` вместо пустого
-    /// пересоздания).
-    fn ensure_shared_index_capacity(&mut self, needed: u32) {
-        if needed <= self.shared_index_capacity {
-            return;
+    /// пересоздания). Тот же контракт `false` = "не влезает в лимит устройства".
+    fn ensure_shared_index_capacity(&mut self, needed: u64) -> bool {
+        if needed <= self.shared_index_capacity as u64 {
+            return true;
         }
-
-        let new_capacity = needed.max(self.shared_index_capacity.saturating_mul(2)).max(1024);
+        let max_elems = (self.device.limits().max_buffer_size / 4).min(u32::MAX as u64);
+        if needed > max_elems {
+            return false;
+        }
+        let new_capacity = needed.max(self.shared_index_capacity as u64 * 2).max(1024).min(max_elems) as u32;
 
         let new_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shared Index Buffer"),
@@ -1017,6 +1029,7 @@ impl GpuRenderer {
 
         self.shared_index_buffer = new_buffer;
         self.shared_index_capacity = new_capacity;
+        true
     }
 
     /// Гарантирует, что `particle_vertex_buffer` вмещает `needed` частиц
@@ -1326,7 +1339,22 @@ impl GpuRenderer {
         self.egui_texture_id
     }
 
-    pub fn add_mesh(&mut self, mesh: &Mesh) -> usize {
+    /// `Err` с понятным текстом, если меш не влезает в общий GPU-буфер
+    /// (лимит `max_buffer_size` устройства) — объект тогда остаётся в сцене,
+    /// но не рисуется во вьюпорте, вместо краша всего эдитора.
+    pub fn add_mesh(&mut self, mesh: &Mesh) -> Result<usize, String> {
+        let stride = std::mem::size_of::<Vertex3D>() as u64;
+        let needed_v = self.shared_vertex_len as u64 + mesh.vertices.len() as u64;
+        let needed_i = self.shared_index_len as u64 + mesh.indices.len() as u64;
+        let limit = self.device.limits().max_buffer_size;
+        if !self.ensure_shared_vertex_capacity(needed_v) || !self.ensure_shared_index_capacity(needed_i) {
+            return Err(format!(
+                "не влезает в GPU-буфер вьюпорта: нужно {:.0} МиБ вершин / {:.0} МиБ индексов при лимите устройства {:.0} МиБ",
+                needed_v as f64 * stride as f64 / 1048576.0,
+                needed_i as f64 * 4.0 / 1048576.0,
+                limit as f64 / 1048576.0
+            ));
+        }
         let mut vertices = Vec::with_capacity(mesh.vertices.len());
 
         for i in 0..mesh.vertices.len() {
@@ -1347,13 +1375,11 @@ impl GpuRenderer {
         // вершин обеспечивает `base_vertex` в `draw_indexed` при рендере, а
         // не перезапись самих чисел индексов здесь.
         let vertex_offset = self.shared_vertex_len;
-        self.ensure_shared_vertex_capacity(self.shared_vertex_len + vertices.len() as u32);
         let vertex_stride = std::mem::size_of::<Vertex3D>() as u64;
         self.queue.write_buffer(&self.shared_vertex_buffer, vertex_offset as u64 * vertex_stride, bytemuck::cast_slice(&vertices));
         self.shared_vertex_len += vertices.len() as u32;
 
         let index_offset = self.shared_index_len;
-        self.ensure_shared_index_capacity(self.shared_index_len + mesh.indices.len() as u32);
         self.queue.write_buffer(&self.shared_index_buffer, index_offset as u64 * 4, bytemuck::cast_slice(&mesh.indices));
         self.shared_index_len += mesh.indices.len() as u32;
 
@@ -1366,7 +1392,7 @@ impl GpuRenderer {
             visible: true,
         });
 
-        idx
+        Ok(idx)
     }
 
     /// ДОБАВЛЕНО (редактор вершин — по прямому запросу пользователя):

@@ -32,21 +32,144 @@ use alkash3d_rs::altex_format::{
 /// `TextureAsset::load_from_file` — `image::DynamicImage::to_rgba8()`).
 const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
 
+/// Как `build_altex_with` пишет текстуры материала в файл.
+pub enum TextureStorage<'a> {
+    /// Встроить пиксели прямо в `.altex` — самодостаточный файл (экспорт
+    /// одного объекта, см. `export_mesh_to_altex`).
+    Embed,
+    /// Сослаться на общие файлы текстур (экспорт мира, см.
+    /// `SharedTextures`): иначе одна и та же картинка встраивалась бы в
+    /// КАЖДЫЙ кусок карты — у города это ~150 тыс. кусков по 4 МБ на текстуру.
+    Shared(&'a SharedTextures),
+}
+
+/// Общие текстуры экспортируемого мира: каждая уникальная `TextureAsset`
+/// (уникальность — по адресу общего `Arc` с пикселями: один материал на
+/// тысячах объектов делит один и тот же буфер) записана ОДИН раз отдельным
+/// `.altex` (текстура №0 файла), а куски мира ссылаются на него через
+/// `AltexFile::add_extern_texture`. Движок кэширует SRV по пути этого файла
+/// (`asset_loading.rs::load_altex_map_srv`), так что и в видеопамяти
+/// текстура одна на весь мир.
+pub struct SharedTextures {
+    paths: std::collections::HashMap<usize, String>,
+}
+
+impl SharedTextures {
+    fn key(tex: &TextureAsset) -> usize {
+        std::sync::Arc::as_ptr(&tex.pixels) as usize
+    }
+
+    pub fn write_all<'m>(dir: &std::path::Path, materials: impl Iterator<Item = &'m EditorMaterial>) -> Result<Self> {
+        let mut paths = std::collections::HashMap::new();
+        let mut used_names = std::collections::HashSet::new();
+        for mat in materials {
+            for (kind, tex) in [("albedo", &mat.albedo_texture), ("normal", &mat.normal_texture), ("mr", &mat.metallic_roughness_texture)] {
+                let Some(tex) = tex else { continue };
+                let key = Self::key(tex);
+                if paths.contains_key(&key) {
+                    continue;
+                }
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| anyhow!("Не удалось создать папку текстур '{}': {}", dir.display(), e))?;
+                let stem = tex
+                    .source_path
+                    .as_deref()
+                    .and_then(|p| std::path::Path::new(p).file_stem())
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("{}_{}", mat.name, kind));
+                let mut stem: String = stem.chars().map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+                while !used_names.insert(stem.clone()) {
+                    stem.push('_');
+                }
+                let file = dir.join(format!("{}.altex", stem));
+                let mut altex = AltexFile::new();
+                altex.add_texture(tex.width, tex.height, DXGI_FORMAT_R8G8B8A8_UNORM, &tex.pixels, &stem);
+                altex
+                    .save(file.to_string_lossy().as_ref())
+                    .map_err(|e| anyhow!("Не удалось сохранить текстуру '{}': {}", file.display(), e))?;
+                let abs = std::fs::canonicalize(&file).unwrap_or(file).to_string_lossy().into_owned();
+                paths.insert(key, abs);
+            }
+        }
+        Ok(Self { paths })
+    }
+
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+}
+
+/// Тангенты по UV (стандартное накопление по треугольникам) — нужны движку
+/// для normal mapping: `main_ps.hlsl` строит TBN из tangent и
+/// восстанавливает bitangent как `cross(N, T) * w`, где w — знак из
+/// экспортированного bitangent. Раньше писалась заглушка (1,0,0)/(0,1,0),
+/// с которой normal map давала бы неверное освещение.
+fn compute_tangents(mesh: &EditorMesh) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let n = mesh.vertices.len();
+    let mut tan = vec![[0.0f32; 3]; n];
+    let mut bit = vec![[0.0f32; 3]; n];
+    if mesh.uv.len() == n {
+        for tri in mesh.indices.chunks_exact(3) {
+            let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            if i0 >= n || i1 >= n || i2 >= n {
+                continue;
+            }
+            let (p0, p1, p2) = (mesh.vertices[i0], mesh.vertices[i1], mesh.vertices[i2]);
+            let (w0, w1, w2) = (mesh.uv[i0], mesh.uv[i1], mesh.uv[i2]);
+            let e1 = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
+            let e2 = [p2.x - p0.x, p2.y - p0.y, p2.z - p0.z];
+            let (du1, dv1, du2, dv2) = (w1[0] - w0[0], w1[1] - w0[1], w2[0] - w0[0], w2[1] - w0[1]);
+            let det = du1 * dv2 - du2 * dv1;
+            if det.abs() < 1e-12 {
+                continue;
+            }
+            let r = 1.0 / det;
+            let t = [(e1[0] * dv2 - e2[0] * dv1) * r, (e1[1] * dv2 - e2[1] * dv1) * r, (e1[2] * dv2 - e2[2] * dv1) * r];
+            let b = [(e2[0] * du1 - e1[0] * du2) * r, (e2[1] * du1 - e1[1] * du2) * r, (e2[2] * du1 - e1[2] * du2) * r];
+            for i in [i0, i1, i2] {
+                for k in 0..3 {
+                    tan[i][k] += t[k];
+                    bit[i][k] += b[k];
+                }
+            }
+        }
+    }
+    let mut out_t = Vec::with_capacity(n);
+    let mut out_b = Vec::with_capacity(n);
+    for i in 0..n {
+        let nv = mesh.normals.get(i).copied().unwrap_or(Vec3::UP);
+        let nn = [nv.x, nv.y, nv.z];
+        let t = tan[i];
+        let d = t[0] * nn[0] + t[1] * nn[1] + t[2] * nn[2];
+        let mut o = [t[0] - nn[0] * d, t[1] - nn[1] * d, t[2] - nn[2] * d];
+        let mut len = (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt();
+        if len < 1e-8 {
+            // нет UV-градиента — любой перпендикуляр к нормали
+            o = if nn[1].abs() < 0.99 { [nn[2], 0.0, -nn[0]] } else { [1.0, 0.0, 0.0] };
+            len = (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt().max(1e-8);
+        }
+        let o = [o[0] / len, o[1] / len, o[2] / len];
+        let c = [nn[1] * o[2] - nn[2] * o[1], nn[2] * o[0] - nn[0] * o[2], nn[0] * o[1] - nn[1] * o[0]];
+        let sign = if c[0] * bit[i][0] + c[1] * bit[i][1] + c[2] * bit[i][2] < 0.0 { -1.0 } else { 1.0 };
+        out_t.push(o);
+        out_b.push([c[0] * sign, c[1] * sign, c[2] * sign]);
+    }
+    (out_t, out_b)
+}
+
 /// Строит `AltexFile` из одного меша + материала эдитора — единственный
 /// объект в сцене файла, с единичной (identity) трансформацией: .altex сам
 /// по себе — формат геометрии ОДНОГО объекта/типового меша (см. комментарий
 /// у `alworld_format.rs::ChunkObjectHeader` — размещение в мире хранится
 /// отдельно, в .alwchunk, объект .altex ссылается только по пути).
-///
-/// ОБНОВЛЕНО (текстуры материалов — по прямому запросу пользователя):
-/// раньше UV писались нейтральной заглушкой `(0,0)` на каждую вершину
-/// (`crate::mesh::Mesh` тогда вообще не хранил UV) — теперь берутся из
-/// `mesh.uv` (см. `mesh/uv.rs`), реально посчитанного для каждого меша.
-/// Тангенты по-прежнему заглушка (оси X/Y) — полноценный расчёт тангентов
-/// по UV, как уже делает НЕиспользуемый `converters/obj.rs`, отдельная
-/// доработка, не относящаяся напрямую к "назначить текстуру объекту".
+/// Текстуры встраиваются (см. `build_altex_with` для экспорта мира).
 pub fn build_altex(mesh: &EditorMesh, material: &EditorMaterial, name: &str) -> AltexFile {
+    build_altex_with(mesh, material, name, &TextureStorage::Embed)
+}
+
+pub fn build_altex_with(mesh: &EditorMesh, material: &EditorMaterial, name: &str, storage: &TextureStorage) -> AltexFile {
     let mut altex = AltexFile::new();
+    let (tangents, bitangents) = compute_tangents(mesh);
 
     let vertices: Vec<AltexVertex> = (0..mesh.vertices.len())
         .map(|i| {
@@ -56,8 +179,8 @@ pub fn build_altex(mesh: &EditorMesh, material: &EditorMaterial, name: &str) -> 
             AltexVertex {
                 position: [p.x, p.y, p.z],
                 normal: [n.x, n.y, n.z],
-                tangent: [1.0, 0.0, 0.0],
-                bitangent: [0.0, 1.0, 0.0],
+                tangent: tangents[i],
+                bitangent: bitangents[i],
                 uv,
                 uv2: [0.0, 0.0],
                 color: [1.0, 1.0, 1.0, 1.0],
@@ -67,22 +190,21 @@ pub fn build_altex(mesh: &EditorMesh, material: &EditorMaterial, name: &str) -> 
 
     let mesh_id = altex.add_mesh(vertices, mesh.indices.clone(), name);
 
-    // ДОБАВЛЕНО (текстуры материалов): если материалу назначена картинка
-    // (см. `Material::albedo_texture`), встраиваем её сырые RGBA8-пиксели
-    // прямо в файл через `AltexFile::add_texture` — .altex самодостаточен
-    // (геометрия+материал+текстуры одним файлом, см. комментарий у
-    // `almat_format::MaterialDefinition` про разницу с .almat), поэтому
-    // текстура ВСТРАИВАЕТСЯ, а не сохраняется по ссылке на путь.
-    let albedo_map = match &material.albedo_texture {
-        Some(tex) => altex.add_texture(
-            tex.width,
-            tex.height,
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            &tex.pixels,
-            &format!("{}_albedo", material.name),
-        ),
-        None => 0xFFFF_FFFF,
+    // Встроенные пиксели (самодостаточный .altex) или ссылка на общий файл
+    // текстуры мира — см. `TextureStorage`.
+    let add_map = |altex: &mut AltexFile, tex: &Option<TextureAsset>, kind: &str| -> u32 {
+        let Some(tex) = tex else { return 0xFFFF_FFFF };
+        if let TextureStorage::Shared(shared) = storage {
+            if let Some(path) = shared.paths.get(&SharedTextures::key(tex)) {
+                return altex.add_extern_texture(tex.width, tex.height, DXGI_FORMAT_R8G8B8A8_UNORM, path);
+            }
+        }
+        altex.add_texture(tex.width, tex.height, DXGI_FORMAT_R8G8B8A8_UNORM, &tex.pixels, &format!("{}_{}", material.name, kind))
     };
+    let albedo_map = add_map(&mut altex, &material.albedo_texture, "albedo");
+    let normal_map = add_map(&mut altex, &material.normal_texture, "normal");
+    // движок ждёт ОДНУ упакованную карту: metallic_map == roughness_map
+    let mr_map = add_map(&mut altex, &material.metallic_roughness_texture, "mr");
 
     // ИСПРАВЛЕНО (metallic/roughness/emissive терялись при экспорте):
     // `AltexFile::add_material()` в движке — узкий хелпер, он хардкодит
@@ -102,9 +224,9 @@ pub fn build_altex(mesh: &EditorMesh, material: &EditorMaterial, name: &str) -> 
         ao: 1.0,
         emissive: material.emissive,
         albedo_map,
-        normal_map: 0xFFFF_FFFF,
-        metallic_map: 0xFFFF_FFFF,
-        roughness_map: 0xFFFF_FFFF,
+        normal_map,
+        metallic_map: mr_map,
+        roughness_map: mr_map,
         ao_map: 0xFFFF_FFFF,
         emissive_map: 0xFFFF_FFFF,
     });
@@ -135,8 +257,8 @@ pub fn export_mesh_to_altex(
         .map_err(|e| anyhow!("Не удалось сохранить .altex '{}': {}", path, e))
 }
 
-/// ДОБАВЛЕНО (текстуры материалов): распаковывает albedo-текстуру
-/// материала (если она есть, `albedo_map != 0xFFFFFFFF`) из общего пула
+/// ДОБАВЛЕНО (текстуры материалов): распаковывает текстуру материала
+/// (если она есть, индекс != 0xFFFFFFFF) из общего пула
 /// `AltexFile::texture_data` в `TextureAsset`. Границы `data_offset`/
 /// `data_size` проверяются явно (не просто индексируются с паникой при
 /// повреждённом файле) — та же осторожность, что уже применена к
@@ -144,23 +266,47 @@ pub fn export_mesh_to_altex(
 /// такой же ситуации. Ошибка здесь НЕ обрывает импорт всего файла — только
 /// пропускает текстуру (тот же принцип отказоустойчивости, что и у
 /// движка): испорченная текстура не должна ронять геометрию/материал.
-fn load_embedded_albedo(altex: &AltexFile, albedo_map: u32, path: &str) -> Option<TextureAsset> {
-    if albedo_map == 0xFFFF_FFFF {
+///
+/// Ссылки на общие текстуры мира (`extern:`, см. `SharedTextures`)
+/// читаются из своего файла один раз и дальше отдаются из кэша — все
+/// куски мира с этим материалом получают ОДИН `Arc` пикселей.
+fn load_embedded_map(altex: &AltexFile, map: u32, path: &str) -> Option<TextureAsset> {
+    use std::sync::{Mutex, OnceLock};
+    static EXTERN_CACHE: OnceLock<Mutex<std::collections::HashMap<String, Option<TextureAsset>>>> = OnceLock::new();
+
+    if map == 0xFFFF_FFFF {
         return None;
     }
-    let texture = altex.textures.get(albedo_map as usize)?;
+    if let Some(extern_path) = altex.extern_texture_path(map) {
+        let cache = EXTERN_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+        if let Some(hit) = cache.lock().unwrap().get(extern_path) {
+            return hit.clone();
+        }
+        let loaded = match AltexFile::load(extern_path) {
+            Ok(shared) if shared.extern_texture_path(0).is_none() => load_embedded_map(&shared, 0, extern_path)
+                .map(|t| TextureAsset { source_path: Some(extern_path.to_string()), ..t }),
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!("[ALTEX] WARNING: '{}' ссылается на текстуру '{}', которую не удалось прочитать: {}", path, extern_path, e);
+                None
+            }
+        };
+        cache.lock().unwrap().insert(extern_path.to_string(), loaded.clone());
+        return loaded;
+    }
+    let texture = altex.textures.get(map as usize)?;
     let start = texture.data_offset as usize;
     let end = start + texture.data_size as usize;
     let Some(pixels) = altex.texture_data.get(start..end) else {
         eprintln!(
-            "[ALTEX] WARNING: '{}' содержит albedo-текстуру с некорректными data_offset/data_size — пропущена",
+            "[ALTEX] WARNING: '{}' содержит текстуру с некорректными data_offset/data_size — пропущена",
             path
         );
         return None;
     };
     if pixels.len() != texture.width as usize * texture.height as usize * 4 {
         eprintln!(
-            "[ALTEX] WARNING: '{}' albedo-текстура {}x{} имеет {} байт вместо ожидаемых {} — пропущена",
+            "[ALTEX] WARNING: '{}' текстура {}x{} имеет {} байт вместо ожидаемых {} — пропущена",
             path, texture.width, texture.height, pixels.len(), texture.width as usize * texture.height as usize * 4
         );
         return None;
@@ -244,7 +390,13 @@ pub fn import_altex(path: &str) -> Result<Vec<(String, EditorMesh, EditorMateria
                     // текстуры нет файла на диске эдитора, она целиком
                     // пришла из байт `.altex` (см. комментарий у поля
                     // `TextureAsset::source_path`).
-                    albedo_texture: load_embedded_albedo(&altex, mat.albedo_map, path),
+                    albedo_texture: load_embedded_map(&altex, mat.albedo_map, path),
+                    normal_texture: load_embedded_map(&altex, mat.normal_map, path),
+                    metallic_roughness_texture: if mat.metallic_map == mat.roughness_map {
+                        load_embedded_map(&altex, mat.metallic_map, path)
+                    } else {
+                        None
+                    },
                 })
                 .unwrap_or_default()
         } else {
@@ -271,6 +423,8 @@ mod tests {
             roughness: 0.6,
             emissive: [0.0, 0.0, 0.0],
             albedo_texture: None,
+            normal_texture: None,
+            metallic_roughness_texture: None,
         };
 
         let path = std::env::temp_dir().join("alkash3d_editor_altex_roundtrip_test.altex");
@@ -318,6 +472,8 @@ mod tests {
             roughness: 0.8,
             emissive: [0.0, 0.0, 0.0],
             albedo_texture: Some(TextureAsset::from_rgba(2, 2, pixels.clone(), Some("C:/fake/brick.png".to_string()))),
+            normal_texture: None,
+            metallic_roughness_texture: None,
         };
 
         let path = std::env::temp_dir().join("alkash3d_editor_altex_texture_roundtrip_test.altex");

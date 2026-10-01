@@ -171,6 +171,8 @@ pub fn import_almat_to_materials(path: &str, log: &mut dyn FnMut(String)) -> Res
             roughness: def.roughness,
             emissive: def.emissive,
             albedo_texture,
+            normal_texture: None,
+            metallic_roughness_texture: None,
         });
     }
 
@@ -191,6 +193,8 @@ mod tests {
             roughness: 0.6,
             emissive: [0.0, 0.0, 0.0],
             albedo_texture: None,
+            normal_texture: None,
+            metallic_roughness_texture: None,
         });
         materials.insert("Neon Metal".to_string(), Material {
             name: "Neon Metal".to_string(),
@@ -199,6 +203,8 @@ mod tests {
             roughness: 0.1,
             emissive: [0.0, 0.5, 0.9],
             albedo_texture: None,
+            normal_texture: None,
+            metallic_roughness_texture: None,
         });
 
         let path = std::env::temp_dir().join("alkash3d_editor_almat_roundtrip_test.almat");
@@ -244,6 +250,8 @@ mod tests {
             roughness: 0.9,
             emissive: [0.0, 0.0, 0.0],
             albedo_texture: Some(texture),
+            normal_texture: None,
+            metallic_roughness_texture: None,
         });
 
         let almat_path = std::env::temp_dir().join("alkash3d_editor_almat_texture_roundtrip_test.almat");
@@ -277,6 +285,8 @@ mod tests {
             roughness: 0.5,
             emissive: [0.0, 0.0, 0.0],
             albedo_texture: Some(TextureAsset::from_rgba(1, 1, vec![255, 255, 255, 255], Some("C:/definitely/does/not/exist.png".to_string()))),
+            normal_texture: None,
+            metallic_roughness_texture: None,
         });
 
         let path = std::env::temp_dir().join("alkash3d_editor_almat_missing_texture_test.almat");

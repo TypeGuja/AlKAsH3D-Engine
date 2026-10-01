@@ -59,6 +59,13 @@ pub struct EditorApp {
     // использует для импорта моделей.
     pub pending_exports: Vec<PendingExport>,
     pub pending_world_imports: Vec<PendingWorldImport>,
+    // ДОБАВЛЕНО (импорт папки с городом — см. assets/city_import.rs и
+    // `open_city_import_dialog`): окно выбора радиуса и фоновая загрузка.
+    pub city_import_dialog: Option<CityImportDialog>,
+    pub pending_city_import: Option<PendingCityImport>,
+    /// Готовый свет импортированного города (`<город>/lights/*.alfar`) —
+    /// экспорт мира копирует его в папку мира (см. `export_scene_to_alworld_dialog`).
+    pub city_light_files: Vec<std::path::PathBuf>,
     pub gpu_renderer: Option<GpuRenderer>,
     pub gpu_mesh_map: HashMap<uuid::Uuid, usize>,
     pub gpu_material_map: HashMap<uuid::Uuid, usize>,
@@ -337,6 +344,23 @@ pub struct PendingWorldImport {
     pub receiver: mpsc::Receiver<(Vec<String>, Result<Scene, String>)>,
 }
 
+/// Окно настройки импорта города (после выбора папки, до загрузки).
+pub struct CityImportDialog {
+    pub info: crate::assets::city_import::CityInfo,
+    pub radius_km: f32,
+    pub whole_city: bool,
+}
+
+/// Фоновая загрузка города (см. `start_city_import`).
+pub struct PendingCityImport {
+    pub receiver: mpsc::Receiver<Result<crate::assets::city_import::CityImport, String>>,
+    pub log_rx: mpsc::Receiver<String>,
+    pub progress: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub total: usize,
+    pub probe: [f32; 2],
+    pub view_radius: f32,
+}
+
 #[derive(Debug)]
 pub struct ImportResult {
     pub mesh_names: Vec<String>,
@@ -420,6 +444,9 @@ impl EditorApp {
             import_progress: 0.0,
             pending_exports: Vec::new(),
             pending_world_imports: Vec::new(),
+            city_import_dialog: None,
+            pending_city_import: None,
+            city_light_files: Vec::new(),
             gpu_renderer: None,
             gpu_mesh_map: HashMap::new(),
             gpu_material_map: HashMap::new(),
@@ -578,6 +605,10 @@ impl EditorApp {
         let mut remaining = budget_bytes;
         let mut uploaded_count = 0usize;
         let mut messages: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        // при тысячах объектов (импорт города) построчный лог каждой загрузки
+        // только тормозит консоль — пишем по объекту, лишь пока очередь короткая
+        let verbose = self.upload_queue.len() <= 64;
 
         // получаем mutable borrow единственный раз, но НЕ вызываем self.log() внутри
         if let Some(renderer) = self.gpu_renderer.as_mut() {
@@ -589,19 +620,30 @@ impl EditorApp {
                     let task = self.upload_queue.pop_front().unwrap();
                     remaining = remaining.saturating_sub(task.estimated_bytes);
 
-                    let mesh_idx = renderer.add_mesh(&task.mesh);
+                    let mesh_idx = match renderer.add_mesh(&task.mesh) {
+                        Ok(idx) => idx,
+                        Err(e) => {
+                            failed.push(format!("'{}' не показан во вьюпорте: {}", task.name, e));
+                            continue;
+                        }
+                    };
                     let mat_idx = renderer.add_material(task.material.color, task.material.metallic, task.material.roughness);
                     self.gpu_mesh_map.insert(task.id, mesh_idx);
                     self.gpu_material_map.insert(task.id, mat_idx);
 
                     uploaded_count += 1;
-                    messages.push(format!("Uploaded '{}' -> mesh_idx={}, mat_idx={}", task.name, mesh_idx, mat_idx));
+                    if verbose {
+                        messages.push(format!("Uploaded '{}' -> mesh_idx={}, mat_idx={}", task.name, mesh_idx, mat_idx));
+                    }
                 } else {
                     break;
                 }
             }
         }
 
+        for f in failed {
+            self.log(&format!("❌ {}", f), Color32::RED);
+        }
         if uploaded_count > 0 {
             for m in messages {
                 // теперь безопасно логируем — borrow renderer уже отпущен
@@ -791,8 +833,9 @@ impl EditorApp {
                 Ok(names) => {
                     let mut meshes = Vec::new();
                     for name in &names {
-                        if let Some(m) = lib.get_mesh(name) {
-                            meshes.push((name.clone(), m.clone()));
+                        // забираем меш из временной библиотеки, а не клонируем
+                        if let Some(m) = lib.meshes.remove(name) {
+                            meshes.push((name.clone(), m));
                         }
                     }
                     let _ = tx.send(Ok(ImportResult {
@@ -851,12 +894,18 @@ impl EditorApp {
 
                         total_tris += tris;
 
-                        self.asset_library.meshes.insert(name.clone(), mesh.clone());
+                        // копия для библиотеки ассетов — только у мешей разумного
+                        // размера: у многомиллионных (целый город одним .obj)
+                        // лишняя копия в RAM стоила бы гигабайты
+                        if verts <= 2_000_000 {
+                            self.asset_library.meshes.insert(name.clone(), mesh.clone());
+                        }
+                        let upload_mesh = mesh.clone();
 
                         let mut obj = GameObject::new(
                             &name,
                             ObjectType::Mesh(MeshComponent {
-                                mesh: mesh.clone(),
+                                mesh,
                                 material: Material {
                                     name: format!("{}_mat", name),
                                     color: [0.7, 0.7, 0.7, 1.0],
@@ -876,11 +925,11 @@ impl EditorApp {
                         self.scene.add_object(obj);
 
                         // Оценка байтов: 36 bytes per vertex (pos+normal+color) + 4 bytes per index
-                        let bytes_est = verts * 36 + mesh.indices.len() * 4;
+                        let bytes_est = verts * 36 + upload_mesh.indices.len() * 4;
                         let task = UploadTask {
                             id,
                             name: name.clone(),
-                            mesh: mesh.clone(),
+                            mesh: upload_mesh,
                             material: Material {
                                 name: format!("{}_mat", name),
                                 color: [0.7, 0.7, 0.7, 1.0],
@@ -1183,6 +1232,182 @@ impl EditorApp {
         self.spawn_object("Spawn Point", ObjectType::SpawnPoint)
     }
 
+    /// File > Import City Folder: выбрать папку с картой (manifest.json +
+    /// chunks/*.obj + .mtl + textures/, как у tools/samara_map) — дальше
+    /// окно `CityImportDialog` с радиусом и оценкой памяти.
+    pub fn open_city_import_dialog(&mut self) {
+        let Some(dir) = rfd::FileDialog::new().set_title("Папка с городом (manifest.json, chunks/, *.mtl, textures/)").pick_folder() else { return; };
+        match crate::assets::city_import::CityInfo::open(&dir) {
+            Ok(info) => {
+                self.log(&format!("🏙 {}: {} чанков в '{}'", info.name, info.chunks.len(), dir.display()), Color32::LIGHT_BLUE);
+                self.city_import_dialog = Some(CityImportDialog { info, radius_km: 2.0, whole_city: false });
+            }
+            Err(e) => self.log(&format!("❌ Не похоже на папку с городом: {}", e), Color32::RED),
+        }
+    }
+
+    pub fn start_city_import(&mut self) {
+        let Some(dialog) = self.city_import_dialog.take() else { return; };
+        let probe = [0.0f32, 0.0];
+        let radius = if dialog.whole_city { None } else { Some(dialog.radius_km * 1000.0) };
+        let chunks = dialog.info.select(probe, radius);
+        if chunks.is_empty() {
+            self.log("⚠️ В выбранный радиус не попал ни один чанк", Color32::YELLOW);
+            return;
+        }
+        let (tris, ram_gb, _) = crate::assets::city_import::CityInfo::estimate(&chunks);
+        self.log(&format!("📥 Импорт города: {} чанков, ~{:.1} млн треугольников, ~{:.1} ГБ RAM...", chunks.len(), tris as f64 / 1e6, ram_gb), Color32::YELLOW);
+
+        let (tx, rx) = mpsc::channel();
+        let (log_tx, log_rx) = mpsc::channel::<String>();
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let progress_thread = progress.clone();
+        let total = chunks.len();
+        let info = dialog.info;
+        std::thread::spawn(move || {
+            let log_tx = std::sync::Mutex::new(log_tx);
+            let log = move |m: String| {
+                let _ = log_tx.lock().unwrap().send(m);
+            };
+            let result = crate::assets::city_import::import_city(&info, &chunks, probe, &progress_thread, &log)
+                .map_err(|e| format!("{:#}", e));
+            let _ = tx.send(result);
+        });
+        let view_radius = radius.unwrap_or(6000.0).max(300.0);
+        self.pending_city_import = Some(PendingCityImport { receiver: rx, log_rx, progress, total, probe, view_radius });
+    }
+
+    fn check_pending_city_import(&mut self) {
+        let Some(pending) = &self.pending_city_import else { return; };
+        let logs: Vec<String> = pending.log_rx.try_iter().collect();
+        for m in logs {
+            self.log(&m, Color32::LIGHT_BLUE);
+        }
+        let Some(pending) = &self.pending_city_import else { return; };
+        let result = match pending.receiver.try_recv() {
+            Ok(r) => r,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err("поток импорта завершился без результата".to_string()),
+        };
+        let pending = self.pending_city_import.take().unwrap();
+        match result {
+            Ok(city) => self.finish_city_import(city, pending.probe, pending.view_radius),
+            Err(e) => self.log(&format!("❌ Импорт города: {}", e), Color32::RED),
+        }
+    }
+
+    fn finish_city_import(&mut self, city: crate::assets::city_import::CityImport, probe: [f32; 2], view_radius: f32) {
+        let root = GameObject::new(&format!("🏙 {}", city.name), ObjectType::Empty);
+        let root_id = root.id;
+        self.scene.add_object(root);
+        let mut objects = 0usize;
+        let mut bytes = 0usize;
+        for group in city.groups {
+            let g_obj = GameObject::new(&format!("Квартал {},{} ({} км)", group.gx, group.gz,
+                crate::assets::city_import::CHUNKS_PER_GROUP as f32 * 0.256), ObjectType::Empty);
+            let g_id = g_obj.id;
+            self.scene.add_object(g_obj);
+            let _ = self.scene.set_parent(g_id, Some(root_id));
+            for (mat_name, mesh) in group.parts {
+                let material = city
+                    .materials
+                    .get(&mat_name)
+                    .cloned()
+                    .unwrap_or_else(|| Material { name: mat_name.clone(), ..Default::default() });
+                let name = format!("{} [{},{}]", mat_name, group.gx, group.gz);
+                let estimated_bytes = (mesh.vertices.len() * 36 + mesh.indices.len() * 4).max(1024);
+                let upload_mesh = mesh.clone();
+                let obj = GameObject::new(&name, ObjectType::Mesh(MeshComponent {
+                    mesh,
+                    material: material.clone(),
+                    visible: true,
+                    wireframe: false,
+                    solid: true,
+                    double_sided: false,
+                }));
+                let id = obj.id;
+                self.scene.add_object(obj);
+                let _ = self.scene.set_parent(id, Some(g_id));
+                self.upload_queue.push_back(UploadTask { id, name, mesh: upload_mesh, material, estimated_bytes });
+                objects += 1;
+                bytes += estimated_bytes;
+            }
+        }
+
+        let ground = city.ground_y.unwrap_or((city.bounds.0.y + city.bounds.1.y) * 0.5);
+        for f in std::fs::read_dir(city.dir.join("lights")).into_iter().flatten().filter_map(|e| e.ok().map(|e| e.path())) {
+            if f.extension().map_or(false, |x| x.eq_ignore_ascii_case("alfar")) && !self.city_light_files.contains(&f) {
+                self.city_light_files.push(f);
+            }
+        }
+        if !self.city_light_files.is_empty() {
+            self.log(&format!("💡 Свет города: {} .alfar — попадёт в папку мира при экспорте", self.city_light_files.len()), Color32::LIGHT_BLUE);
+        }
+        let has_spawn = self.scene.objects.values().any(|o| matches!(o.object_type, ObjectType::SpawnPoint));
+        if !has_spawn {
+            let mut spawn = GameObject::new("Spawn Point (центр карты)", ObjectType::SpawnPoint);
+            spawn.transform.position = Vec3::new(probe[0], ground + 1.8, probe[1]);
+            let spawn_id = spawn.id;
+            self.scene.add_object(spawn);
+            let _ = self.scene.set_parent(spawn_id, Some(root_id));
+        }
+
+        // камера — на центр карты сверху-сбоку: вершины города в мировых
+        // координатах (земля на десятках метров над нулём сетки эдитора),
+        // без этого после импорта во вьюпорте "пусто"
+        self.camera_target = Vec3::new(probe[0], ground, probe[1]);
+        self.camera_position = self.camera_target + Vec3::new(0.0, view_radius * 0.55, view_radius * 0.75);
+        self.scene.selected_ids.clear();
+        self.scene.select(root_id, false);
+
+        self.log(
+            &format!(
+                "✅ Город '{}': {:.1} млн треугольников, {} объектов (кварталы x материалы), {} материалов с текстурами.                  Загрузка на GPU ~{} МБ идёт в фоне. Сохранение: File > Export > Scene to .alworld",
+                city.name, city.triangles as f64 / 1e6, objects, city.materials.len(), bytes / 1_000_000
+            ),
+            Color32::GREEN,
+        );
+    }
+
+    /// Клавиша F: камера на выделенные объекты (вместе с дочерними — у
+    /// импортированного города выделяется корень/квартал, а меши — дети).
+    pub fn focus_on_selection(&mut self) {
+        let mut stack: Vec<Uuid> = self.scene.selected_ids.clone();
+        let mut min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+        let mut any = false;
+        let mut visited = std::collections::HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            stack.extend(self.scene.children_of(Some(id)));
+            let Some(obj) = self.scene.get_object(id) else { continue };
+            let t = self.scene.get_world_transform(id);
+            let (lo, hi) = match &obj.object_type {
+                ObjectType::Mesh(m) if !m.mesh.vertices.is_empty() => (
+                    t.position + Vec3::new(m.mesh.bounds.0.x * t.scale.x, m.mesh.bounds.0.y * t.scale.y, m.mesh.bounds.0.z * t.scale.z),
+                    t.position + Vec3::new(m.mesh.bounds.1.x * t.scale.x, m.mesh.bounds.1.y * t.scale.y, m.mesh.bounds.1.z * t.scale.z),
+                ),
+                _ => (t.position - Vec3::new(1.0, 1.0, 1.0), t.position + Vec3::new(1.0, 1.0, 1.0)),
+            };
+            min = min.min(lo.min(hi));
+            max = max.max(lo.max(hi));
+            any = true;
+        }
+        if !any {
+            return;
+        }
+        let center = (min + max) * 0.5;
+        let extent = (max - min).length().max(2.0);
+        let dir = {
+            let d = self.camera_position - self.camera_target;
+            if d.length() > 1e-3 { d.normalize() } else { Vec3::new(0.0, 0.6, 0.8).normalize() }
+        };
+        self.camera_target = center;
+        self.camera_position = center + dir * (extent * 0.9);
+    }
+
     /// Заменяет всю сцену (используется импортом .alworld — "Open World",
     /// а не "Import", целиком меняет содержимое редактора) и переставляет
     /// все её меш-объекты в очередь GPU-загрузки. Старые GPU-буферы
@@ -1297,10 +1522,37 @@ impl EditorApp {
         let dir_str = dir.to_string_lossy().to_string();
 
         let scene_clone = self.scene.clone();
+        let city_lights = self.city_light_files.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
+            // ДОБАВЛЕНО (по прямому запросу пользователя: "сделай чтобы он
+            // читал все нужные файлы для карты"): одна папка = вся карта.
+            // Кроме мира туда же кладётся свет — готовый свет импортированного
+            // города (lights/) и свет, расставленный в сцене (scene_lights.alfar),
+            // main_test подхватывает все .alfar из папки сам.
             let result = crate::converters::alworld::export_scene_to_alworld(&scene_clone, &dir_str)
-                .map_err(|e| e.to_string());
+                .map_err(|e| e.to_string())
+                .and_then(|world_path| {
+                    let dir = std::path::Path::new(&dir_str);
+                    let mut extra = Vec::new();
+                    let has_scene_lights = scene_clone.objects.values().any(|o| matches!(o.object_type, ObjectType::Light(_)));
+                    if has_scene_lights {
+                        let p = dir.join("scene_lights.alfar");
+                        crate::converters::alfar::export_scene_to_alfar_file(&scene_clone, &p.to_string_lossy())
+                            .map_err(|e| format!("свет сцены: {}", e))?;
+                        extra.push("scene_lights.alfar".to_string());
+                    }
+                    if !city_lights.is_empty() {
+                        let lights_dir = dir.join("lights");
+                        std::fs::create_dir_all(&lights_dir).map_err(|e| format!("папка lights: {}", e))?;
+                        for src in &city_lights {
+                            let name = src.file_name().unwrap_or_default();
+                            std::fs::copy(src, lights_dir.join(name)).map_err(|e| format!("копия {}: {}", src.display(), e))?;
+                            extra.push(format!("lights/{}", name.to_string_lossy()));
+                        }
+                    }
+                    Ok(if extra.is_empty() { world_path } else { format!("{} + свет: {}", world_path, extra.join(", ")) })
+                });
             let _ = tx.send(result);
         });
         self.pending_exports.push(PendingExport { receiver: rx });
@@ -2663,8 +2915,9 @@ impl EditorApp {
         let ObjectType::Mesh(m) = &obj.object_type else { return; };
         if let Some(renderer) = self.gpu_renderer.as_mut() {
             if !renderer.update_mesh_vertices(mesh_idx, &m.mesh) {
-                let new_idx = renderer.add_mesh(&m.mesh);
-                self.gpu_mesh_map.insert(id, new_idx);
+                if let Ok(new_idx) = renderer.add_mesh(&m.mesh) {
+                    self.gpu_mesh_map.insert(id, new_idx);
+                }
             }
         }
     }
@@ -2677,8 +2930,9 @@ impl EditorApp {
         let Some(obj) = self.scene.get_object(id) else { return; };
         let ObjectType::Mesh(m) = &obj.object_type else { return; };
         if let Some(renderer) = self.gpu_renderer.as_mut() {
-            let new_idx = renderer.add_mesh(&m.mesh);
-            self.gpu_mesh_map.insert(id, new_idx);
+            if let Ok(new_idx) = renderer.add_mesh(&m.mesh) {
+                self.gpu_mesh_map.insert(id, new_idx);
+            }
         }
     }
 
@@ -3255,6 +3509,7 @@ impl eframe::App for EditorApp {
         self.check_pending_imports();
         self.check_pending_exports();
         self.check_pending_world_imports();
+        self.check_pending_city_import();
         // ИСПРАВЛЕНО (по прямому запросу пользователя: "так у него всё равно
         // в 1 кадр рендер" — уже ПОСЛЕ того, как экспорт стал фоновой
         // задачей): вынести тяжёлую работу в отдельный поток было
@@ -3270,8 +3525,12 @@ impl eframe::App for EditorApp {
         // перерисовку на следующий кадр — тогда лог/статус реально обновятся
         // сразу, как только фоновый поток пришлёт результат, а не только
         // после случайного шевеления мышью.
-        if !self.pending_imports.is_empty() || !self.pending_exports.is_empty() || !self.pending_world_imports.is_empty() {
+        if !self.pending_imports.is_empty() || !self.pending_exports.is_empty() || !self.pending_world_imports.is_empty()
+            || self.pending_city_import.is_some() || !self.upload_queue.is_empty() {
             ctx.request_repaint();
+        }
+        if ctx.input(|i| i.key_pressed(Key::F)) && !ctx.wants_keyboard_input() && !self.scene.selected_ids.is_empty() {
+            self.focus_on_selection();
         }
         self.scene.update(0.016);
 

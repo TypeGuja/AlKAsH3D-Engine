@@ -22,7 +22,7 @@ use crate::scene::{GameObject, MeshComponent, ObjectType, Scene};
 
 use alkash3d_rs::{AlworldFile, ChunkContent, ChunkDescriptor, GlobalObject};
 
-use super::altex::build_altex;
+use super::altex::{build_altex_with, SharedTextures, TextureStorage};
 
 /// ДОБАВЛЕНО (точка спавна игрока): движок сейчас `AlworldFile::
 /// global_objects` не читает вообще (см. поиск по engine/*.rs в сессии) —
@@ -398,6 +398,13 @@ pub fn export_scene_to_alworld(scene: &Scene, dir: &str) -> Result<String> {
     // задача (матрицы/шейдеры), а последовательная логика + файловый I/O
     // (HashMap, форматирование строк, syscalls), GPU для такой работы не
     // предназначен и ничего бы не ускорил.
+    // Каждая уникальная текстура пишется ОДИН раз в `textures/` рядом с
+    // миром, куски ссылаются на неё (см. `SharedTextures`) — раньше картинка
+    // встраивалась в каждый .altex, и у большой карты это давало сотни ГБ.
+    let shared_textures = SharedTextures::write_all(&dir.join("textures"), pending.iter().map(|(_, m)| m))?;
+    let storage = TextureStorage::Shared(&shared_textures);
+    let storage = &storage;
+
     let worker_count = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).max(1);
     let batch_size = pending.len().div_ceil(worker_count).max(1);
 
@@ -410,7 +417,7 @@ pub fn export_scene_to_alworld(scene: &Scene, dir: &str) -> Result<String> {
                     let mut local_used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
                     let mut out = Vec::with_capacity(batch.len());
                     for (piece, material) in batch {
-                        let altex = build_altex(&piece.mesh, material, &piece.obj_name);
+                        let altex = build_altex_with(&piece.mesh, material, &piece.obj_name, storage);
 
                         let mut file_stem = format!("{}_{}_{}_{}", sanitize_filename(&piece.obj_name), &piece.short_id[..8], piece.gx, piece.gz);
                         while !local_used_names.insert(file_stem.clone()) {

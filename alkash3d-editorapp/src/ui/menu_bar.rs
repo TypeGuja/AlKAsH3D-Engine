@@ -12,6 +12,10 @@ pub fn render_menu_bar(ctx: &egui::Context, app: &mut crate::EditorApp) {
                     app.show_import_dialog = true;
                     ui.close_menu();
                 }
+                if ui.button("🏙 Import City Folder (OBJ chunks + textures)...").clicked() {
+                    app.open_city_import_dialog();
+                    ui.close_menu();
+                }
 
                 ui.separator();
                 ui.menu_button("Export", |ui| {

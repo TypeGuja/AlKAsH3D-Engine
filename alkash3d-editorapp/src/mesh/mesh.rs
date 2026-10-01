@@ -20,17 +20,18 @@ pub struct Mesh {
 
 impl Mesh {
     pub fn new(vertices: Vec<Vec3>, indices: Vec<u32>) -> Self {
+        let normals = vec![Vec3::ZERO; vertices.len()];
         let mut mesh = Self {
-            vertices: vertices.clone(),
-            indices: indices.clone(),
-            normals: vec![Vec3::ZERO; vertices.len()],
+            vertices,
+            indices,
+            normals,
             uv: Vec::new(),
             bounds: (Vec3::ZERO, Vec3::ZERO),
         };
 
         let mut min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
         let mut max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
-        for v in &vertices {
+        for v in &mesh.vertices {
             min = min.min(*v);
             max = max.max(*v);
         }
