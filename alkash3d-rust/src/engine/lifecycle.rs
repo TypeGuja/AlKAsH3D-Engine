@@ -144,6 +144,16 @@ impl AlkashEngine {
             shadow_maps_are_srv: [false; NUM_CASCADES],
             shadow_constant_buffer: None,
             shadow_constant_buffer_capacity: 0,
+            spot_shadow_atlas: None,
+            spot_shadow_dsv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+            spot_shadow_atlas_is_srv: false,
+            point_shadow_atlas: None,
+            point_shadow_dsv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
+            point_shadow_atlas_is_srv: false,
+            spot_shadow_pipeline_state: None,
+            spot_shadow_matrices_buffer: None,
+            spot_shadow_constant_buffer: None,
+            spot_shadow_constant_buffer_capacity: 0,
 
             time_of_day: 12.0,
             day_night_speed: 0.0,
@@ -507,6 +517,11 @@ impl AlkashEngine {
         for slot in self.shadow_maps.iter_mut() {
             *slot = None;
         }
+        self.spot_shadow_atlas = None;
+        self.point_shadow_atlas = None;
+        self.spot_shadow_pipeline_state = None;
+        self.spot_shadow_matrices_buffer = None;
+        self.spot_shadow_constant_buffer = None;
         self.shadow_dsv_heap = None;
         self.shadow_srv_heap = None;
         self.shadow_vs = None;

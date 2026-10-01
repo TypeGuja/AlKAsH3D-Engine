@@ -181,6 +181,13 @@ impl RenderTexture {
     /// кадре, включая первый, без отдельной ветки "это первый кадр,
     /// состояние другое".
     pub fn create_hdr_target(width: u32, height: u32, sample_count: u32, initial_state: D3D12_RESOURCE_STATES) -> Result<Self> {
+        Self::create_hdr_target_with_clear(width, height, sample_count, initial_state, [0.05, 0.05, 0.1, 1.0])
+    }
+
+    /// ДОБАВЛЕНО (честный SSAO): то же, что `create_hdr_target`, но с явным
+    /// optimized clear value — ambient-таргет очищается в НОЛЬ (нет
+    /// геометрии = нет ambient-вклада), а не в цвет неба.
+    pub fn create_hdr_target_with_clear(width: u32, height: u32, sample_count: u32, initial_state: D3D12_RESOURCE_STATES, clear_color: [f32; 4]) -> Result<Self> {
         println!("[RENDERER] Creating HDR render target: {}x{} ({}x MSAA)", width, height, sample_count);
 
         let device = crate::get_device()?;
@@ -224,7 +231,7 @@ impl RenderTexture {
         // некритичный perf-warning, а не рассинхронизация с самого старта.
         let clear_value = D3D12_CLEAR_VALUE {
             Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
-            Anonymous: D3D12_CLEAR_VALUE_0 { Color: [0.05, 0.05, 0.1, 1.0] },
+            Anonymous: D3D12_CLEAR_VALUE_0 { Color: clear_color },
         };
 
         unsafe {
@@ -520,7 +527,26 @@ pub struct Renderer {
     /// SRV (`hdr_srv_gpu` выше) и читают bloom/volumetric/tonemap, как
     /// раньше читали `hdr_target` напрямую.
     pub hdr_resolved: RenderTexture,
+    /// ДОБАВЛЕНО (честный SSAO): второй render target основного прохода
+    /// (SV_Target1) — ТОЛЬКО ambient-вклад пикселя (рассеянный свет неба +
+    /// отражение окружения), без прямого света солнца/фонарей. Composite
+    /// вычитает из HDR затенённую часть ambient: `hdr - ambient*(1-AO)`.
+    /// Раньше AO умножался на весь цвет — SSAO затемнял и прямой солнечный
+    /// свет, хотя физически окклюзия окружения касается только рассеянного
+    /// освещения. Тот же формат/MSAA, что и hdr_target (обязательно: все RT
+    /// одного прохода должны иметь одинаковый sample count). RTV лежит в
+    /// hdr_rtv_heap СРАЗУ за hdr_rtv (слот 1) — оба биндятся одним вызовом
+    /// OMSetRenderTargets(2, hdr_rtv, RTsSingleHandleToDescriptorRange=true).
+    pub ambient_target: RenderTexture,
+    pub ambient_rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    /// Одноимпловая копия (resolve), SRV в srv_uav_heap слот AMBIENT_SRV_SLOT.
+    pub ambient_resolved: RenderTexture,
 }
+
+/// ДОБАВЛЕНО (честный SSAO): слот SRV `ambient_resolved` в `srv_uav_heap`
+/// (0 = HDR, 1 = bloom, 2 = volumetric, 3 = SSAO — см. таблицу t0..t4
+/// тонмапа в engine/pipeline_post.rs).
+pub const AMBIENT_SRV_SLOT: u32 = 4;
 
 impl Renderer {
     /// `msaa_samples` — ДОБАВЛЕНО (runtime-переключаемый MSAA, по прямому
@@ -610,7 +636,7 @@ impl Renderer {
         // этой фазы).
         println!("[RENDERER] Creating HDR target...");
         let hdr_target = RenderTexture::create_hdr_target(width, height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
-        let hdr_rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(1)?;
+        let hdr_rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(2)?;
         let hdr_rtv = crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 0, rtv_size);
         unsafe {
             // `None` desc — рантайм выводит вид из resource_desc самого
@@ -622,6 +648,14 @@ impl Renderer {
             device.CreateRenderTargetView(&hdr_target.resource, None, hdr_rtv);
         }
 
+        // ДОБАВЛЕНО (честный SSAO): ambient-таргет — см. поле `ambient_target`.
+        let ambient_target = RenderTexture::create_hdr_target_with_clear(width, height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET, [0.0; 4])?;
+        let ambient_rtv = crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 1, rtv_size);
+        unsafe {
+            device.CreateRenderTargetView(&ambient_target.resource, None, ambient_rtv);
+        }
+        let ambient_resolved = RenderTexture::create_hdr_target(width, height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
+
         // ДОБАВЛЕНО (максимальная графика — MSAA): одноимпловая копия
         // `hdr_target` — см. подробное обоснование у поля
         // `Renderer::hdr_resolved`. Создаётся сразу в состоянии
@@ -630,7 +664,7 @@ impl Renderer {
         // одним и тем же переходом.
         let hdr_resolved = RenderTexture::create_hdr_target(width, height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
 
-        let srv_uav_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(4)?;
+        let srv_uav_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(AMBIENT_SRV_SLOT + 1)?;
         let cbv_srv_uav_size = {
             let state = STATE.lock().unwrap();
             state.cbv_srv_uav_descriptor_size
@@ -641,6 +675,8 @@ impl Renderer {
         // обычный Texture2D — то, что и ожидают bloom/tonemap-шейдеры), а
         // не на многосэмпловый `hdr_target` напрямую.
         hdr_resolved.create_srv(hdr_srv_cpu)?;
+        let ambient_srv_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&srv_uav_heap, AMBIENT_SRV_SLOT, cbv_srv_uav_size);
+        ambient_resolved.create_srv(ambient_srv_cpu)?;
         println!("[RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created");
 
         // ВАЖНО: дескрипторный хип (`hdr_rtv_heap`) должен пережить весь
@@ -668,6 +704,9 @@ impl Renderer {
             srv_uav_heap,
             hdr_srv_gpu,
             hdr_resolved,
+            ambient_target,
+            ambient_rtv,
+            ambient_resolved,
         })
     }
 }

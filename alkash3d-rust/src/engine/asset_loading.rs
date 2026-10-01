@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use windows::core::*;
 use windows::Win32::Foundation::*;
-use super::{AlkashEngine, Vertex, Mesh, NUM_CASCADES};
+use super::{AlkashEngine, Vertex, Mesh, NUM_CASCADES, SHADOW_TABLE_SLOTS, SPOT_SHADOW_ATLAS_SLOT, POINT_SHADOW_ATLAS_SLOT};
 use crate::STATE;
 
 impl AlkashEngine {
@@ -293,7 +293,7 @@ impl AlkashEngine {
         };
 
         let new_material_capacity = needed.max(16).next_power_of_two();
-        let total_slots = NUM_CASCADES as u32 + new_material_capacity;
+        let total_slots = SHADOW_TABLE_SLOTS as u32 + new_material_capacity;
         let heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(total_slots)?;
 
         let cbv_srv_uav_size = {
@@ -312,9 +312,22 @@ impl AlkashEngine {
                 }
             }
         }
+        // ДОБАВЛЕНО (тени фонарей): SRV spot-атласа тоже живёт в этом хипе.
+        if let Some(atlas) = &self.spot_shadow_atlas {
+            let cpu_handle = crate::heap::DescriptorHeap::get_cpu_handle(&heap, SPOT_SHADOW_ATLAS_SLOT as u32, cbv_srv_uav_size);
+            if let Err(e) = atlas.create_shadow_srv(cpu_handle) {
+                eprintln!("[ENGINE] WARNING: не удалось повторно создать SRV spot-атласа при росте shadow_srv_heap: {:?}", e);
+            }
+        }
+        if let Some(atlas) = &self.point_shadow_atlas {
+            let cpu_handle = crate::heap::DescriptorHeap::get_cpu_handle(&heap, POINT_SHADOW_ATLAS_SLOT as u32, cbv_srv_uav_size);
+            if let Err(e) = atlas.create_shadow_srv(cpu_handle) {
+                eprintln!("[ENGINE] WARNING: не удалось повторно создать SRV point-атласа при росте shadow_srv_heap: {:?}", e);
+            }
+        }
 
         for (index, texture) in self.material_textures.iter().enumerate() {
-            let slot = NUM_CASCADES as u32 + index as u32;
+            let slot = SHADOW_TABLE_SLOTS as u32 + index as u32;
             let cpu_handle = crate::heap::DescriptorHeap::get_cpu_handle(&heap, slot, cbv_srv_uav_size);
             if let Err(e) = texture.create_srv(cpu_handle) {
                 eprintln!(
@@ -358,7 +371,7 @@ impl AlkashEngine {
             let state = STATE.lock().unwrap();
             state.cbv_srv_uav_descriptor_size
         };
-        let slot = NUM_CASCADES as u32 + local_index;
+        let slot = SHADOW_TABLE_SLOTS as u32 + local_index;
         let heap = self.shadow_srv_heap.as_ref().unwrap();
         let cpu_handle = crate::heap::DescriptorHeap::get_cpu_handle(heap, slot, cbv_srv_uav_size);
         texture.create_srv(cpu_handle)?;
@@ -462,6 +475,31 @@ impl AlkashEngine {
     /// `&mut self` (для `self.load_or_get_texture_srv` внутри) не
     /// конфликтует с borrow checker'ом.
     fn load_altex_map_srv(&mut self, altex: &crate::altex_format::AltexFile, altex_path: &str, map_index: u32, map_kind: &str) -> Option<u32> {
+        // Ссылка на общую текстуру (см. `AltexFile::add_extern_texture`) —
+        // кэш по пути ВНЕШНЕГО файла, поэтому тысячи кусков мира с одним
+        // материалом делят один SRV, а файл текстуры читается один раз.
+        if let Some(extern_path) = altex.extern_texture_path(map_index) {
+            let extern_path = extern_path.to_string();
+            let cache_key = format!("{}#0", extern_path);
+            if let Some(&index) = self.texture_cache.get(&cache_key) {
+                return Some(index);
+            }
+            let shared = match crate::altex_format::AltexFile::load(&extern_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!(
+                        "[ENGINE] WARNING: .altex '{}' ссылается на {}-текстуру '{}', которую не удалось прочитать ({}) — меш без этой карты",
+                        altex_path, map_kind, extern_path, e
+                    );
+                    return None;
+                }
+            };
+            if shared.extern_texture_path(0).is_some() {
+                eprintln!("[ENGINE] WARNING: внешняя текстура '{}' сама является ссылкой — цепочки ссылок не поддерживаются", extern_path);
+                return None;
+            }
+            return self.load_altex_map_srv(&shared, &extern_path, 0, map_kind);
+        }
         let texture = altex.textures.get(map_index as usize)?;
         let tex_start = texture.data_offset as usize;
         let tex_end = tex_start + texture.data_size as usize;

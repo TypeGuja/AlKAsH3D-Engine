@@ -20,14 +20,14 @@ impl PipelineState {
         ps: &ShaderBlob,
         root_signature: &ID3D12RootSignature,
         _vertex_stride: u32,
-        render_target_format: DXGI_FORMAT,
+        render_target_formats: &[DXGI_FORMAT],
         depth_format: DXGI_FORMAT,
         sample_count: u32,
     ) -> Result<ID3D12PipelineState> {
         println!("[PSO] ========== CREATING GRAPHICS PIPELINE STATE ==========");
         println!("[PSO] VS size: {} bytes", vs.size());
         println!("[PSO] PS size: {} bytes", ps.size());
-        println!("[PSO] RTV format: {:?}", render_target_format);
+        println!("[PSO] RTV formats: {:?}", render_target_formats);
         println!("[PSO] DSV format: {:?}", depth_format);
 
         let device = {
@@ -213,8 +213,16 @@ impl PipelineState {
             InputLayout: input_layout,
             IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-            NumRenderTargets: 1,
-            RTVFormats: [render_target_format, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN],
+            // ИЗМЕНЕНО (честный SSAO): несколько RT (MRT) — основной проход
+            // пишет HDR-цвет (SV_Target0) и отдельно ambient (SV_Target1).
+            NumRenderTargets: render_target_formats.len().min(8) as u32,
+            RTVFormats: {
+                let mut formats = [DXGI_FORMAT_UNKNOWN; 8];
+                for (i, f) in render_target_formats.iter().take(8).enumerate() {
+                    formats[i] = *f;
+                }
+                formats
+            },
             DSVFormat: depth_format,
             SampleDesc: DXGI_SAMPLE_DESC { Count: sample_count, Quality: 0 },
             NodeMask: 0,

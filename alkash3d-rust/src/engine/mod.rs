@@ -85,6 +85,11 @@ mod render_frame;
 // цикл движка (new/init/update/shutdown/Drop) — см. engine/lifecycle.rs.
 mod lifecycle;
 
+// Проверка, что все HLSL-файлы из engine/shaders/ компилируются (CPU-only,
+// через D3DCompile, без создания устройства) — `cargo test shader`.
+#[cfg(test)]
+mod shader_tests;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows::core::*;
@@ -626,6 +631,26 @@ pub struct AlkashEngine {
     /// `constant_buffer` основного прохода.
     shadow_constant_buffer: Option<Buffer>,
     shadow_constant_buffer_capacity: usize,
+    /// ДОБАВЛЕНО (тени фонарей): depth-атлас spot-теней (см.
+    /// SPOT_SHADOW_ATLAS_RESOLUTION), его DSV (в shadow_dsv_heap, слот
+    /// SPOT_SHADOW_ATLAS_SLOT) и флаг состояния — тот же приём, что у
+    /// shadow_maps_are_srv.
+    spot_shadow_atlas: Option<crate::render::RenderTexture>,
+    spot_shadow_dsv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    spot_shadow_atlas_is_srv: bool,
+    /// ДОБАВЛЕНО (тени point-фонарей): атлас cube-граней, DSV (слот
+    /// POINT_SHADOW_ATLAS_SLOT в shadow_dsv_heap) и флаг состояния.
+    point_shadow_atlas: Option<crate::render::RenderTexture>,
+    point_shadow_dsv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    point_shadow_atlas_is_srv: bool,
+    spot_shadow_pipeline_state: Option<ID3D12PipelineState>,
+    /// Матрицы view-proj тенеобразующих фонарей (cbuffer b2 основного PS),
+    /// по слоту на frame_index. Фиксированного размера.
+    spot_shadow_matrices_buffer: Option<Buffer>,
+    /// ShadowConstants (model*lightViewProj) для отрисовки геометрии в
+    /// плитки атласа — растёт по требованию, как shadow_constant_buffer.
+    spot_shadow_constant_buffer: Option<Buffer>,
+    spot_shadow_constant_buffer_capacity: usize,
     /// ДОБАВЛЕНО (Фаза 8 плана по реализму/фонарям — volumetric-подсветка):
     /// SRV основного depth-таргета (`renderer.depth_stencil`) — нужен
     /// volumetric raymarch-проходу, чтобы восстанавливать мировую позицию
@@ -984,6 +1009,47 @@ pub const NUM_CASCADES: usize = 3;
 /// меньшую долю дальности), а дальний — шире. Стандартная практика CSM
 /// (см. например Microsoft DirectX SDK "Cascaded Shadow Maps" sample).
 pub const CASCADE_SPLITS: [f32; NUM_CASCADES] = [0.08, 0.25, 1.0];
+
+/// ДОБАВЛЕНО (тени фонарей): spot-фонари отбрасывают тени через общий
+/// depth-атлас 4096^2, разбитый на 4x4 плитки по 1024^2 — до 16
+/// тенеобразующих фонарей за кадр (ближайшие к камере, см. render_frame).
+/// Остальные фонари светят БЕЗ тени — это честное ограничение бюджета
+/// (каждая плитка = ещё один проход по геометрии в радиусе фонаря), а не
+/// имитация. Point-фонарям нужны cube-map (6 граней) — пока без теней.
+pub const SPOT_SHADOW_ATLAS_RESOLUTION: u32 = 4096;
+pub const SPOT_SHADOW_TILES_PER_ROW: u32 = 4;
+pub const SPOT_SHADOW_TILE_RESOLUTION: u32 = SPOT_SHADOW_ATLAS_RESOLUTION / SPOT_SHADOW_TILES_PER_ROW;
+pub const MAX_SPOT_SHADOWS: usize = (SPOT_SHADOW_TILES_PER_ROW * SPOT_SHADOW_TILES_PER_ROW) as usize;
+/// Near-плоскость перспективы фонаря (метры). Чем больше, тем точнее
+/// глубина вдали (перспективная глубина сжата у far); 0.2 м — меньше
+/// расстояния от лампы до ближайшего реального препятствия (плафон).
+pub const SPOT_SHADOW_NEAR: f32 = 0.2;
+/// ДОБАВЛЕНО (тени point-фонарей): отдельный атлас 4096^2 с плитками
+/// 512^2 (8x8 = 64 плитки). Point-фонарь светит во все стороны, поэтому
+/// ему нужна cube-тень — 6 граней, каждая отдельная плитка/проход по
+/// геометрии. До 8 фонарей (48 плиток) за кадр — в 6 раз дороже spot'а
+/// на фонарь, поэтому и меньше. Плитка меньше, чем у spot (1024), потому
+/// что каждая грань покрывает лишь 90° обзора, а не весь конус.
+pub const POINT_SHADOW_ATLAS_RESOLUTION: u32 = 4096;
+pub const POINT_SHADOW_TILES_PER_ROW: u32 = 8;
+pub const POINT_SHADOW_TILE_RESOLUTION: u32 = POINT_SHADOW_ATLAS_RESOLUTION / POINT_SHADOW_TILES_PER_ROW;
+pub const MAX_POINT_SHADOWS: usize = 8;
+/// Грань куба рисуется с углом чуть больше 90°: запас в
+/// POINT_SHADOW_FACE_MARGIN_TEXELS текселей с каждого края, чтобы у точки
+/// на стыке граней PCF-окрестность оставалась внутри своей плитки.
+pub const POINT_SHADOW_FACE_MARGIN_TEXELS: f32 = 3.0;
+/// Таблица дескрипторов теней (root-параметр 4): каскады солнца [0..3),
+/// затем spot-атлас, затем point-атлас; material-текстуры идут после неё.
+pub const SPOT_SHADOW_ATLAS_SLOT: usize = NUM_CASCADES;
+pub const POINT_SHADOW_ATLAS_SLOT: usize = NUM_CASCADES + 1;
+pub const SHADOW_TABLE_SLOTS: usize = NUM_CASCADES + 2;
+
+/// tan половины угла обзора грани cube-тени (см. POINT_SHADOW_FACE_MARGIN_TEXELS):
+/// граница 90°-грани — tan=1, расширяем на margin текселей из tile/2.
+pub fn point_shadow_face_tan_half_fov() -> f32 {
+    let half_tile = POINT_SHADOW_TILE_RESOLUTION as f32 * 0.5;
+    half_tile / (half_tile - POINT_SHADOW_FACE_MARGIN_TEXELS)
+}
 
 /// Разрешение occluder depth-буфера на второй карте. Сознательно НИЗКОЕ —
 /// это не картинка для показа пользователю, а грубая маска "что примерно

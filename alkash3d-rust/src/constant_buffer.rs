@@ -201,3 +201,43 @@ impl ShadowConstants {
         unsafe { buffer.resource.GetGPUVirtualAddress() + slot as u64 * Self::aligned_size() }
     }
 }
+/// ДОБАВЛЕНО (тени фонарей): cbuffer SpotShadowConstants (b2) основного
+/// пиксельного шейдера — view-proj КАЖДОГО тенеобразующего spot-фонаря
+/// кадра. Номер плитки атласа (1-based, 0 = без тени) передаётся в
+/// GPULight.params.w, матрица берётся отсюда по этому номеру - 1.
+/// Порядок полей ОБЯЗАН совпадать с HLSL в pipeline_main.rs.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SpotShadowConstants {
+    pub view_proj: [[[f32; 4]; 4]; crate::engine::MAX_SPOT_SHADOWS],
+    /// ДОБАВЛЕНО (тени point-фонарей): 6 граней на фонарь, порядок
+    /// +X,-X,+Y,-Y,+Z,-Z; фонарь N (params.w = -(N+1)) — элементы N*6..N*6+5.
+    pub point_view_proj: [[[f32; 4]; 4]; crate::engine::MAX_POINT_SHADOWS * 6],
+    /// x = число тайлов в ряду атласа, y = 1/тайлов в ряду,
+    /// z = разрешение плитки в текселях, w не используется.
+    pub params: [f32; 4],
+    /// То же для point-атласа; w = tan(половины угла обзора грани).
+    pub point_params: [f32; 4],
+}
+
+impl SpotShadowConstants {
+    pub fn aligned_size() -> u64 {
+        let raw = std::mem::size_of::<Self>() as u64;
+        (raw + 255) & !255
+    }
+
+    pub fn write_at(&self, buffer: &Buffer, slot: usize) -> Result<()> {
+        let offset = slot as u64 * Self::aligned_size();
+        let data = unsafe {
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
+            )
+        };
+        buffer.update_constant_buffer_at(offset, data)
+    }
+
+    pub fn gpu_address_for_slot(buffer: &Buffer, slot: usize) -> u64 {
+        unsafe { buffer.resource.GetGPUVirtualAddress() + slot as u64 * Self::aligned_size() }
+    }
+}

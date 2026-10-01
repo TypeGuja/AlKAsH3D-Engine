@@ -114,6 +114,9 @@ pub struct Texture {
     pub data_size: u64,
 }
 
+/// Префикс имени текстуры-ссылки на внешний `.altex` (см. `AltexFile::add_extern_texture`).
+pub const EXTERN_TEXTURE_PREFIX: &str = "extern:";
+
 pub struct AltexFile {
     pub header: AltexHeader,
     pub strings: Vec<String>,
@@ -210,6 +213,38 @@ impl AltexFile {
 
         self.texture_data.extend_from_slice(pixels);
         texture_id
+    }
+
+    /// Добавляет ссылку на ВНЕШНЮЮ текстуру вместо встроенных пикселей:
+    /// запись в `textures` с `data_size = 0` и именем
+    /// `"{EXTERN_TEXTURE_PREFIX}{путь}"`, где путь — отдельный `.altex`,
+    /// чья текстура №0 и есть нужная картинка. Нужна для больших миров
+    /// (экспорт эдитора режет карту на тысячи кусков): одна и та же
+    /// текстура тогда лежит на диске и в видеопамяти ОДИН раз, а не
+    /// встраивается в каждый кусок. Загрузка — `engine/asset_loading.rs::load_altex_map_srv`.
+    pub fn add_extern_texture(&mut self, width: u32, height: u32, format: u32, texture_altex_path: &str) -> u32 {
+        let texture_id = self.textures.len() as u32;
+        let name_id = self.add_string(&format!("{}{}", EXTERN_TEXTURE_PREFIX, texture_altex_path));
+        self.textures.push(Texture {
+            name_id,
+            width,
+            height,
+            mip_levels: 1,
+            format,
+            data_offset: 0,
+            data_size: 0,
+        });
+        texture_id
+    }
+
+    /// Путь внешней текстуры (см. `add_extern_texture`), если текстура
+    /// `index` — ссылка, а не встроенные пиксели.
+    pub fn extern_texture_path(&self, index: u32) -> Option<&str> {
+        let tex = self.textures.get(index as usize)?;
+        if tex.data_size != 0 {
+            return None;
+        }
+        self.strings.get(tex.name_id as usize)?.strip_prefix(EXTERN_TEXTURE_PREFIX)
     }
 
     /// ДОБАВЛЕНО (Задача #15): добавляет материал — `albedo_map` (и
