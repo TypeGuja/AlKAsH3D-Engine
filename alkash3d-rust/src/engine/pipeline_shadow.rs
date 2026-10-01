@@ -14,7 +14,12 @@ use windows::Win32::Graphics::Direct3D12::*;
 use crate::STATE;
 use crate::shader::ShaderBlob;
 use crate::math::{Vec3, Mat4};
-use super::{AlkashEngine, NUM_CASCADES, SHADOW_MAP_RESOLUTION};
+use crate::Buffer;
+use super::{
+    AlkashEngine, NUM_CASCADES, SHADOW_MAP_RESOLUTION, SHADOW_TABLE_SLOTS, SPOT_SHADOW_ATLAS_SLOT,
+    SPOT_SHADOW_ATLAS_RESOLUTION, SPOT_SHADOW_NEAR,
+    POINT_SHADOW_ATLAS_SLOT, POINT_SHADOW_ATLAS_RESOLUTION, MAX_POINT_SHADOWS,
+};
 
 impl AlkashEngine {
     /// ОБНОВЛЕНО (каскадные тени / CSM — расширение Фазы 6): создаёт
@@ -27,8 +32,11 @@ impl AlkashEngine {
     /// `SHADOW_MAP_RESOLUTION` — разрешение shadow map не зависит от
     /// размера окна).
     pub(super) fn create_shadow_resources(&mut self) -> Result<()> {
-        let dsv_heap = crate::heap::DescriptorHeap::create_dsv_heap(NUM_CASCADES as u32)?;
-        let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(NUM_CASCADES as u32)?;
+        // ИЗМЕНЕНО (тени фонарей): +1 DSV/SRV под spot-атлас — он лежит в
+        // слоте SPOT_SHADOW_ATLAS_SLOT сразу за каскадами, материалы
+        // начинаются с SHADOW_TABLE_SLOTS (см. ensure_material_srv_capacity).
+        let dsv_heap = crate::heap::DescriptorHeap::create_dsv_heap(SHADOW_TABLE_SLOTS as u32)?;
+        let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(SHADOW_TABLE_SLOTS as u32)?;
 
         let dsv_size = {
             let state = STATE.lock().unwrap();
@@ -51,6 +59,35 @@ impl AlkashEngine {
             self.shadow_maps[cascade] = Some(shadow_map);
             self.shadow_dsvs[cascade] = dsv;
         }
+
+        // ДОБАВЛЕНО (тени фонарей): один depth-атлас на все тенеобразующие
+        // spot-фонари кадра (плитки SPOT_SHADOW_TILE_RESOLUTION^2) — один
+        // ресурс/одна DSV/один SRV вместо MAX_SPOT_SHADOWS отдельных
+        // текстур, плитка выбирается viewport'ом при записи и UV-смещением
+        // при чтении.
+        let atlas = crate::render::RenderTexture::create_shadow_map(SPOT_SHADOW_ATLAS_RESOLUTION)?;
+        let atlas_dsv = crate::heap::DescriptorHeap::get_cpu_handle(&dsv_heap, SPOT_SHADOW_ATLAS_SLOT as u32, dsv_size);
+        atlas.create_dsv(atlas_dsv)?;
+        let atlas_srv = crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, SPOT_SHADOW_ATLAS_SLOT as u32, cbv_srv_uav_size);
+        atlas.create_shadow_srv(atlas_srv)?;
+        self.spot_shadow_atlas = Some(atlas);
+        self.spot_shadow_dsv = atlas_dsv;
+
+        // ДОБАВЛЕНО (тени point-фонарей): второй атлас — cube-грани.
+        let point_atlas = crate::render::RenderTexture::create_shadow_map(POINT_SHADOW_ATLAS_RESOLUTION)?;
+        let point_dsv = crate::heap::DescriptorHeap::get_cpu_handle(&dsv_heap, POINT_SHADOW_ATLAS_SLOT as u32, dsv_size);
+        point_atlas.create_dsv(point_dsv)?;
+        let point_srv = crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, POINT_SHADOW_ATLAS_SLOT as u32, cbv_srv_uav_size);
+        point_atlas.create_shadow_srv(point_srv)?;
+        self.point_shadow_atlas = Some(point_atlas);
+        self.point_shadow_dsv = point_dsv;
+        // Матрицы фонарей: по слоту на back buffer (frame_index), чтобы не
+        // перезаписать данные кадра, который GPU ещё рисует. Размер
+        // фиксирован (MAX_SPOT_SHADOWS) — буфер никогда не перевыделяется.
+        self.spot_shadow_matrices_buffer = Some(Buffer::create_constant_buffer_array(
+            crate::constant_buffer::SpotShadowConstants::aligned_size(),
+            2,
+        )?);
 
         let srv_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_heap, 0, cbv_srv_uav_size);
         self.shadow_dsv_heap = Some(dsv_heap);
@@ -75,25 +112,7 @@ impl AlkashEngine {
     /// матрица (model * light_view_proj), без камеры/света/сетки каллинга,
     /// которые этому проходу не нужны вообще.
     pub(super) fn compile_shadow_shaders(&mut self) -> Result<()> {
-        let vs_source = r#"
-        cbuffer ShadowConstants : register(b0) {
-            float4x4 modelLightViewProj;
-        };
-
-        struct VS_INPUT {
-            float4 pos : POSITION;
-            float3 normal : NORMAL;
-            float4 color : COLOR;
-        };
-        struct VS_OUTPUT {
-            float4 pos : SV_POSITION;
-        };
-        VS_OUTPUT main(VS_INPUT input) {
-            VS_OUTPUT output;
-            output.pos = mul(modelLightViewProj, input.pos);
-            return output;
-        }
-        "#;
+        let vs_source = include_str!("shaders/shadow_vs.hlsl");
 
         self.shadow_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
         println!("[ENGINE] ✓ Shadow shaders compiled (depth-only, без PS)");
@@ -193,6 +212,36 @@ impl AlkashEngine {
     }
 
     pub(super) fn create_shadow_pipeline_state(&mut self) -> Result<()> {
+        match self.build_shadow_pso(5000, 2.0) {
+            Ok(pso) => {
+                self.shadow_pipeline_state = Some(pso);
+                println!("[ENGINE] ✓ Shadow pipeline state created (depth-only, DSVFormat=D32_FLOAT)");
+            }
+            Err(e) => {
+                eprintln!("[ENGINE] ✗ Failed to create shadow PSO: {:?}", e);
+                return Err(e);
+            }
+        }
+        // ДОБАВЛЕНО (тени фонарей): отдельный PSO для spot-теней — тот же
+        // шейдер/layout, другой аппаратный bias. У перспективной проекции
+        // глубина нелинейна и сжата у 1.0, поэтому DepthBias=5000 от
+        // ортографического солнца дал бы сдвиг в десятки сантиметров —
+        // тень "отрывалась" бы от ножки фонарного столба (peter-panning).
+        // Основную защиту от acne у фонарей даёт normal-offset в PS.
+        match self.build_shadow_pso(64, 1.5) {
+            Ok(pso) => {
+                self.spot_shadow_pipeline_state = Some(pso);
+                println!("[ENGINE] ✓ Spot shadow pipeline state created");
+            }
+            Err(e) => {
+                // Не фатально: без этого PSO фонари просто не отбрасывают тени.
+                eprintln!("[ENGINE] WARNING: spot shadow PSO не создан, тени фонарей выключены: {:?}", e);
+            }
+        }
+        Ok(())
+    }
+
+    fn build_shadow_pso(&self, depth_bias: i32, slope_scaled_depth_bias: f32) -> Result<ID3D12PipelineState> {
         use windows::Win32::Foundation::{FALSE, TRUE};
         use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
@@ -238,9 +287,9 @@ impl AlkashEngine {
             FillMode: D3D12_FILL_MODE_SOLID,
             CullMode: D3D12_CULL_MODE_NONE,
             FrontCounterClockwise: FALSE,
-            DepthBias: 5000,
+            DepthBias: depth_bias,
             DepthBiasClamp: 0.0,
-            SlopeScaledDepthBias: 2.0,
+            SlopeScaledDepthBias: slope_scaled_depth_bias,
             DepthClipEnable: TRUE,
             MultisampleEnable: FALSE,
             AntialiasedLineEnable: FALSE,
@@ -320,17 +369,7 @@ impl AlkashEngine {
             std::mem::ManuallyDrop::drop(&mut pso_desc.pRootSignature);
         }
 
-        match result {
-            Ok(pso) => {
-                self.shadow_pipeline_state = Some(pso);
-                println!("[ENGINE] ✓ Shadow pipeline state created (depth-only, DSVFormat=D32_FLOAT)");
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("[ENGINE] ✗ Failed to create shadow PSO: {:?}", e);
-                Err(e)
-            }
-        }
+        result
     }
 
     /// ДОБАВЛЕНО (Фаза 6 плана по реализму/фонарям — тени): view-proj
@@ -405,9 +444,17 @@ impl AlkashEngine {
         let proj = cam.projection_matrix();
         let inv_view_proj = (proj * cam.view_matrix()).inverse();
 
+        // ИСПРАВЛЕНО (знак view-space Z): камера правосторонняя
+        // (math::look_at/perspective — glam rh), точки ПЕРЕД камерой имеют
+        // view z = -dist. Раньше сюда подставлялось +dist — NDC выходил >1,
+        // и при обратной проекции углы каскада оказывались ПОЗАДИ камеры
+        // (проверено численно: dist=80 -> view z=+80). Каскады покрывали
+        // пространство за спиной, а перед камерой тени были только в
+        // небольшом радиусе вокруг неё.
         let ndc_z_for_view_dist = |dist: f32| -> f32 {
-            let clip_z = proj.z_axis.z * dist + proj.w_axis.z;
-            let clip_w = proj.z_axis.w * dist + proj.w_axis.w;
+            let view_z = -dist;
+            let clip_z = proj.z_axis.z * view_z + proj.w_axis.z;
+            let clip_w = proj.z_axis.w * view_z + proj.w_axis.w;
             if clip_w.abs() > 1e-6 { clip_z / clip_w } else { 0.0 }
         };
         let ndc_z_near = ndc_z_for_view_dist(near_dist);
@@ -457,5 +504,117 @@ impl AlkashEngine {
             snapped_y - radius, snapped_y + radius,
             center_light.z - radius - z_padding, center_light.z + radius + z_padding,
         ) * light_view
+    }
+
+    /// ДОБАВЛЕНО (тени фонарей): view-proj spot-фонаря — перспектива ИЗ
+    /// позиции фонаря ВДОЛЬ его direction, угол обзора = полный угол конуса
+    /// (2 * outer angle) плюс небольшой запас, чтобы PCF-окрестность на
+    /// краю светового пятна не выходила за плитку. far = range фонаря (за
+    /// ним вклад и так обнуляется window-функцией затухания).
+    ///
+    /// Возвращает None для конусов шире ~150°: перспективная проекция на
+    /// таких углах вырождается (тексели по краям растягиваются в разы) —
+    /// такому свету нужна cube-map, как point-фонарю, а не плоская плитка.
+    /// Честно пропускаем, а не рисуем заведомо кривую тень.
+    /// ДОБАВЛЕНО (тени фонарей): выбирает до MAX_SPOT_SHADOWS spot-фонарей,
+    /// которые в этом кадре получат shadow map. Возвращает пары (индекс в
+    /// списке get_gpu_lights(), view-proj). Критерий — фонари, чья сфера
+    /// действия пересекает frustum камеры, отсортированные по расстоянию
+    /// от камеры до БЛИЖАЙШЕЙ точки этой сферы: тени нужнее всего там,
+    /// где их видно крупно.
+    pub(super) fn select_spot_shadow_lights(&self) -> Vec<(usize, Mat4)> {
+        let lights = self.get_gpu_lights();
+        if lights.is_empty() || self.spot_shadow_atlas.is_none() || self.spot_shadow_pipeline_state.is_none() {
+            return Vec::new();
+        }
+        let cam_frustum = crate::math::Frustum::from_view_proj(
+            &(self.camera.projection_matrix() * self.camera.view_matrix()),
+        );
+        let cam_pos = self.camera.position;
+
+        let mut candidates: Vec<(f32, usize, Mat4)> = Vec::new();
+        for (i, l) in lights.iter().enumerate() {
+            let is_spot = l.position[3] > 0.5 && l.position[3] < 1.5;
+            let range = l.direction[3];
+            if !is_spot || l.color[3] <= 0.0 || range <= 0.0 {
+                continue;
+            }
+            let pos = Vec3::new(l.position[0], l.position[1], l.position[2]);
+            if !cam_frustum.test_sphere(pos, range) {
+                continue;
+            }
+            let dir = Vec3::new(l.direction[0], l.direction[1], l.direction[2]);
+            if let Some(vp) = Self::compute_spot_shadow_view_proj(pos, dir, l.params[0], range) {
+                let score = ((pos - cam_pos).length() - range).max(0.0);
+                candidates.push((score, i, vp));
+            }
+        }
+        candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.into_iter().take(super::MAX_SPOT_SHADOWS).map(|(_, i, vp)| (i, vp)).collect()
+    }
+
+    /// ДОБАВЛЕНО (тени point-фонарей): до MAX_POINT_SHADOWS point-фонарей,
+    /// ближайших к камере (тот же критерий, что у select_spot_shadow_lights),
+    /// с матрицами 6 граней куба каждого.
+    pub(super) fn select_point_shadow_lights(&self) -> Vec<(usize, [Mat4; 6])> {
+        let lights = self.get_gpu_lights();
+        if lights.is_empty() || self.point_shadow_atlas.is_none() || self.spot_shadow_pipeline_state.is_none() {
+            return Vec::new();
+        }
+        let cam_frustum = crate::math::Frustum::from_view_proj(
+            &(self.camera.projection_matrix() * self.camera.view_matrix()),
+        );
+        let cam_pos = self.camera.position;
+
+        let mut candidates: Vec<(f32, usize, [Mat4; 6])> = Vec::new();
+        for (i, l) in lights.iter().enumerate() {
+            let is_point = l.position[3] < 0.5;
+            let range = l.direction[3];
+            if !is_point || l.color[3] <= 0.0 || range <= SPOT_SHADOW_NEAR * 2.0 {
+                continue;
+            }
+            let pos = Vec3::new(l.position[0], l.position[1], l.position[2]);
+            if !cam_frustum.test_sphere(pos, range) {
+                continue;
+            }
+            let score = ((pos - cam_pos).length() - range).max(0.0);
+            candidates.push((score, i, Self::compute_point_shadow_view_projs(pos, range)));
+        }
+        candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.into_iter().take(MAX_POINT_SHADOWS).map(|(_, i, vps)| (i, vps)).collect()
+    }
+
+    /// ДОБАВЛЕНО (тени point-фонарей): 6 перспективных матриц граней куба,
+    /// порядок +X,-X,+Y,-Y,+Z,-Z — ОБЯЗАН совпадать с выбором грани в
+    /// SamplePointShadow (HLSL). Угол чуть больше 90° — см.
+    /// point_shadow_face_tan_half_fov.
+    pub(super) fn compute_point_shadow_view_projs(position: Vec3, range: f32) -> [Mat4; 6] {
+        let fov = 2.0 * super::point_shadow_face_tan_half_fov().atan();
+        let proj = crate::math::perspective(fov, 1.0, SPOT_SHADOW_NEAR, range);
+        let faces: [(Vec3, Vec3); 6] = [
+            (Vec3::X, Vec3::Y),
+            (-Vec3::X, Vec3::Y),
+            (Vec3::Y, Vec3::Z),
+            (-Vec3::Y, Vec3::Z),
+            (Vec3::Z, Vec3::Y),
+            (-Vec3::Z, Vec3::Y),
+        ];
+        let mut out = [Mat4::IDENTITY; 6];
+        for (i, (dir, up)) in faces.iter().enumerate() {
+            out[i] = proj * crate::math::look_at(position, position + *dir, *up);
+        }
+        out
+    }
+
+    pub(super) fn compute_spot_shadow_view_proj(position: Vec3, direction: Vec3, outer_angle: f32, range: f32) -> Option<Mat4> {
+        let dir = if direction.length_squared() > 1e-8 { direction.normalize() } else { return None };
+        let fov = (outer_angle * 2.0 + 0.1).max(0.2);
+        if fov > 150f32.to_radians() || range <= SPOT_SHADOW_NEAR * 2.0 {
+            return None;
+        }
+        let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+        let view = crate::math::look_at(position, position + dir, up);
+        let proj = crate::math::perspective(fov, 1.0, SPOT_SHADOW_NEAR, range);
+        Some(proj * view)
     }
 }

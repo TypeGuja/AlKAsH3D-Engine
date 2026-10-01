@@ -24,6 +24,8 @@ use crate::command::CommandList;
 use crate::math::{identity, Mat4, Vec3};
 use super::{
     AlkashEngine, Vertex, NUM_CASCADES, CASCADE_SPLITS, SHADOW_MAP_RESOLUTION,
+    MAX_SPOT_SHADOWS, SPOT_SHADOW_TILES_PER_ROW, SPOT_SHADOW_TILE_RESOLUTION,
+    MAX_POINT_SHADOWS, POINT_SHADOW_TILES_PER_ROW, POINT_SHADOW_TILE_RESOLUTION,
     OCCLUDER_MIN_WORLD_RADIUS, OCCLUDER_INSCRIBE_FACTOR,
     NEXT_FENCE_VALUE, wait_for_fence,
 };
@@ -141,6 +143,55 @@ impl AlkashEngine {
         self.shadow_constant_buffer = Some(buffer);
         self.shadow_constant_buffer_capacity = new_capacity;
         Ok(())
+    }
+
+    /// ДОБАВЛЕНО (тени фонарей): слоты ShadowConstants для отрисовки
+    /// геометрии в плитки spot-атласа. `needed_per_frame` — суммарное
+    /// число draw'ов по всем плиткам кадра; слот = frame_index * capacity + k.
+    /// Как и все остальные ensure_*_capacity, ОБЯЗАН дождаться простоя
+    /// GPU перед пересозданием (см. комментарий в начале impl — краш 0x87D).
+    fn ensure_spot_shadow_constant_buffer_capacity(&mut self, needed_per_frame: usize) -> Result<()> {
+        if self.spot_shadow_constant_buffer.is_some() && needed_per_frame <= self.spot_shadow_constant_buffer_capacity {
+            return Ok(());
+        }
+        if self.spot_shadow_constant_buffer.is_some() {
+            self.wait_for_all_frames_idle_before_realloc();
+        }
+
+        let new_capacity = needed_per_frame.max(256).next_power_of_two();
+        let total_slots = new_capacity * 2;
+        let buffer = Buffer::create_constant_buffer_array(crate::constant_buffer::ShadowConstants::aligned_size(), total_slots)?;
+        println!(
+            "[ENGINE] Spot shadow constant buffer (re)allocated: {} slots/кадр x2 = {} слотов",
+            new_capacity, total_slots
+        );
+        self.spot_shadow_constant_buffer = Some(buffer);
+        self.spot_shadow_constant_buffer_capacity = new_capacity;
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (тени фонарей): записывает в cmd_list depth-only отрисовку
+    /// одного меша (VB/IB + Draw) — общая часть для плиток spot-атласа.
+    unsafe fn record_depth_only_draw(cmd_list: &ID3D12GraphicsCommandList, mesh: &super::Mesh) {
+        unsafe {
+            let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: mesh.vertex_buffer.resource.GetGPUVirtualAddress(),
+                SizeInBytes: mesh.vertex_buffer.size as u32,
+                StrideInBytes: Vertex::STRIDE,
+            };
+            cmd_list.IASetVertexBuffers(0, Some(&[vertex_buffer_view]));
+            if let Some(index_buffer) = &mesh.index_buffer {
+                let index_view = D3D12_INDEX_BUFFER_VIEW {
+                    BufferLocation: index_buffer.resource.GetGPUVirtualAddress(),
+                    SizeInBytes: index_buffer.size as u32,
+                    Format: DXGI_FORMAT_R32_UINT,
+                };
+                cmd_list.IASetIndexBuffer(Some(&index_view));
+                cmd_list.DrawIndexedInstanced(mesh.index_count, 1, 0, 0, 0);
+            } else {
+                cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
+            }
+        }
     }
 
     /// ДОБАВЛЕНО (Фаза 2 плана по реализму/фонарям): гарантирует, что
@@ -409,6 +460,7 @@ impl AlkashEngine {
         };
 
         let rtv_handle = renderer.hdr_rtv;
+        let ambient_rtv = renderer.ambient_rtv;
         let dsv_handle = renderer.depth_stencil_view;
 
         // ДОБАВЛЕНО (максимальная графика — LOD для мешей): считаем ОДИН
@@ -554,11 +606,162 @@ impl AlkashEngine {
             }
         }
 
+        // ДОБАВЛЕНО (тени фонарей): shadow map для ближайших spot-фонарей
+        // (плитка на фонарь) и point-фонарей (6 плиток-граней куба на
+        // фонарь) — каждая плитка рисуется из позиции своего фонаря, только
+        // геометрия, попавшая в её frustum. Оба атласа очищаются и
+        // переводятся в SRV КАЖДЫЙ кадр, даже без фонарей: они всегда
+        // забинжены в таблице теней основного прохода и должны находиться в
+        // корректном состоянии ресурса.
+        let spot_shadow_lights: Vec<(usize, Mat4)> = self.select_spot_shadow_lights();
+        let point_shadow_lights: Vec<(usize, [Mat4; 6])> = self.select_point_shadow_lights();
+
+        // (атлас: 0 = spot, 1 = point; x; y; размер плитки; view-proj)
+        let mut shadow_tiles: Vec<(usize, u32, u32, u32, Mat4)> = Vec::new();
+        for (tile, (_, vp)) in spot_shadow_lights.iter().enumerate() {
+            let t = tile as u32;
+            let r = SPOT_SHADOW_TILE_RESOLUTION;
+            shadow_tiles.push((0, (t % SPOT_SHADOW_TILES_PER_ROW) * r, (t / SPOT_SHADOW_TILES_PER_ROW) * r, r, *vp));
+        }
+        for (slot, (_, face_vps)) in point_shadow_lights.iter().enumerate() {
+            for (face, vp) in face_vps.iter().enumerate() {
+                let t = (slot * 6 + face) as u32;
+                let r = POINT_SHADOW_TILE_RESOLUTION;
+                shadow_tiles.push((1, (t % POINT_SHADOW_TILES_PER_ROW) * r, (t / POINT_SHADOW_TILES_PER_ROW) * r, r, *vp));
+            }
+        }
+
+        let tile_jobs: Vec<Vec<usize>> = shadow_tiles
+            .iter()
+            .map(|(_, _, _, _, vp)| {
+                let tile_frustum = crate::math::Frustum::from_view_proj(vp);
+                shadow_jobs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (mesh_index, model))| {
+                        let mesh = &self.meshes[*mesh_index];
+                        let (scale, _r, _t) = model.to_scale_rotation_translation();
+                        let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+                        let center = model.transform_point3(Vec3::new(
+                            mesh.bounding_center[0],
+                            mesh.bounding_center[1],
+                            mesh.bounding_center[2],
+                        ));
+                        tile_frustum.test_sphere(center, mesh.bounding_radius * max_scale)
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .collect();
+        let total_local_shadow_draws: usize = tile_jobs.iter().map(|j| j.len()).sum();
+        let can_draw_local_shadows = total_local_shadow_draws > 0
+            && self.spot_shadow_pipeline_state.is_some()
+            && self.shadow_root_signature.is_some()
+            && match self.ensure_spot_shadow_constant_buffer_capacity(total_local_shadow_draws) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("[ENGINE] WARNING: не удалось выделить spot_shadow_constant_buffer: {:?}", e);
+                    false
+                }
+            };
+
+        unsafe {
+            let mut draw_k = 0usize;
+            for atlas_kind in 0..2usize {
+                let (dsv, has_atlas) = if atlas_kind == 0 {
+                    (self.spot_shadow_dsv, self.spot_shadow_atlas.is_some())
+                } else {
+                    (self.point_shadow_dsv, self.point_shadow_atlas.is_some())
+                };
+                if !has_atlas {
+                    continue;
+                }
+                cmd_list.OMSetRenderTargets(0, None, false, Some(&dsv));
+                cmd_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+
+                if !can_draw_local_shadows {
+                    continue;
+                }
+                let Some(local_cb) = &self.spot_shadow_constant_buffer else { continue };
+                cmd_list.SetPipelineState(Some(self.spot_shadow_pipeline_state.as_ref().unwrap()));
+                cmd_list.SetGraphicsRootSignature(Some(self.shadow_root_signature.as_ref().unwrap()));
+                cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                for ((kind, tx, ty, tile_res, tile_vp), jobs) in shadow_tiles.iter().zip(tile_jobs.iter()) {
+                    if *kind != atlas_kind {
+                        continue;
+                    }
+                    cmd_list.RSSetViewports(&[D3D12_VIEWPORT {
+                        TopLeftX: *tx as f32,
+                        TopLeftY: *ty as f32,
+                        Width: *tile_res as f32,
+                        Height: *tile_res as f32,
+                        MinDepth: 0.0,
+                        MaxDepth: 1.0,
+                    }]);
+                    cmd_list.RSSetScissorRects(&[RECT {
+                        left: *tx as i32,
+                        top: *ty as i32,
+                        right: (*tx + *tile_res) as i32,
+                        bottom: (*ty + *tile_res) as i32,
+                    }]);
+
+                    for &job_index in jobs {
+                        let (mesh_index, model) = &shadow_jobs[job_index];
+                        let shadow_constants = crate::constant_buffer::ShadowConstants {
+                            model_light_view_proj: ((*tile_vp) * (*model)).to_cols_array_2d(),
+                        };
+                        let slot = frame_index * self.spot_shadow_constant_buffer_capacity + draw_k;
+                        draw_k += 1;
+                        if let Err(e) = shadow_constants.write_at(local_cb, slot) {
+                            eprintln!("[ENGINE] WARNING: failed to write local shadow constant buffer slot {}: {:?}", slot, e);
+                            continue;
+                        }
+                        let gpu_addr = crate::constant_buffer::ShadowConstants::gpu_address_for_slot(local_cb, slot);
+                        cmd_list.SetGraphicsRootConstantBufferView(0, gpu_addr);
+                        Self::record_depth_only_draw(&cmd_list, &self.meshes[*mesh_index]);
+                    }
+                }
+            }
+
+            let mut to_srv = Vec::new();
+            if let Some(atlas) = &self.spot_shadow_atlas {
+                if !self.spot_shadow_atlas_is_srv {
+                    to_srv.push(Self::transition_barrier(
+                        &atlas.resource,
+                        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    ));
+                    self.spot_shadow_atlas_is_srv = true;
+                }
+            }
+            if let Some(atlas) = &self.point_shadow_atlas {
+                if !self.point_shadow_atlas_is_srv {
+                    to_srv.push(Self::transition_barrier(
+                        &atlas.resource,
+                        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    ));
+                    self.point_shadow_atlas_is_srv = true;
+                }
+            }
+            if !to_srv.is_empty() {
+                cmd_list.ResourceBarrier(&to_srv);
+                for b in to_srv {
+                    Self::drop_transition_barrier(b);
+                }
+            }
+        }
+
         cmd_list = self.maybe_flush_for_warm_up(cmd_list, &allocator, "shadow")?;
 
         unsafe {
-            cmd_list.OMSetRenderTargets(1, Some(&rtv_handle), false, Some(&dsv_handle));
+            // ИЗМЕНЕНО (честный SSAO): два RT — HDR-цвет и ambient
+            // (renderer.ambient_rtv лежит в том же RTV-хипе сразу за
+            // hdr_rtv, поэтому RTsSingleHandleToDescriptorRange = true).
+            cmd_list.OMSetRenderTargets(2, Some(&rtv_handle), true, Some(&dsv_handle));
             cmd_list.ClearRenderTargetView(rtv_handle, &self.clear_color, None);
+            cmd_list.ClearRenderTargetView(ambient_rtv, &[0.0, 0.0, 0.0, 0.0], None);
             cmd_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
 
             let viewport = D3D12_VIEWPORT {
@@ -614,6 +817,41 @@ impl AlkashEngine {
                 cmd_list.SetGraphicsRootDescriptorTable(4, self.shadow_srv_gpu);
             }
 
+            // ДОБАВЛЕНО (тени фонарей): матрицы плиток spot-атласа (b2).
+            // Биндится всегда (root CBV должен быть валиден при любом
+            // обращении); матрицы неиспользуемых плиток — нули.
+            if let Some(matrices_buffer) = &self.spot_shadow_matrices_buffer {
+                let mut spot_constants = crate::constant_buffer::SpotShadowConstants {
+                    view_proj: [[[0.0; 4]; 4]; MAX_SPOT_SHADOWS],
+                    params: [
+                        SPOT_SHADOW_TILES_PER_ROW as f32,
+                        1.0 / SPOT_SHADOW_TILES_PER_ROW as f32,
+                        SPOT_SHADOW_TILE_RESOLUTION as f32,
+                        0.0,
+                    ],
+                    point_view_proj: [[[0.0; 4]; 4]; MAX_POINT_SHADOWS * 6],
+                    point_params: [
+                        POINT_SHADOW_TILES_PER_ROW as f32,
+                        1.0 / POINT_SHADOW_TILES_PER_ROW as f32,
+                        POINT_SHADOW_TILE_RESOLUTION as f32,
+                        super::point_shadow_face_tan_half_fov(),
+                    ],
+                };
+                for (tile, (_, vp)) in spot_shadow_lights.iter().enumerate() {
+                    spot_constants.view_proj[tile] = vp.to_cols_array_2d();
+                }
+                for (slot, (_, face_vps)) in point_shadow_lights.iter().enumerate() {
+                    for (face, vp) in face_vps.iter().enumerate() {
+                        spot_constants.point_view_proj[slot * 6 + face] = vp.to_cols_array_2d();
+                    }
+                }
+                if let Err(e) = spot_constants.write_at(matrices_buffer, frame_index) {
+                    eprintln!("[ENGINE] WARNING: не удалось записать матрицы spot-теней: {:?}", e);
+                }
+                let addr = crate::constant_buffer::SpotShadowConstants::gpu_address_for_slot(matrices_buffer, frame_index);
+                cmd_list.SetGraphicsRootConstantBufferView(9, addr);
+            }
+
             for cascade in 0..NUM_CASCADES {
                 self.transform_constants.light_view_proj[cascade] = cascade_view_projs[cascade].to_cols_array_2d();
             }
@@ -633,7 +871,22 @@ impl AlkashEngine {
             }
             if let Some(light_buffer) = &self.light_buffer {
                 if light_count > 0 {
-                    let gpu_lights = self.lights.as_ref().map(|l| l.get_gpu_lights()).unwrap_or(&[]);
+                    // ИЗМЕНЕНО (тени фонарей): копия списка, чтобы проставить
+                    // тенеобразующим фонарям номер плитки атласа в params.w
+                    // (1-based; FirstFires всегда пишет туда 0). Данные
+                    // плагина не трогаем.
+                    let mut gpu_lights: Vec<GPULight> = self.get_gpu_lights().to_vec();
+                    for (tile, (light_index, _)) in spot_shadow_lights.iter().enumerate() {
+                        if let Some(light) = gpu_lights.get_mut(*light_index) {
+                            light.params[3] = (tile + 1) as f32;
+                        }
+                    }
+                    // Point-фонари: отрицательный номер -(слот+1), см. HLSL.
+                    for (slot, (light_index, _)) in point_shadow_lights.iter().enumerate() {
+                        if let Some(light) = gpu_lights.get_mut(*light_index) {
+                            light.params[3] = -((slot + 1) as f32);
+                        }
+                    }
                     let bytes = std::slice::from_raw_parts(
                         gpu_lights.as_ptr() as *const u8,
                         light_count * std::mem::size_of::<GPULight>(),
@@ -918,6 +1171,8 @@ impl AlkashEngine {
                     (D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST)
                 };
 
+                // ИЗМЕНЕНО (честный SSAO): ambient-таргет резолвится тем же
+                // путём, что и HDR — его читает composite в тонмапе.
                 let to_resolve = [
                     Self::transition_barrier(
                         &renderer.hdr_target.resource,
@@ -926,6 +1181,16 @@ impl AlkashEngine {
                     ),
                     Self::transition_barrier(
                         &renderer.hdr_resolved.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        dst_state_before,
+                    ),
+                    Self::transition_barrier(
+                        &renderer.ambient_target.resource,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        src_state_before,
+                    ),
+                    Self::transition_barrier(
+                        &renderer.ambient_resolved.resource,
                         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                         dst_state_before,
                     ),
@@ -943,8 +1208,16 @@ impl AlkashEngine {
                         0,
                         windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
                     );
+                    cmd_list.ResolveSubresource(
+                        &renderer.ambient_resolved.resource,
+                        0,
+                        &renderer.ambient_target.resource,
+                        0,
+                        windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    );
                 } else {
                     cmd_list.CopyResource(&renderer.hdr_resolved.resource, &renderer.hdr_target.resource);
+                    cmd_list.CopyResource(&renderer.ambient_resolved.resource, &renderer.ambient_target.resource);
                 }
 
                 let after_resolve = [
@@ -955,6 +1228,16 @@ impl AlkashEngine {
                     ),
                     Self::transition_barrier(
                         &renderer.hdr_resolved.resource,
+                        dst_state_before,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    ),
+                    Self::transition_barrier(
+                        &renderer.ambient_target.resource,
+                        src_state_before,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    ),
+                    Self::transition_barrier(
+                        &renderer.ambient_resolved.resource,
                         dst_state_before,
                         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                     ),
@@ -1711,6 +1994,26 @@ impl AlkashEngine {
                         ));
                         self.shadow_maps_are_srv[cascade] = false;
                     }
+                }
+            }
+            if let Some(atlas) = &self.spot_shadow_atlas {
+                if self.spot_shadow_atlas_is_srv {
+                    barriers_after.push(Self::transition_barrier(
+                        &atlas.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    ));
+                    self.spot_shadow_atlas_is_srv = false;
+                }
+            }
+            if let Some(atlas) = &self.point_shadow_atlas {
+                if self.point_shadow_atlas_is_srv {
+                    barriers_after.push(Self::transition_barrier(
+                        &atlas.resource,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    ));
+                    self.point_shadow_atlas_is_srv = false;
                 }
             }
             cmd_list.ResourceBarrier(&barriers_after);

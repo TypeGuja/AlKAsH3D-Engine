@@ -33,110 +33,9 @@ impl AlkashEngine {
     /// голое обрезание (clamp), сохраняя видимые детали в ярких участках
     /// (например прямо под фонарём) вместо однородного белого пятна.
     pub(super) fn compile_tonemap_shaders(&mut self) -> Result<()> {
-        let vs_source = r#"
-        struct VS_OUTPUT {
-            float4 pos : SV_POSITION;
-            float2 uv : TEXCOORD0;
-        };
-        VS_OUTPUT main(uint vertexId : SV_VertexID) {
-            VS_OUTPUT output;
-            // Классический fullscreen-triangle трюк: 3 вершины покрывают
-            // весь [-1,1]x[-1,1] экран одним треугольником (с запасом за
-            // пределами экрана, что нормально — растеризатор отсекает
-            // невидимую часть). UV идёт от (0,0) в левом верхнем углу до
-            // (2,2) в "запасной" вершине, но реально используемая часть —
-            // [0,1]x[0,1], как у обычного квада.
-            float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
-            output.uv = uv;
-            output.pos = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
-            return output;
-        }
-        "#;
+        let vs_source = include_str!("shaders/fullscreen_vs.hlsl");
 
-        let ps_source = r#"
-        Texture2D HDRSource : register(t0);
-        // ДОБАВЛЕНО (bloom): результат extract+blur-прохода (half-res,
-        // уже билинейно "размазанное" свечение ярких источников) —
-        // складывается с основным HDR-цветом ДО тонмаппинга, что даёт
-        // физически правдоподобный эффект "пересвета" вокруг фонарей
-        // вместо плоских ярких пятен без ореола.
-        Texture2D BloomSource : register(t1);
-        // ДОБАВЛЕНО (Фаза 8 плана по реализму/фонарям — volumetric-
-        // подсветка): результат screen-space raymarch-прохода (half-res,
-        // см. compile_volumetric_shaders) — аддитивно складывается с
-        // остальным HDR-цветом ДО тонмаппинга, как и bloom, чтобы god rays
-        // тоже проходили через один и тот же ACES-тонмаппинг, а не
-        // накладывались поверх уже сжатого LDR-изображения (что выглядело
-        // бы плоско и не сочеталось по яркости с остальной сценой).
-        Texture2D VolumetricSource : register(t2);
-        // ДОБАВЛЕНО (максимальная графика — SSAO, см. engine/pipeline_ssao.rs):
-        // half-res множитель [0,1] контактной окклюзии — применяется к
-        // ОСНОВНОМУ (не bloom/volumetric — те источники света/атмосфера, не
-        // заслоняемая геометрией поверхность) цвету ДО суммы с ними, см.
-        // main() ниже.
-        Texture2D SSAOSource : register(t3);
-        SamplerState PointSampler : register(s0);
-
-        cbuffer TonemapConstants : register(b0) {
-            float exposure;
-            float bloomIntensity;
-            float2 _padding;
-        };
-
-        struct PS_INPUT {
-            float4 pos : SV_POSITION;
-            float2 uv : TEXCOORD0;
-        };
-
-        // ACES filmic tonemap, аппроксимация Krzysztof Narkowicz (2015) —
-        // стандартная в игровой индустрии формула, недорогая (никаких
-        // циклов/textur-выборок сверх одной), даёт кинематографичную
-        // компрессию яркости с мягким "плечом" у самых ярких значений
-        // вместо жёсткого обрезания.
-        float3 ACESFilm(float3 x) {
-            float a = 2.51;
-            float b = 0.03;
-            float c = 2.43;
-            float d = 0.59;
-            float e = 0.14;
-            return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
-        }
-
-        float4 main(PS_INPUT input) : SV_TARGET {
-            float3 hdrColor = HDRSource.Sample(PointSampler, input.uv).rgb;
-            // ДОБАВЛЕНО (SSAO): честное разделение "только ambient-член"
-            // потребовало бы depth pre-pass'а (отдельная доработка) — здесь
-            // AO-множитель затемняет ВЕСЬ поверхностный цвет (диффуз +
-            // specular + ambient), не только ambient. Задокументированное
-            // упрощение, тот же уровень, что и у остальных пост-эффектов
-            // этого движка.
-            float3 aoColor = SSAOSource.Sample(PointSampler, input.uv).rgb;
-            hdrColor *= aoColor;
-            // BloomSource — half-res текстура, PointSampler здесь всё
-            // равно даёт визуально мягкий результат, т.к. само свечение
-            // уже размыто предыдущим Gaussian-blur проходом (см.
-            // compile_bloom_shaders) — отдельный билинейный сэмплер под
-            // апскейл bloom не заводим, чтобы не плодить лишний статический
-            // сэмплер только ради этого.
-            float3 bloomColor = BloomSource.Sample(PointSampler, input.uv).rgb;
-            // ДОБАВЛЕНО (Фаза 8): volumetric-свет — тоже half-res, тот же
-            // point-сэмплер + upscale "как есть" (raymarch сам по себе уже
-            // достаточно гладкий по построению, см. jitter в
-            // compile_volumetric_shaders — дополнительный билинейный
-            // сэмплер здесь не добавляет заметного качества).
-            float3 volumetricColor = VolumetricSource.Sample(PointSampler, input.uv).rgb;
-            float3 combined = hdrColor + bloomColor * bloomIntensity + volumetricColor;
-            float3 exposed = combined * exposure;
-            float3 tonemapped = ACESFilm(exposed);
-            // Гамма-коррекция: back buffer — R8G8B8A8_UNORM без sRGB-вьюхи
-            // (см. Renderer::back_buffers/create_pipeline_state — формат
-            // тот же, что был и до Фазы 5), поэтому применяем гамму 1/2.2
-            // здесь явно, а не полагаемся на автоматическую sRGB-конверсию
-            // GPU, которой при этом формате RTV попросту нет.
-            float3 gammaCorrected = pow(max(tonemapped, 0.0), 1.0 / 2.2);
-            return float4(gammaCorrected, 1.0);
-        }
-        "#;
+        let ps_source = include_str!("shaders/tonemap_ps.hlsl");
 
         self.tonemap_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
         self.tonemap_ps = Some(ShaderBlob::compile(ps_source, "ps_5_0", "main")?);
@@ -166,9 +65,11 @@ impl AlkashEngine {
         // t2 Volumetric, t3 SSAO — см. `renderer.srv_uav_heap`, у него уже
         // 4 слота, `create_ssao_final_srv` в pipeline_ssao.rs пишет в
         // слот 3).
+        // ИЗМЕНЕНО (честный SSAO): +t4 — ambient-вклад основного прохода
+        // (renderer::AMBIENT_SRV_SLOT).
         let srv_range = D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-            NumDescriptors: 4,
+            NumDescriptors: crate::render::AMBIENT_SRV_SLOT + 1,
             BaseShaderRegister: 0,
             RegisterSpace: 0,
             OffsetInDescriptorsFromTableStart: 0,
@@ -386,61 +287,9 @@ impl AlkashEngine {
     /// абсолютно одинаковая (весь экран одним треугольником) — компилировать
     /// идентичный VS ещё раз не имеет смысла.
     pub(super) fn compile_bloom_shaders(&mut self) -> Result<()> {
-        let extract_source = r#"
-        Texture2D HDRSource : register(t0);
-        SamplerState PointSampler : register(s0);
+        let extract_source = include_str!("shaders/bloom_extract_ps.hlsl");
 
-        cbuffer BloomParams : register(b0) {
-            float threshold;
-            float2 texel_size; // 1/width, 1/height ИСТОЧНИКА (для blur-прохода; extract его не использует)
-            float _unused;
-        };
-
-        struct PS_INPUT {
-            float4 pos : SV_POSITION;
-            float2 uv : TEXCOORD0;
-        };
-
-        float4 main(PS_INPUT input) : SV_TARGET {
-            float3 color = HDRSource.Sample(PointSampler, input.uv).rgb;
-            float brightness = max(color.r, max(color.g, color.b));
-            // smoothstep(threshold, threshold*2, brightness) — мягкий, а не
-            // жёсткий порог: пиксели чуть ниже threshold не пропадают резко
-            // в 0, а плавно затухают, что убирает "рваный" край вокруг
-            // светящихся объектов после последующего блюра.
-            float contribution = smoothstep(threshold, threshold * 2.0, brightness);
-            return float4(color * contribution, 1.0);
-        }
-        "#;
-
-        let blur_source = r#"
-        Texture2D BloomSource : register(t0);
-        SamplerState PointSampler : register(s0);
-
-        cbuffer BloomParams : register(b0) {
-            float threshold; // не используется в blur-проходе
-            float2 texel_size;
-            float _unused;
-        };
-
-        struct PS_INPUT {
-            float4 pos : SV_POSITION;
-            float2 uv : TEXCOORD0;
-        };
-
-        float4 main(PS_INPUT input) : SV_TARGET {
-            // Веса 9-тапового биномиального гаусса (сумма = 1.0), центр —
-            // самый большой вес, симметрично убывает к краям.
-            float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
-            float3 result = BloomSource.Sample(PointSampler, input.uv).rgb * weights[0];
-            for (int i = 1; i < 5; i++) {
-                float2 offset = texel_size * float(i);
-                result += BloomSource.Sample(PointSampler, input.uv + offset).rgb * weights[i];
-                result += BloomSource.Sample(PointSampler, input.uv - offset).rgb * weights[i];
-            }
-            return float4(result, 1.0);
-        }
-        "#;
+        let blur_source = include_str!("shaders/bloom_blur_ps.hlsl");
 
         self.bloom_extract_ps = Some(ShaderBlob::compile(extract_source, "ps_5_0", "main")?);
         self.bloom_blur_ps = Some(ShaderBlob::compile(blur_source, "ps_5_0", "main")?);

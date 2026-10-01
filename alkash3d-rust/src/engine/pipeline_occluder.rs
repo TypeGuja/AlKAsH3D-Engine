@@ -197,27 +197,7 @@ impl AlkashEngine {
         if crate::get_secondary_device().is_none() {
             return Ok(());
         }
-        let vs_source = r#"
-        cbuffer OccluderConstants : register(b0) {
-            float4x4 viewProj;
-        };
-
-        struct VS_INPUT {
-            float3 unitCubePos : POSITION;
-            float3 instanceMin : INSTANCE_MIN;
-            float3 instanceMax : INSTANCE_MAX;
-        };
-        struct VS_OUTPUT {
-            float4 pos : SV_POSITION;
-        };
-        VS_OUTPUT main(VS_INPUT input) {
-            VS_OUTPUT output;
-            float3 t = input.unitCubePos * 0.5 + 0.5;
-            float3 worldPos = lerp(input.instanceMin, input.instanceMax, t);
-            output.pos = mul(viewProj, float4(worldPos, 1.0));
-            return output;
-        }
-        "#;
+        let vs_source = include_str!("shaders/occluder_vs.hlsl");
         self.occluder_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
         println!("[ENGINE] ✓ Occluder shaders compiled (вторая карта, depth-only, instanced boxes)");
         Ok(())
