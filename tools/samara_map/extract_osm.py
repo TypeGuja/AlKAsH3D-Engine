@@ -25,12 +25,55 @@ KEEP = {
     "width", "oneway", "bridge", "tunnel", "layer", "lit", "sidewalk", "railway", "service", "usage",
     "waterway", "water", "natural", "landuse", "leisure", "barrier", "material", "man_made",
     "leaf_type", "sport", "covered", "location", "parking", "level", "tracks", "embankment",
+    # --- детали улиц (osm_details.py)
+    "crossing", "crossing:markings", "crossing_ref", "traffic_signals", "traffic_signals:direction", "direction",
+    "public_transport", "bus", "tram", "trolleybus", "shelter", "bench", "bin", "trolley_wire",
+    "entrance", "door", "addr:housenumber", "addr:street", "shop", "brand", "opening_hours", "craft", "office",
+    "power", "cables", "voltage", "circuits", "tourism", "memorial", "artwork_type", "playground",
+    "step_count", "incline", "handrail", "ramp", "maxspeed", "turn:lanes", "turn:lanes:forward",
+    "turn:lanes:backward", "lanes:forward", "lanes:backward", "kerb", "emergency", "advertising", "start_date",
+    "building:architecture", "diameter_crown", "circumference", "genus", "species", "denotation", "cutting",
+    "ref", "operator", "colour", "electrified", "frequency", "line", "structure", "design", "support",
+    "highway:crossing", "footway", "button_operated", "tactile_paving", "lit", "backrest", "seats", "fountain", "diameter",
 }
+
+# точки, которые генератор ставит в мир (osm_details.py) — всё, у чего есть место и смысл в 3D
+DETAIL_NODE = {
+    "highway": {"street_lamp", "traffic_signals", "crossing", "bus_stop", "give_way", "stop", "steps"},
+    "railway": {"tram_stop", "subway_entrance", "crossing", "level_crossing"},
+    "public_transport": {"platform", "stop_position"},
+    "amenity": {"bench", "waste_basket", "fountain", "post_box", "telephone", "vending_machine", "drinking_water",
+                "bicycle_parking", "clock", "recycling", "waste_disposal", "shelter", "atm", "parcel_locker"},
+    "leisure": {"bench", "playground", "picnic_table"},
+    "playground": None, "entrance": None, "shop": None, "craft": None, "office": None,
+    "historic": {"memorial", "monument", "wayside_cross", "wayside_shrine", "boundary_stone", "cannon", "tank"},
+    "tourism": {"artwork", "information"},
+    "power": {"tower", "pole", "portal", "transformer", "catenary_mast"},
+    "barrier": {"gate", "bollard", "lift_gate", "kerb", "block", "swing_gate", "turnstile", "entrance"},
+    "man_made": {"street_cabinet", "flagpole", "mast", "tower", "chimney", "water_tower", "manhole"},
+    "emergency": {"fire_hydrant", "phone"},
+    "advertising": None,
+    "natural": {"tree", "rock", "stone"},
+}
+# у кафе/ресторанов/аптек и т.п. на точке — вывеска (amenity с названием)
+SIGN_AMENITY = {"cafe", "restaurant", "fast_food", "bar", "pub", "pharmacy", "bank", "clinic", "dentist",
+                "doctors", "post_office", "cinema", "theatre", "library", "car_wash", "fuel", "veterinary",
+                "bureau_de_change", "money_transfer", "ice_cream", "nightclub", "kindergarten", "school"}
+
+
+def is_detail_node(t):
+    for k, vals in DETAIL_NODE.items():
+        v = t.get(k)
+        if v is not None and (vals is None or v in vals):
+            return True
+    return t.get("amenity") in SIGN_AMENITY and "name" in t
 AREA_KEYS = ("building", "building:part", "landuse", "natural", "leisure", "water", "area:highway")
 LINE_HIGHWAY_SKIP = {"proposed", "construction", "abandoned", "platform", "raceway", "bus_stop", "elevator", "corridor"}
 RAIL_KEEP = {"rail", "tram", "light_rail", "narrow_gauge", "subway", "funicular"}
 WATERWAY_LINES = {"river", "canal", "stream", "ditch", "drain"}
-BARRIERS = {"wall", "fence", "retaining_wall", "city_wall", "hedge", "guard_rail", "handrail"}
+BARRIERS = {"wall", "fence", "retaining_wall", "city_wall", "hedge", "guard_rail", "handrail", "kerb", "jersey_barrier"}
+POWER_LINES = {"line", "minor_line", "cable"}
+ROUTE_KINDS = {"bus", "trolleybus", "tram", "share_taxi", "subway", "train", "light_rail"}
 NATURAL_AREAS_SKIP = {"coastline", "tree_row", "tree", "peak", "cliff", "ridge", "valley", "spring"}
 
 _wkb = osmium.geom.WKBFactory()
@@ -57,22 +100,32 @@ class Grab(osmium.SimpleHandler):
         self.nodes = []      # (tags, lon, lat)
         self.boundary = None
         self.nonbridge_nodes = set()
+        self.routes = []     # маршруты транспорта: (tags, [(тип, id, роль)])
+        self.platforms = []  # платформы-полигоны остановок: (id линии, tags, wkb) — члены маршрутов PTv2
+
+    def relation(self, r):
+        t = r.tags
+        if t.get("type") == "route" and t.get("route") in ROUTE_KINDS:
+            self.routes.append(({k: v for k, v in t}, [(m.type, m.ref, m.role) for m in r.members]))
 
     def _inside(self, lon, lat):
         return self.lon0 <= lon <= self.lon1 and self.lat0 <= lat <= self.lat1
 
     def node(self, n):
         t = n.tags
-        if t.get("natural") == "tree" or t.get("highway") == "street_lamp":
+        if len(t) and is_detail_node(t):
             if n.location.valid() and self._inside(n.location.lon, n.location.lat):
-                self.nodes.append((tags_of(n), n.location.lon, n.location.lat))
+                self.nodes.append((tags_of(n), n.location.lon, n.location.lat, n.id))
 
     def way(self, w):
         t = w.tags
         hw, rw, ww, bar = t.get("highway"), t.get("railway"), t.get("waterway"), t.get("barrier")
+        # платформы остановок, нарисованные линией вдоль бордюра
+        is_pt_platform = (t.get("public_transport") == "platform" or hw == "platform") and not w.is_closed()
         want = ((hw and hw not in LINE_HIGHWAY_SKIP and t.get("area") != "yes")
+                or is_pt_platform or t.get("power") in POWER_LINES
                 or rw in RAIL_KEEP or rw == "platform"
-                or ww in WATERWAY_LINES or bar in BARRIERS or t.get("natural") == "tree_row")
+                or ww in WATERWAY_LINES or bar in BARRIERS or t.get("natural") in ("tree_row", "cliff"))
         if not want or len(w.nodes) < 2:
             return
         try:
@@ -91,7 +144,9 @@ class Grab(osmium.SimpleHandler):
         ids = [nd.ref for nd in w.nodes]
         if (hw or rw) and t.get("bridge") in (None, "no"):
             self.nonbridge_nodes.update(ids)
-        self.lines.append((tags_of(w), g, ids))
+        tg = tags_of(w)
+        tg["_wid"] = w.id          # id линии — по нему маршруты транспорта собираются из путей
+        self.lines.append((tg, g, ids))
 
     def area(self, a):
         t = a.tags
@@ -99,7 +154,9 @@ class Grab(osmium.SimpleHandler):
             self.boundary = _wkb.create_multipolygon(a)
             return
         hw = t.get("highway")
-        wanted = any(k in t for k in AREA_KEYS) or t.get("amenity") == "parking" \
+        wanted = any(k in t for k in AREA_KEYS) or t.get("amenity") in ("parking", "fountain", "shelter") \
+            or t.get("public_transport") == "platform" or t.get("historic") in ("memorial", "monument") \
+            or t.get("tourism") == "artwork" \
             or t.get("waterway") in ("riverbank", "dock") or t.get("railway") == "platform" \
             or t.get("man_made") in ("pier", "bridge") \
             or (hw in ("pedestrian", "footway", "service", "track", "platform") and t.get("area") == "yes")
@@ -128,6 +185,9 @@ class Grab(osmium.SimpleHandler):
             g = _wkb.create_multipolygon(a)
         except Exception:
             return
+        if a.from_way() and (t.get("public_transport") == "platform" or t.get("highway") == "platform"
+                             or t.get("railway") == "platform"):
+            self.platforms.append((a.orig_id(), tags_of(a), g))
         self.areas.append((tags_of(a), g))
 
 
@@ -161,7 +221,7 @@ def main():
     ss = C.SUPER * C.CHUNK
     bins = defaultdict(list)          # (sx,sz) -> [(kind, tags, wkb)]
     glob = {"buildings": [], "forest": [], "water": [], "bridges": [], "nonbridge_nodes": None,
-            "far_water": []}
+            "far_water": [], "power_lines": []}
 
     def st_boxes_for(g):
         minx, minz, maxx, maxz = g.bounds
@@ -237,16 +297,33 @@ def main():
             continue
         if tags.get("waterway") in WATERWAY_LINES:
             glob["water"].append(("line", tags, g.wkb))
+        if tags.get("power") in POWER_LINES:
+            # целиком, без обрезки по суперплиткам: вершины линии — это опоры,
+            # обрезка дала бы ложную «опору» на границе плитки
+            glob["power_lines"].append((tags, g.wkb))
+            continue
         add_clipped("line", tags, g)
 
-    for tags, lon, lat in h.nodes:
+    for tags, lon, lat, nid in h.nodes:
         x, y = _to_local.transform(lon, lat)
         p = shapely.Point(x, -y)
         if not p.intersects(rbox):
             continue
+        tags["_id"] = nid
         add_point_like("node", tags, p, p)
 
     glob["nonbridge_nodes"] = h.nonbridge_nodes
+    # для export_data.py: полные (не обрезанные) линии дорог/рельсов с тегами + маршруты
+    export_lines = [(t, project(swkb.loads(w, hex=True)).wkb) for t, w, _ in h.lines
+                    if "highway" in t or "railway" in t or "public_transport" in t]
+    platforms = []
+    for wid, t, w in h.platforms:
+        c = project(swkb.loads(w, hex=True)).representative_point()
+        platforms.append((wid, t, c.x, c.y))
+    with open(C.WORK / "export.pkl", "wb") as f:
+        pickle.dump({"lines": export_lines, "routes": h.routes, "platforms": platforms,
+                     "nodes": [(t, *_to_local.transform(lon, lat), nid) for t, lon, lat, nid in h.nodes]},
+                    f, protocol=pickle.HIGHEST_PROTOCOL)
     with open(C.WORK / "global.pkl", "wb") as f:
         pickle.dump(glob, f, protocol=pickle.HIGHEST_PROTOCOL)
     for (sx, sz), items in bins.items():

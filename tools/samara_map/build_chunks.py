@@ -336,6 +336,18 @@ WORSHIP = {"church", "cathedral", "chapel", "mosque", "synagogue", "temple", "mo
 PUBLIC = {"school", "kindergarten", "hospital", "university", "college", "public", "civic", "government", "train_station", "sports_hall", "stadium"}
 
 
+def _year(v):
+    """start_date: «1957», «1957-05», «~1960», «C19»/«1890s» -> год или None."""
+    import re
+    if not v:
+        return None
+    m = re.search(r"(1[6-9]\d\d|20\d\d)", str(v))
+    if m:
+        return int(m.group(1))
+    m = re.match(r"C(\d\d)", str(v))
+    return (int(m.group(1)) - 1) * 100 + 50 if m else None
+
+
 def building_style(t, area, cx, cz):
     b = t.get("building") or t.get("building:part") or "yes"
     mat_tag = t.get("building:material")
@@ -377,6 +389,22 @@ def building_style(t, area, cx, cz):
             facade = "facade_panel" if r < 0.7 else "facade_brick"
         else:
             facade = "facade_panel" if r < 0.6 else ("facade_glass" if r < 0.75 else "facade_brick")
+    # год постройки из OSM (start_date) точнее догадки по этажности: эпоха задаёт тип фасада
+    year = _year(t.get("start_date"))
+    if year and b not in GARAGE and b not in SHED and b not in INDUSTRIAL and b not in HOUSE:
+        if year <= 1955:
+            facade = "facade_historic"            # дореволюционные дома, конструктивизм, сталинки
+        elif year <= 1990:
+            if b in COMMERCIAL:
+                facade = "facade_commercial"
+            elif lv >= 9:
+                facade = "facade_panel"           # типовые панельные серии 1970–80-х
+            elif lv >= 4:
+                facade = "facade_panel" if r < 0.5 else "facade_brick"   # хрущёвки: панель и кирпич
+            else:
+                facade = "facade_brick"
+        else:
+            facade = ("facade_glass" if lv >= 5 else "facade_commercial") if b in COMMERCIAL else "facade_brick"
     if mat_tag == "glass":
         facade = "facade_glass"
     elif mat_tag == "wood":
@@ -928,6 +956,9 @@ def prepare_super(sx, sz, terr, bridges):
             if not is_part and "building" in t:
                 if any(g.contains(p) for p in pts):
                     ctx.skip_outline.add(i)
+    # детали улиц из OSM (переходы, светофоры, остановки, контактная сеть, ЛЭП, вывески...)
+    import osm_details
+    ctx.det = osm_details.prepare(expanded, ctx, (sx * ss - 400, sz * ss - 400, (sx + 1) * ss + 400, (sz + 1) * ss + 400))
     return ctx
 
 
@@ -1183,6 +1214,11 @@ def build_chunk(gx, gz, ctx, terr):
                 light = bake_lamp(mesh, lx, y, lz, yaw_towards(-sx_, -sz_), scale)
                 lights.append((light[0], light[1], light[2], kind))
                 lamp_pts.append((lx, lz))
+
+    # --- детали улиц из OSM (osm_details.py) — запекаются в этот же чанк
+    import osm_details
+    osm_details.build(mesh, ctx, terr, gx, gz, classes,
+                      lambda mat, geom, dy: drape(mesh, terr, mat, geom, grid_tris, dy=dy), lights, blocked)
     return mesh, props, lights
 
 

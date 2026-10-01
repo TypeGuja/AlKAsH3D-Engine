@@ -1063,8 +1063,15 @@ impl AlkashEngine {
                 }
 
                 let has_mr_map = if mesh.mr_srv_index.is_some() { 1.0f32 } else { 0.0f32 };
-                let mr_constants: [f32; 4] = [mesh.material_metallic, mesh.material_roughness, has_mr_map, 0.0];
-                cmd_list.SetGraphicsRoot32BitConstants(8, 4, mr_constants.as_ptr() as *const _, 0);
+                // Раскладка ОБЯЗАНА совпадать с cbuffer MaterialConstants
+                // (b1) в main_ps.hlsl: metallic, roughness, hasMrMap,
+                // lightEmitterArea, emissive.rgb, padding.
+                let e = mesh.material_emissive;
+                let material_constants: [f32; 8] = [
+                    mesh.material_metallic, mesh.material_roughness, has_mr_map, mesh.light_emitter_area,
+                    e[0], e[1], e[2], 0.0,
+                ];
+                cmd_list.SetGraphicsRoot32BitConstants(8, 8, material_constants.as_ptr() as *const _, 0);
 
                 match &job.transform {
                     DrawTransform::Camera(model) => {

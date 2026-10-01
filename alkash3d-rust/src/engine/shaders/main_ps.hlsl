@@ -95,10 +95,16 @@ Texture2D MetallicRoughnessMap : register(t8);
 // знает только Rust-сторона (`Mesh::mr_srv_index.is_some()`, см.
 // render_frame), поэтому передаётся явным third root constant'ом,
 // а не выводится внутри HLSL.
+// ДОБАВЛЕНО (светящиеся плафоны): lightEmitterArea и materialEmissive —
+// см. `Mesh::light_emitter_area` / `Mesh::material_emissive` и
+// EmitterRadiance ниже. Раскладка ОБЯЗАНА совпадать с массивом из 8
+// root constants в render_frame.rs (параметр 8).
 cbuffer MaterialConstants : register(b1) {
     float rootMetallic;
     float rootRoughness;
     float hasMrMap;
+    float lightEmitterArea;
+    float3 materialEmissive;
     float _materialConstantsPadding;
 };
 
@@ -407,6 +413,37 @@ float3 ComputePointLightContribution(GPULight light, float3 worldPos, float3 nor
     return light.color.rgb * intensity * attenuation;
 }
 
+// ДОБАВЛЕНО (светящиеся плафоны — "фонари светят, а сами плафоны тёмные,
+// как в темноте"): точка света фонаря стоит в центре его рассеивателя,
+// но сама по себе невидима — а рассеиватель освещался только отражённым
+// светом, хотя на деле это и ЕСТЬ источник. Яркость излучающей
+// поверхности берём из ТОГО ЖЕ фонаря, а не из материала: плоский матовый
+// рассеиватель площади A, дающий по оси силу света I, имеет яркость
+// L = I / A (ламбертовский излучатель). intensity здесь — та же величина,
+// что даёт color·intensity/d² в ComputePointLightContribution, так что
+// плафон и пятно света под ним согласованы физически, а не подобраны на
+// глаз. Плафон гаснет днём, мигает и окрашен ровно так же, как его свет.
+//
+// Связь "пиксель плафона ↔ его фонарь": фонарь ближе EMITTER_LINK_RADIUS
+// к пикселю (рассеиватель ~0.5 м, соседние фонари — минимум в 10 м), а
+// для spot — поверхность смотрит туда, куда светит фонарь (свет выходит
+// через эту грань, а не через крышку корпуса).
+static const float EMITTER_LINK_RADIUS = 0.6;
+
+float3 EmitterRadiance(GPULight light, float3 worldPos, float3 surfaceNormal) {
+    if (light.position.w > 1.5) {
+        return float3(0.0, 0.0, 0.0); // directional — не точечный излучатель
+    }
+    float3 d = worldPos - light.position.xyz;
+    if (dot(d, d) > EMITTER_LINK_RADIUS * EMITTER_LINK_RADIUS) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    if (light.position.w > 0.5 && dot(surfaceNormal, normalize(light.direction.xyz)) <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return light.color.rgb * max(light.color.w, 0.0) / max(lightEmitterArea, 0.0001);
+}
+
 // ДОБАВЛЕНО (Задача #15, normal mapping — PBR-специуляр):
 // Cook-Torrance микрофасетная модель с GGX/Trowbridge-Reitz
 // распределением нормалей (D), Smith-геометрией с
@@ -598,6 +635,21 @@ PS_OUTPUT main(PS_INPUT input) {
     float3 ambientTerm = ambientRadiance * (albedoRaw * (1.0 - envSpec) * (1.0 - metallic) + envSpec);
     brightness += ambientTerm;
 
+    // ДОБАВЛЕНО (светящиеся плафоны): собственное излучение поверхности —
+    // статичное из материала (.altex Material::emissive) плюс, для
+    // рассеивателей фонарей (lightEmitterArea > 0), яркость из фонаря,
+    // стоящего в них (EmitterRadiance, считается в циклах по фонарям ниже).
+    // Геометрическая нормаль, а не из normal map: "в какую сторону смотрит
+    // грань" — свойство геометрии, а не микрорельефа.
+    //
+    // Статичное излучение умножается на albedo (текстура * цвет вершины):
+    // картинка материала служит и маской свечения. Так у вывески светятся
+    // только буквы атласа, а чёрный фон их ячеек — нет (без этого каждая
+    // буква была бы светящимся прямоугольником). Для однотонного материала
+    // это просто emissive * его цвет.
+    float3 emitted = materialEmissive * albedoRaw;
+    bool isLightEmitter = lightEmitterArea > 0.0;
+
     // ДОБАВЛЕНО (Фаза 3 плана по реализму/фонарям): находим ячейку
     // сетки, которой принадлежит этот пиксель, и проверяем ТОЛЬКО
     // фонари этой ячейки — вместо перебора всего видимого списка
@@ -627,6 +679,9 @@ PS_OUTPUT main(PS_INPUT input) {
                 float3 toL;
                 float3 lightRadiance = ComputePointLightContribution(light, input.worldPos, normal, toL);
                 brightness += ShadeLight(normal, viewDir, toL, albedoRaw, metallic, roughness, lightRadiance);
+                if (isLightEmitter) {
+                    emitted += EmitterRadiance(light, input.worldPos, geomNormal);
+                }
             }
         }
         // Пиксель вне границ сетки (например очень далёкий объект
@@ -644,6 +699,9 @@ PS_OUTPUT main(PS_INPUT input) {
             float3 toL;
             float3 lightRadiance = ComputePointLightContribution(Lights[i], input.worldPos, normal, toL);
             brightness += ShadeLight(normal, viewDir, toL, albedoRaw, metallic, roughness, lightRadiance);
+            if (isLightEmitter) {
+                emitted += EmitterRadiance(Lights[i], input.worldPos, geomNormal);
+            }
         }
     }
 
@@ -653,7 +711,7 @@ PS_OUTPUT main(PS_INPUT input) {
     // (серый 0.5 рендерился как 0.25), а блик — окрашивался в цвет
     // диэлектрика, чего в реальности не бывает (блик пластика белый).
     PS_OUTPUT output;
-    output.color = float4(brightness, input.color.a);
+    output.color = float4(brightness + emitted, input.color.a);
     output.ambient = float4(ambientTerm, 0.0);
     return output;
 }

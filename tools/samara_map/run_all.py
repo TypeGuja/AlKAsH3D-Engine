@@ -26,12 +26,12 @@ def main():
             print(f"[get] {url}")
             urllib.request.urlretrieve(url, path)
     here = C.Path(__file__).parent
-    for step in ("extract_osm.py", "terrain.py", "textures.py", "models.py", "build_chunks.py"):
+    for step in ("extract_osm.py", "terrain.py", "textures.py", "models.py", "build_chunks.py", "export_data.py"):
         print(f"=== {step}", flush=True)
         subprocess.run([sys.executable, step], check=True, cwd=here)
     # свет фонарей для движка — пишется Rust-инструментом структурами самого движка
     print("=== alfar_writer", flush=True)
-    subprocess.run(["cargo", "run", "--release", "-q", "--", str(C.OUT / "lights"), str(C.OUT / "lights" / "samara_lamps_1km.alfar")],
+    subprocess.run(["cargo", "run", "--release", "-q", "--", str(C.OUT / "lights"), str(C.OUT / "lights" / "samara_lamps.alfar")],
                    check=True, cwd=here / "alfar_writer",
                    env={**os.environ, "CARGO_TARGET_DIR": str(C.ROOT / "alkash3d-rust" / "target")})
     print("=== finalize.py", flush=True)

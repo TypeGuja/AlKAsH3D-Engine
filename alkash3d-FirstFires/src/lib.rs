@@ -191,16 +191,32 @@ struct LightState {
 }
 
 impl LightState {
+    // ИЗМЕНЕНО (по просьбе — "отключим порог в 1км для фонарей, чтобы они
+    // работали по всей карте"): раньше сетка была ФИКСИРОВАННЫМ кубом
+    // [-far_plane, far_plane]^3 вокруг МИРОВОГО НАЧАЛА КООРДИНАТ — на карте
+    // больше 1км любой пиксель дальше far_plane от (0,0,0) выпадал из
+    // `gridDimensions` в шейдере и не получал ни одного фонаря. Теперь
+    // сетка того же размера ЕДЕТ ЗА КАМЕРОЙ: `recenter()` в начале каждого
+    // `cull()` сдвигает world_min так, чтобы куб [camera-far_plane,
+    // camera+far_plane]^3 (т.е. всё, что вообще может быть в кадре при
+    // camera.far <= far_plane) был целиком внутри сетки. Движок и так
+    // читает `get_grid_params()` каждый кадр (render_frame.rs), так что
+    // сдвиг подхватывается автоматически, без изменений ABI.
+    //
+    // +1 ячейка по каждой оси: world_min привязывается к кратным
+    // cell_size (см. `recenter`), из-за этого привязки начало сетки может
+    // отстоять от camera-far_plane почти на целую ячейку — лишняя ячейка
+    // гарантирует, что дальняя сторона куба всё равно покрыта.
     fn new(config: &LightConfig) -> Self {
         let world_size = config.far_plane;
-        let world_min = Vector3::new(-world_size, -world_size, -world_size);
-        let world_max = Vector3::new(world_size, world_size, world_size);
         let cell_size = config.grid_cell_size;
 
-        let size = world_max - world_min;
-        let grid_width = (size.x / cell_size).ceil() as u32;
-        let grid_height = (size.y / cell_size).ceil() as u32;
-        let grid_depth = (size.z / cell_size).ceil() as u32;
+        let cells_per_axis = (2.0 * world_size / cell_size).ceil() as u32 + 1;
+        let grid_width = cells_per_axis;
+        let grid_height = cells_per_axis;
+        let grid_depth = cells_per_axis;
+        let world_min = Vector3::new(-world_size, -world_size, -world_size);
+        let world_max = world_min + Vector3::repeat(cells_per_axis as f32 * cell_size);
         let total_cells = (grid_width * grid_height * grid_depth) as usize;
 
         Self {
@@ -271,7 +287,15 @@ impl LightState {
     /// раскладка полей, что и в `add_light()` выше, чтобы обновление вело
     /// себя идентично повторному добавлению того же света.
     fn update_light(&mut self, id: u32, light: &GPULight) {
-        if let Some(internal) = self.lights.iter_mut().find(|l| l.id == id) {
+        // ИЗМЕНЕНО (свет по всей карте — десятки тысяч фонарей): id выдаются
+        // подряд с 0 и удаления нет, поэтому свет с этим id лежит по индексу
+        // id — O(1) вместо линейного поиска (движок обновляет фонари каждый
+        // кадр, и N поисков по N светам при 60k фонарей — миллиарды
+        // сравнений за кадр). Линейный поиск остаётся запасным путём на
+        // случай, если порядок когда-нибудь нарушится.
+        let idx = self.lights.get(id as usize).filter(|l| l.id == id).map(|_| id as usize)
+            .or_else(|| self.lights.iter().position(|l| l.id == id));
+        if let Some(internal) = idx.map(|i| &mut self.lights[i]) {
             let light_type = match light.position[3] as u32 {
                 0 => LightType::Point,
                 1 => LightType::Spot,
@@ -403,6 +427,22 @@ impl LightState {
         result
     }
 
+    /// Сдвигает сетку за камерой (см. комментарий у `new`). world_min
+    /// привязан к кратным cell_size, а не к точной позиции камеры: при
+    /// мелких движениях камеры ячейки остаются на тех же мировых местах,
+    /// и раскладка светов по ячейкам не "плывёт" каждый кадр.
+    fn recenter(&mut self, camera: Vector3<f32>) {
+        let half = self.config.far_plane;
+        let cs = self.cell_size;
+        let snap = |v: f32| ((v - half) / cs).floor() * cs;
+        self.world_min = Vector3::new(snap(camera.x), snap(camera.y), snap(camera.z));
+        self.world_max = self.world_min + Vector3::new(
+            self.grid_width as f32 * cs,
+            self.grid_height as f32 * cs,
+            self.grid_depth as f32 * cs,
+        );
+    }
+
     fn cull(&mut self, camera_pos: [f32; 3], view_proj: &[f32; 16], _dt: f32) {
         let start = Instant::now();
 
@@ -416,6 +456,7 @@ impl LightState {
         }
 
         let camera = Vector3::new(camera_pos[0], camera_pos[1], camera_pos[2]);
+        self.recenter(camera);
 
         // Создаём frustum из view_proj
         // view_proj от движка — по столбцам (см. `Frustum::from_column_major`)
@@ -458,7 +499,6 @@ impl LightState {
         // второй проход убран целиком.
         enum LightCullOutcome {
             Visible(usize, u32, f32, Vector3<f32>),
-            CulledLod,
             CulledFrustum,
         }
 
@@ -468,15 +508,22 @@ impl LightState {
             .map(|(idx, light)| {
                 let distance = (light.position - camera).magnitude();
 
-                // LOD culling
+                // LOD-уровень — только метка (`LightGridEntry.lod_level`).
+                // ИЗМЕНЕНО (по просьбе — "отключим порог в 1км для
+                // фонарей"): раньше свет дальше lod_distances[2] (1000м в
+                // main_test.rs) выбрасывался целиком, даже если его сфера
+                // ещё освещала видимую геометрию. Отдельный порог по
+                // дистанции здесь не нужен: frustum test ниже проверяет
+                // все 6 плоскостей, включая ДАЛЬНЮЮ плоскость камеры, —
+                // фонари, которые не могут осветить ничего в кадре, он и
+                // так отбрасывает, а остальные теперь светят на любой
+                // дистанции. Дальше lod_distances[2] — тот же уровень 2.
                 let lod = if distance < self.config.lod_distances[0] {
                     0
                 } else if distance < self.config.lod_distances[1] {
                     1
-                } else if distance < self.config.lod_distances[2] {
-                    2
                 } else {
-                    return LightCullOutcome::CulledLod;
+                    2
                 };
 
                 // Frustum culling
@@ -489,17 +536,16 @@ impl LightState {
             .collect();
 
         let mut visible: Vec<(usize, u32, f32, Vector3<f32>)> = Vec::with_capacity(outcomes.len());
-        let mut culled_lod = 0u32;
         let mut culled_frustum = 0u32;
         for outcome in outcomes {
             match outcome {
                 LightCullOutcome::Visible(idx, lod, distance, pos) => visible.push((idx, lod, distance, pos)),
-                LightCullOutcome::CulledLod => culled_lod += 1,
                 LightCullOutcome::CulledFrustum => culled_frustum += 1,
             }
         }
 
-        self.stats.culled_by_lod = culled_lod;
+        // LOD больше не отсекает (см. выше) — всегда 0, поле оставлено ради ABI.
+        self.stats.culled_by_lod = 0;
         // ИСПРАВЛЕНО: `culled_by_distance` больше не считается отдельно от
         // LOD (см. подробный комментарий выше у убранного теста `distance
         // > light.range * 1.2`) — всегда 0. Поле оставлено в

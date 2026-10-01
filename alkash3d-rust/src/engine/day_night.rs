@@ -41,6 +41,13 @@ pub(super) struct ManagedLight {
     pub(super) flicker_intensity: f32,
     pub(super) active_from: f32,
     pub(super) active_to: f32,
+    /// ДОБАВЛЕНО (свет по всей карте): intensity, последней отправленная в
+    /// FirstFires (NaN — ещё ни разу). Всё остальное в GPULight фонаря
+    /// статично, так что если intensity не изменилась, `update_light` не
+    /// нужен — при десятках тысяч фонарей это экономит столько же вызовов
+    /// через FFI каждый кадр (меняются только мерцающие и момент
+    /// включения/выключения по времени суток).
+    pub(super) sent_intensity: f32,
 }
 
 /// ДОБАВЛЕНО (Фаза 7 плана по реализму/фонарям — день/ночь и мерцание):
@@ -103,7 +110,7 @@ impl AlkashEngine {
         }
 
         let hour = self.time_of_day;
-        for (i, managed) in self.managed_lights.iter().enumerate() {
+        for (i, managed) in self.managed_lights.iter_mut().enumerate() {
             let active = managed.is_active_at(hour);
 
             let mut intensity = if active { managed.base_intensity } else { 0.0 };
@@ -113,6 +120,11 @@ impl AlkashEngine {
                 let noise = 0.6 * (phase).sin() + 0.4 * (phase * 2.7).sin();
                 intensity *= (1.0 + noise * managed.flicker_intensity).max(0.0);
             }
+
+            if intensity == managed.sent_intensity {
+                continue;
+            }
+            managed.sent_intensity = intensity;
 
             let gpu_light = GPULight {
                 position: [managed.position[0], managed.position[1], managed.position[2], managed.light_type],

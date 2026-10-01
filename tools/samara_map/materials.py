@@ -51,4 +51,42 @@ MATERIALS = {
     "bark":             dict(tile=(1, 2),     rough=0.9,  metal=0.0),
     "leaves":           dict(tile=(2, 2),     rough=0.8,  metal=0.0),
     "pine_needles":     dict(tile=(2, 2),     rough=0.85, metal=0.0),
+
+    # --- детали улиц из OSM (osm_details.py). size — сторона текстуры в пикселях:
+    # мелким предметам 1024² не нужно, а каждый материал — это ~12 МБ VRAM при 1024².
+    # tile=None — UV 0..1 на всю грань (картинка знака/двери целиком).
+    "steel_grey":       dict(tile=(1, 1),     rough=0.5,  metal=0.7, size=256),   # окрашенные столбы, кронштейны
+    "steel_lattice":    dict(tile=(1, 1),     rough=0.55, metal=0.9, size=256),   # оцинкованные опоры ЛЭП
+    "cable":            dict(tile=(1, 1),     rough=0.45, metal=0.6, size=128),   # провода (алюминий/медь, потемневшие)
+    "insulator":        dict(tile=(1, 1),     rough=0.2,  metal=0.0, size=128),   # стекло/фарфор изоляторов
+    "signal_body":      dict(tile=(1, 1),     rough=0.5,  metal=0.1, size=128),   # корпус светофора (тёмный пластик)
+    "signal_lens":      dict(tile=(1, 1),     rough=0.1,  metal=0.0, size=128),   # линзы (выключены: циклы светофоров не моделируются)
+    "sign_crossing":    dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 5.19.1 «Пешеходный переход»
+    "sign_give_way":    dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 2.4 «Уступите дорогу»
+    "sign_stop":        dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 2.5 «Движение без остановки запрещено»
+    "sign_bus_stop":    dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 5.16 «Место остановки автобуса/троллейбуса»
+    "sign_tram_stop":   dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 5.17 «Место остановки трамвая»
+    "sign_metro":       dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # красная «М» над входом в метро
+    "sign_back":        dict(tile=(1, 1),     rough=0.6,  metal=0.5, size=128),   # оборот знака (оцинковка)
+    "sign_board":       dict(tile=(1, 1),     rough=0.4,  metal=0.1, size=128),   # фон вывесок (чёрный, как фон атласа букв)
+    # буквы вывесок: атлас глифов, светятся (подсветка). ke — яркость в единицах
+    # движка: подсвеченная вывеска ~500 кд/м², а рассеиватель фонаря (~25 000 кд/м²)
+    # в движке = intensity/площадь ≈ 240 => 500 кд/м² ≈ 5. Шейдер умножает ke на
+    # albedo, поэтому светятся только буквы, а чёрный фон глифа — нет.
+    "glyphs_white":     dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
+    "glyphs_yellow":    dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
+    "glyphs_red":       dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
+    "glyphs_green":     dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
+    "glyphs_blue":      dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
+    "door_metal":       dict(tile=None,       rough=0.45, metal=0.6, size=256),   # подъездная металлическая дверь
+    "entrance_lamp_glass": dict(tile=(1, 1),  rough=0.2,  metal=0.0, size=128),   # плафон над подъездом (светится от своего источника)
+    "glass_shelter":    dict(tile=(1, 1),     rough=0.05, metal=0.0, size=128),   # стекло павильона остановки
+    "granite":          dict(tile=(1, 1),     rough=0.55, metal=0.0, size=256),   # бордюры, постаменты, чаши фонтанов
+    "bronze":           dict(tile=(1, 1),     rough=0.4,  metal=1.0, size=256),   # скульптуры, доски
+    "wood_planks":      dict(tile=(1, 1),     rough=0.8,  metal=0.0, size=256),   # скамейки, столы
+    "paint_red":        dict(tile=(1, 1),     rough=0.5,  metal=0.2, size=128),   # гидранты, шлагбаумы
+    "paint_blue":       dict(tile=(1, 1),     rough=0.5,  metal=0.2, size=128),   # почтовые ящики (Почта России)
+    "paint_yellow":     dict(tile=(1, 1),     rough=0.5,  metal=0.2, size=128),   # игровое оборудование
+    "paint_green":      dict(tile=(1, 1),     rough=0.6,  metal=0.2, size=128),   # мусорные контейнеры
+    "boom_stripes":     dict(tile=(1.0, 1),   rough=0.5,  metal=0.1, size=128),   # стрела шлагбаума (красно-белая, по 0.5 м)
 }

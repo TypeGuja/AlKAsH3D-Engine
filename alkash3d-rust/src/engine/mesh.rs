@@ -153,6 +153,18 @@ pub struct Mesh {
     /// берёт `add_material`.
     pub material_metallic: f32,
     pub material_roughness: f32,
+    /// ДОБАВЛЕНО (светящиеся плафоны): собственное излучение материала
+    /// (`Material::emissive` из .altex) — линейная яркость в тех же
+    /// единицах, что и освещённость в main_ps.hlsl; шейдер умножает её на
+    /// albedo (текстура служит маской свечения — у вывески светятся только
+    /// буквы). [0,0,0] — материал не светится сам.
+    pub material_emissive: [f32; 3],
+    /// ДОБАВЛЕНО (светящиеся плафоны): > 0 — меш является ИЗЛУЧАЮЩЕЙ
+    /// ПОВЕРХНОСТЬЮ фонаря (рассеивателем), а значение — площадь этой
+    /// поверхности в м² на один фонарь. Яркость поверхности шейдер берёт
+    /// не из материала, а из фонаря, стоящего в ней (см. `EmitterRadiance`
+    /// в main_ps.hlsl): L = color·intensity / площадь. 0 — обычный меш.
+    pub light_emitter_area: f32,
     /// ДОБАВЛЕНО (оптимизация рендера — CPU-side frustum culling, см.
     /// `crate::math::Frustum`): ограничивающая сфера меша В ЛОКАЛЬНЫХ
     /// (model-space, ДО умножения на world-матрицу) координатах —
@@ -233,6 +245,8 @@ impl Mesh {
             mr_srv_index: None,
             material_metallic: 0.0,
             material_roughness: 0.8,
+            material_emissive: [0.0; 3],
+            light_emitter_area: 0.0,
             bounding_center,
             bounding_radius,
         })
