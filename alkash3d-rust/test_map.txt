@@ -1,0 +1,4 @@
+# Папка карты для main_test (её пишет эдитор: File > Export > Scene to .alworld).
+# main_test сам возьмёт оттуда world.alworld, chunks/, весь свет (*.alfar, lights/*.alfar) и точку спавна.
+# Путь относительно alkash3d-rust\ или абсолютный. Закомментируй строку ниже (#), чтобы вернуться к test.alworld.
+C:\Users\user\Desktop\иршгн
