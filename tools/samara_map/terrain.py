@@ -3,6 +3,9 @@
 Copernicus — это DSM (поверхность с домами и кронами), поэтому:
   * под зданиями высота восстанавливается из окружающей земли (normalized convolution);
   * внутри лесов вычитается оценка высоты крон (плавно от опушки);
+  * полотно дорог не трогают ни маска зданий, ни поправка на кроны (над асфальтом
+    нет ни крыш, ни деревьев), а затем рельеф вдоль дорог притягивается к их
+    собственному сглаженному продольному профилю (см. conform_roads);
   * водоёмы получают плоский уровень, берег поднимается не ниже уровня воды.
 
 Выход (CACHE/work): heights.npy, water_level.npy, grid.json, bridges3d.pkl
@@ -24,9 +27,22 @@ from scipy.sparse.linalg import spsolve
 from shapely import wkb as swkb
 
 import config as C
+from build_chunks import ROAD_W, road_width
 
 FOREST_CANOPY = 10.0     # м, насколько DSM Copernicus в лесу выше земли
 FOREST_RAMP = 60.0       # м от опушки до полной поправки
+BLD_OPEN_CELLS = 7       # окно нижней огибающей DSM (7 клеток = 112 м): уже квартала с дворами
+BLD_GROUND_DH = 1.5      # м: клетка не выше огибающей на столько — видимая земля
+
+# Дороги: по ним рельеф выравнивается (conform_roads). Только проезжие дороги и
+# рельсы — у тропинок и дорожек в парках DSM видит кроны, им верить нельзя.
+RAIL_W = {"rail": 4.0, "tram": 3.0, "light_rail": 4.0, "narrow_gauge": 3.0}
+ROAD_SAMPLE = 8.0        # м, шаг продольного профиля
+ROAD_MEDIAN = 5          # отсчётов (40 м): убирает одиночные выбросы
+ROAD_OPEN = 7            # отсчётов (56 м): открытие срезает горбы короче (кроны/крыши у дороги)
+ROAD_SIGMA = 2.0         # отсчётов (16 м): итоговое сглаживание профиля
+ROAD_SHOULDER = 2.0      # м за краем полотна, где рельеф ещё точно на уровне дороги
+ROAD_BLEND = 16.0        # м, дальше — плавный переход к окружающему рельефу
 _to_geo = Transformer.from_crs(C.PROJ, "EPSG:4326", always_xy=True)
 
 
@@ -90,6 +106,109 @@ def smoothstep(e0, e1, x):
     return t * t * (3 - 2 * t)
 
 
+def load_roads():
+    """Проезжие дороги и рельсы из бинов этапа 1 -> [(LineString, полуширина м)].
+
+    В бинах линии нарезаны по суперплиткам с перекрытием, поэтому внутри
+    группы одной ширины они объединяются и склеиваются в цепочки (от
+    перекрёстка до перекрёстка). Мостов здесь нет (они в global.pkl, у них
+    своя высота — build_bridges), тоннелей тоже (отброшены в extract_osm).
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for f in sorted((C.WORK / "bins").glob("st_*.pkl")):
+        for kind, tags, g in pickle.load(open(f, "rb")):
+            if kind != "line":
+                continue
+            hw, rw = tags.get("highway"), tags.get("railway")
+            if hw in ROAD_W:
+                w = road_width(tags, hw)
+            elif rw in RAIL_W:
+                w = RAIL_W[rw]
+            else:
+                continue
+            groups[round(w * 2) / 4].append(swkb.loads(g))
+    out = []
+    for hw, gs in groups.items():
+        merged = shapely.line_merge(shapely.union_all(gs))
+        out += [(p, hw) for p in shapely.get_parts(merged) if p.length > 0.5]
+    return out
+
+
+def conform_roads(h, h_bld, forest_depth, roads, x0, z0):
+    """Притянуть рельеф вдоль дорог к их сглаженному продольному профилю.
+
+    Профиль снимается по оси дороги каждые ROAD_SAMPLE м с рельефа без зданий
+    (h_bld), а глубоко в лесу — с рельефа с поправкой на кроны (h). Затем:
+    медиана (одиночные выбросы DSM), морфологическое открытие (срезает
+    горбы короче ~56 м: кроны и края крыш, попавшие в 30-метровый пиксель
+    DSM; настоящий подъём дороги длиннее и не страдает — плавная выпуклость
+    радиусом 1 км теряет на 56 м лишь ~0.4 м) и лёгкое гауссово сглаживание.
+
+    Узел сетки на расстоянии d от оси дороги полуширины hw получает вес
+    1 при d <= hw + ROAD_SHOULDER и линейно до 0 к hw + ROAD_SHOULDER +
+    ROAD_BLEND; высота = смесь рельефа и профиля с этим весом. На перекрёстках
+    профили соседних дорог усредняются (ближняя — с большим весом).
+    """
+    from scipy.spatial import cKDTree
+
+    seg_d, seg_xy, seg_n = [], [], []
+    for line, _ in roads:
+        n = max(2, int(math.ceil(line.length / ROAD_SAMPLE)) + 1)
+        d = np.linspace(0.0, line.length, n)
+        seg_d.append(d)
+        seg_xy.append(shapely.get_coordinates(shapely.line_interpolate_point(line, d)))
+        seg_n.append(n)
+    xy = np.concatenate(seg_xy)
+    a = grid_height(h_bld, x0, z0, xy[:, 0], xy[:, 1])
+    b = grid_height(h, x0, z0, xy[:, 0], xy[:, 1])
+    t = smoothstep(20.0, 50.0, grid_height(forest_depth, x0, z0, xy[:, 0], xy[:, 1]))
+    y_all = a + (b - a) * t
+
+    X, Z, T, HW = [], [], [], []
+    k = 0
+    for (line, hw), d, n in zip(roads, seg_d, seg_n):
+        y = y_all[k:k + n]
+        k += n
+        if n >= 3:
+            y = ndimage.median_filter(y, size=min(ROAD_MEDIAN, n), mode="nearest")
+            y = ndimage.grey_opening(y, size=min(ROAD_OPEN, n), mode="nearest")
+            y = ndimage.gaussian_filter1d(y, ROAD_SIGMA, mode="nearest")
+        m = max(2, int(math.ceil(line.length / 4.0)) + 1)     # плотнее для поиска ближайших
+        dd = np.linspace(0.0, line.length, m)
+        q = shapely.get_coordinates(shapely.line_interpolate_point(line, dd))
+        X.append(q[:, 0]); Z.append(q[:, 1]); T.append(np.interp(dd, d, y)); HW.append(np.full(m, hw))
+    X = np.concatenate(X); Z = np.concatenate(Z); T = np.concatenate(T); HW = np.concatenate(HW)
+
+    reach = float(HW.max()) + ROAD_SHOULDER + ROAD_BLEND
+    nz, nx = h.shape
+    near = np.zeros((nz, nx), bool)
+    ii = np.clip(np.rint((X - x0) / C.GRID).astype(int), 0, nx - 1)
+    jj = np.clip(np.rint((Z - z0) / C.GRID).astype(int), 0, nz - 1)
+    near[jj, ii] = True
+    near = ndimage.binary_dilation(near, iterations=int(math.ceil(reach / C.GRID)) + 1)
+    nj, ni = np.nonzero(near)
+
+    tree = cKDTree(np.column_stack([X, Z]))
+    out = h.copy()
+    K = 16
+    for s in range(0, len(nj), 400_000):
+        bj, bi = nj[s:s + 400_000], ni[s:s + 400_000]
+        pts = np.column_stack([x0 + bi * C.GRID, z0 + bj * C.GRID])
+        dist, idx = tree.query(pts, k=K, distance_upper_bound=reach)
+        ok = np.isfinite(dist)
+        idx = np.where(ok, idx, 0)
+        f = np.clip(1.0 - (dist - (HW[idx] + ROAD_SHOULDER)) / ROAD_BLEND, 0.0, 1.0) * ok
+        w = f / (1.0 + np.where(ok, dist, 0.0))
+        wsum = w.sum(axis=1)
+        has = wsum > 0
+        target = np.where(has, (w * T[idx]).sum(axis=1) / np.where(has, wsum, 1.0), 0.0)
+        W = f.max(axis=1)
+        cur = out[bj, bi]
+        out[bj, bi] = np.where(has, cur + W * (target - cur), cur)
+    return out.astype(np.float32)
+
+
 def main():
     t0 = time.time()
     region = pickle.load(open(C.WORK / "region.pkl", "rb"))
@@ -112,20 +231,50 @@ def main():
         h[j] = sample_dem(dem, lon0, lat0, dlon, dlat, xs, np.full(nx, z0 + j * C.GRID))
     print(f"[terrain] DEM выбран: {h.min():.1f}..{h.max():.1f} м — {time.time()-t0:.0f}s")
 
+    # --- дороги: узлы сетки на самом полотне — DSM там честно видит землю
+    roads = load_roads()
+    road_polys = [g.buffer(hw, quad_segs=2) for g, hw in roads]
+    on_road = rasterize(road_polys, x0 - C.GRID / 2, z0 - C.GRID / 2, C.GRID, nx, nz) > 0
+    print(f"[terrain] дорог {len(roads)} цепочек ({sum(g.length for g, _ in roads)/1000:.0f} км), "
+          f"полотно {on_road.mean()*100:.1f}% сетки — {time.time()-t0:.0f}s")
+
     # --- здания: восстановить землю под ними
+    # Расширение маски на клетку ловит размытые края крыш в DSM (пиксель 30 м),
+    # но НЕ на полотне дороги: раньше узлы проезжей части у домов заменялись
+    # интерполяцией из дворов, и дорога проседала/вспухала на 1–4 м.
+    #
+    # Клетки кольца, где DSM лежит на нижней огибающей (открытие окном
+    # BLD_OPEN_CELLS), — видимая земля (улица, двор, площадь): их тоже не
+    # заливаем, они — опорные точки для восстановления. Без этого в плотной
+    # застройке кольца сливались в одно пятно на десятки км², улицы внутри
+    # исчезали, и заливка тянула высоту с краёв пятна — центр города на
+    # 60–70 м проседал почти до уровня Волги.
     blds = [swkb.loads(b) for b in glob["buildings"]]
-    bmask = rasterize(blds, x0 - C.GRID / 2, z0 - C.GRID / 2, C.GRID, nx, nz) > 0
-    bmask = ndimage.binary_dilation(bmask, iterations=1)
+    bcore = rasterize(blds, x0 - C.GRID / 2, z0 - C.GRID / 2, C.GRID, nx, nz) > 0
+    envelope = ndimage.grey_opening(h, size=(BLD_OPEN_CELLS, BLD_OPEN_CELLS))
+    ground_seen = (h - envelope) < BLD_GROUND_DH
+    ring = ndimage.binary_dilation(bcore, iterations=1) & ~bcore
+    bmask = bcore | (ring & ~on_road & ~ground_seen)
     h = inpaint(h, bmask)
+    h_bld = h.copy()
     print(f"[terrain] под зданиями восстановлено {bmask.mean()*100:.1f}% сетки — {time.time()-t0:.0f}s")
 
     # --- леса: снять кроны
+    # Над полотном дороги крон нет — поправка там 0 и нарастает от края дороги,
+    # как от опушки. Раньше полигон леса/парка, подходящий к дороге, опускал
+    # соседний узел на 10 м, и асфальт между узлами проваливался на 8–13 м.
     forests = [swkb.loads(b) for b in glob["forest"]]
     fmask = rasterize(forests, x0 - C.GRID / 2, z0 - C.GRID / 2, C.GRID, nx, nz) > 0
-    fdist = ndimage.distance_transform_edt(fmask) * C.GRID
+    fdist = ndimage.distance_transform_edt(fmask & ~on_road) * C.GRID
     h -= (FOREST_CANOPY * smoothstep(0, FOREST_RAMP, fdist)).astype(np.float32)
     h = ndimage.gaussian_filter(h, 0.8).astype(np.float32)
     print(f"[terrain] лес {fmask.mean()*100:.1f}% сетки — {time.time()-t0:.0f}s")
+
+    # --- дороги: плавный продольный профиль
+    # глубоко в лесу (оба края — лес) дорогу берём с поправкой на кроны, иначе — без неё
+    forest_depth = ndimage.distance_transform_edt(fmask) * C.GRID
+    h = conform_roads(h, h_bld, forest_depth, roads, x0, z0)
+    print(f"[terrain] дороги выровнены — {time.time()-t0:.0f}s")
 
     # --- вода: плоские уровни
     wpolys = [swkb.loads(w) for w in glob["water"] if not isinstance(w, tuple)]
@@ -144,7 +293,10 @@ def main():
         near_level = level[ij, ii]
         shore = (~water) & (dist <= 3)
         h[shore] = np.maximum(h[shore], near_level[shore] + 0.25)
-        h[water] = level[water] - 1.0
+        # дно под водой — но не под полотном дороги (дамбы, насыпи, неточные
+        # полигоны берега): иначе дорога проваливается к уровню воды
+        sink = water & ~on_road
+        h[sink] = level[sink] - 1.0
     print(f"[terrain] вода {water.mean()*100:.1f}% сетки, водоёмов {len(wpolys)} — {time.time()-t0:.0f}s")
 
     np.save(C.WORK / "heights.npy", h)

@@ -216,7 +216,9 @@ impl AlkashEngine {
                     Constants: D3D12_ROOT_CONSTANTS {
                         ShaderRegister: 1,
                         RegisterSpace: 0,
-                        Num32BitValues: 4,
+                        // 8: metallic/roughness/hasMrMap/lightEmitterArea +
+                        // emissive.rgb/padding (светящиеся плафоны).
+                        Num32BitValues: 8,
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,

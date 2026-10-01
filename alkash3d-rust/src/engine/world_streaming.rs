@@ -311,6 +311,7 @@ impl AlkashEngine {
                         flicker_intensity: light.flicker_intensity,
                         active_from: light.active_from,
                         active_to: light.active_to,
+                        sent_intensity: f32::NAN,
                     });
                     self.flicker_phase.push(0.0);
                 }

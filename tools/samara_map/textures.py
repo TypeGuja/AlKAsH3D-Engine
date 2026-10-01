@@ -584,8 +584,11 @@ def write_mtl():
             f"map_Bump -bm 1.0 textures/{name}_normal.png",
             f"norm textures/{name}_normal.png",
             f"map_Pr textures/{name}_rough.png",
-            "",
         ]
+        if "ke" in m:
+            # собственное свечение (линейная яркость в единицах движка, см. materials.py)
+            lines.append("Ke {:.3f} {:.3f} {:.3f}".format(*m["ke"]))
+        lines.append("")
     (C.OUT / "samara.mtl").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -617,6 +620,8 @@ def main():
     bark()
     t_leaves("leaves", (0.07, 0.16, 0.04), (0.30, 0.45, 0.12), 371, 0.08)
     t_leaves("pine_needles", (0.03, 0.10, 0.05), (0.14, 0.26, 0.12), 381, 0.15)
+    import textures_details
+    textures_details.main()
     missing = [m for m in MATERIALS if not (TEX / f"{m}_albedo.png").exists()]
     assert not missing, f"нет текстур для {missing}"
     write_mtl()

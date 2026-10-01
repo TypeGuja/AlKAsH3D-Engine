@@ -3,11 +3,12 @@
 //! samara_alfar <папка lights/> <выход.alfar> [--center X,Z] [--radius М] [--max N]
 //!
 //! Читает lights/chunk_<gx>_<gz>.csv (x,y,z,kind — центры рассеивателей
-//! фонарей, их пишет tools/samara_map/build_chunks.py) и оставляет ближайшие
-//! к центру в радиусе. Ограничения движка, из-за которых весь город разом
-//! не берётся: сетка каллинга FirstFires покрывает только ±far_plane вокруг
-//! начала координат мира (в main_test это 1000 м), а обновление
-//! день/ночь ищет каждый источник линейно (N² за кадр).
+//! фонарей, их пишет tools/samara_map/build_chunks.py). По умолчанию берёт
+//! ВСЕ фонари карты; --center/--radius/--max — чтобы урезать (ближайшие к
+//! центру). Раньше по умолчанию был радиус 950 м: сетка каллинга FirstFires
+//! стояла вокруг начала координат мира, а день/ночь искал каждый фонарь
+//! линейно (N² за кадр). Теперь сетка едет за камерой, поиск — O(1), и
+//! движок отправляет в плагин только фонари с изменившейся яркостью.
 use std::path::Path;
 
 use alkash3d_rs::{AlfarFile, AmbientLight, IndividualLight, LightFalloff};
@@ -30,8 +31,8 @@ fn main() {
     let dir = Path::new(&args[1]);
     let out = &args[2];
     let mut center = [0.0f32, 0.0];
-    let mut radius = 950.0f32;
-    let mut max = 2000usize;
+    let mut radius = f32::INFINITY;
+    let mut max = usize::MAX;
     let mut i = 3;
     while i + 1 < args.len() {
         match args[i].as_str() {
@@ -83,9 +84,16 @@ fn main() {
         // ComputePointLightContribution): светильник висит на ~9 м (парковый
         // ~5 м), и чтобы под ним было пятно ~0.3–0.4 (полуденное солнце в
         // движке = 1.0, ночной ambient ~0.03), нужно I ≈ 0.4 * 9² ≈ 32.
+        //
+        // "entrance" — светильник над подъездом (osm_details.py): ~10 Вт LED,
+        // ~1000 лм с широким косинусным светом => пиковая сила ~1000/π ≈ 320 кд,
+        // примерно в 19 раз слабее уличного LED-светильника (~6000 кд) — отсюда
+        // 32 / 19 ≈ 1.7. Висит на 2.4 м, поэтому пятно у двери по яркости
+        // сравнимо с пятном под уличным фонарём, но радиус ~10 м. 3000K.
         let (color, intensity, range, outer, inner) = match lamp.kind.as_str() {
             "led" => ([1.0, 0.89, 0.78], 32.0, 40.0, 1.15, 0.6),
             "sodium" => ([1.0, 0.62, 0.28], 26.0, 36.0, 1.2, 0.7),
+            "entrance" => ([1.0, 0.82, 0.62], 1.7, 12.0, 1.4, 0.9),
             _ => ([1.0, 0.85, 0.65], 8.0, 20.0, 1.3, 0.8),
         };
         // ~2% натриевых ламп "моргают" — изношенный ДНаТ
@@ -121,7 +129,8 @@ fn main() {
             health: 100.0,
             custom_data_offset: 0,
         };
-        alfar.add_light(light, &format!("StreetLamp_{}_{}", lamp.kind, n));
+        let prefix = if lamp.kind == "entrance" { "EntranceLamp" } else { "StreetLamp" };
+        alfar.add_light(light, &format!("{}_{}_{}", prefix, lamp.kind, n));
     }
     alfar.save(out).expect("не удалось записать .alfar");
     // контрольное чтение тем же загрузчиком, что у движка (load_lights_from_alfar)

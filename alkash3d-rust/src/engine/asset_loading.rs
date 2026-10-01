@@ -180,6 +180,9 @@ impl AlkashEngine {
 
                         mesh.material_metallic = material.metallic;
                         mesh.material_roughness = material.roughness;
+                        mesh.material_emissive = material.emissive;
+                        let material_name = altex.strings.get(material.name_id as usize).map(String::as_str).unwrap_or("");
+                        mesh.light_emitter_area = light_emitter_area_for_material(material_name);
                     }
 
                     let index = self.add_mesh(mesh);
@@ -521,5 +524,28 @@ impl AlkashEngine {
                 None
             }
         }
+    }
+}
+
+/// ДОБАВЛЕНО (светящиеся плафоны): материалы, которые являются
+/// излучающей поверхностью фонаря, и площадь этой поверхности на один
+/// фонарь (м²). Сам .altex не несёт признака "это рассеиватель лампы",
+/// поэтому связь задаётся по имени материала — тому же, что пишет
+/// генератор карты (tools/samara_map/materials.py).
+///
+/// `lamp_glass` — плоский рассеиватель консольного LED-светильника из
+/// tools/samara_map/models.py (`street_lamp`): 0.52 × 0.26 м = 0.135 м².
+/// Парковые фонари — та же модель в масштабе 0.55 (площадь ~0.041 м²),
+/// но материал у них общий, а шейдер не знает масштаб конкретного
+/// фонаря — для них яркость плафона выйдет ~3.3× ниже физической. При
+/// яркостях в сотни раз выше окружения после тонмаппинга это не видно.
+///
+/// `entrance_lamp_glass` — нижняя грань плафона светильника над подъездом
+/// (tools/samara_map/osm_details.py, `entrances`): 0.26 × 0.12 м = 0.0312 м².
+fn light_emitter_area_for_material(name: &str) -> f32 {
+    match name {
+        "lamp_glass" => 0.135,
+        "entrance_lamp_glass" => 0.0312,
+        _ => 0.0,
     }
 }

@@ -152,6 +152,9 @@ impl CityInfo {
 struct MtlEntry {
     name: String,
     kd: Option<[f32; 3]>,
+    /// Собственное свечение (`Ke`, линейная яркость в единицах движка) —
+    /// светящиеся буквы вывесок у tools/samara_map.
+    ke: Option<[f32; 3]>,
     pr: Option<f32>,
     pm: Option<f32>,
     map_kd: Option<PathBuf>,
@@ -180,6 +183,12 @@ fn parse_mtl(path: &Path) -> Result<Vec<MtlEntry>> {
                 let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
                 if v.len() >= 3 {
                     cur.kd = Some([v[0], v[1], v[2]]);
+                }
+            }
+            "Ke" => {
+                let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
+                if v.len() >= 3 {
+                    cur.ke = Some([v[0], v[1], v[2]]);
                 }
             }
             "Pr" => cur.pr = num(it.next()),
@@ -234,6 +243,9 @@ pub fn load_materials(mtl_path: &Path, log: &(dyn Fn(String) + Sync)) -> Result<
             m.metallic = e.pm.unwrap_or(0.0);
             let kd = e.kd.unwrap_or([1.0, 1.0, 1.0]);
             m.color = [kd[0], kd[1], kd[2], 1.0];
+            if let Some(ke) = e.ke {
+                m.emissive = ke;
+            }
             if let Some(p) = &e.map_kd {
                 match load_rgba(p) {
                     Ok(img) => {
