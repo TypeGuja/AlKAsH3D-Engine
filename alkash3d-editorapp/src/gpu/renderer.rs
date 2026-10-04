@@ -173,6 +173,52 @@ pub struct GpuMesh {
     pub index_offset: u32,
     pub index_count: u32,
     pub visible: bool,
+    /// Ограничивающая сфера в координатах меша (центр, радиус) — для отсечения
+    /// объектов вне поля зрения камеры в `render()`.
+    pub bound_center: [f32; 3],
+    pub bound_radius: f32,
+}
+
+/// Сфера, охватывающая меш (по его AABB `bounds`).
+fn mesh_bounding_sphere(mesh: &Mesh) -> ([f32; 3], f32) {
+    let (min, max) = mesh.bounds;
+    if mesh.vertices.is_empty() || min.x > max.x {
+        return ([0.0; 3], f32::MAX);
+    }
+    let c = (min + max) * 0.5;
+    ([c.x, c.y, c.z], (max - min).length() * 0.5)
+}
+
+/// Шесть плоскостей пирамиды видимости из view_proj (внешний индекс массива —
+/// колонка, глубина клипа wgpu в [0, 1]): точка внутри, если `dot(n, p) + d >= 0`
+/// для всех плоскостей. Плоскости нормированы — расстояния в метрах.
+fn frustum_planes(vp: &[[f32; 4]; 4]) -> [[f32; 4]; 6] {
+    let row = |i: usize| [vp[0][i], vp[1][i], vp[2][i], vp[3][i]];
+    let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+    let add = |a: [f32; 4], b: [f32; 4], k: f32| [a[0] + k * b[0], a[1] + k * b[1], a[2] + k * b[2], a[3] + k * b[3]];
+    let mut planes = [add(r3, r0, 1.0), add(r3, r0, -1.0), add(r3, r1, 1.0), add(r3, r1, -1.0), r2, add(r3, r2, -1.0)];
+    for p in &mut planes {
+        let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+        for v in p.iter_mut() {
+            *v /= n;
+        }
+    }
+    planes
+}
+
+/// Видна ли хоть частично сфера меша с матрицей объекта `model` (колонки).
+fn sphere_visible(planes: &[[f32; 4]; 6], model: &[[f32; 4]; 4], center: [f32; 3], radius: f32) -> bool {
+    if radius == f32::MAX {
+        return true;
+    }
+    let w = [
+        model[0][0] * center[0] + model[1][0] * center[1] + model[2][0] * center[2] + model[3][0],
+        model[0][1] * center[0] + model[1][1] * center[1] + model[2][1] * center[2] + model[3][1],
+        model[0][2] * center[0] + model[1][2] * center[1] + model[2][2] * center[2] + model[3][2],
+    ];
+    let col_len = |c: usize| (model[c][0] * model[c][0] + model[c][1] * model[c][1] + model[c][2] * model[c][2]).sqrt();
+    let r = radius * col_len(0).max(col_len(1)).max(col_len(2));
+    planes.iter().all(|p| p[0] * w[0] + p[1] * w[1] + p[2] * w[2] + p[3] >= -r)
 }
 
 pub struct GpuMaterial {
@@ -1257,8 +1303,17 @@ impl GpuRenderer {
             // Группируем по материалам — индексы в render_objects, а не
             // сами кортежи, чтобы у каждого объекта остался его собственный
             // офсет (i * model_stride) в общем model_buffer.
+            // ДОБАВЛЕНО (по прямому запросу пользователя — карта города лагала во вьюпорте):
+            // отсечение по пирамиде видимости. Всё, что сзади и сбоку от камеры, остаётся
+            // в GPU-буферах, но не рисуется — раньше каждый кадр рисовалась вся сцена.
+            let planes = frustum_planes(&vp);
             let mut material_groups: HashMap<usize, Vec<usize>> = HashMap::new();
             for (i, obj) in render_objects.iter().enumerate() {
+                if let Some(mesh) = self.meshes.get(obj.0) {
+                    if !sphere_visible(&planes, &obj.1, mesh.bound_center, mesh.bound_radius) {
+                        continue;
+                    }
+                }
                 material_groups.entry(obj.2).or_default().push(i);
             }
 
@@ -1384,12 +1439,15 @@ impl GpuRenderer {
         self.shared_index_len += mesh.indices.len() as u32;
 
         let idx = self.meshes.len();
+        let (bound_center, bound_radius) = mesh_bounding_sphere(mesh);
         self.meshes.push(GpuMesh {
             vertex_offset,
             vertex_count: vertices.len() as u32,
             index_offset,
             index_count: mesh.indices.len() as u32,
             visible: true,
+            bound_center,
+            bound_radius,
         });
 
         Ok(idx)
@@ -1446,6 +1504,12 @@ impl GpuRenderer {
         // индексов мог быть переставлен без изменения ИХ ЧИСЛА (сейчас
         // таких нет, но дешёвая защита на будущее не помешает).
         self.queue.write_buffer(&self.shared_index_buffer, index_offset as u64 * 4, bytemuck::cast_slice(&mesh.indices));
+        // вершины сдвинуты — сфера для отсечения тоже
+        let (c, r) = mesh_bounding_sphere(mesh);
+        if let Some(m) = self.meshes.get_mut(mesh_idx) {
+            m.bound_center = c;
+            m.bound_radius = r;
+        }
 
         true
     }
@@ -1493,5 +1557,26 @@ impl GpuMaterial {
         });
 
         Self { buffer, bind_group }
+    }
+}
+#[cfg(test)]
+mod frustum_tests {
+    use super::*;
+
+    #[test]
+    fn culls_behind_and_beside_camera() {
+        let mut cam = CameraData::new();
+        cam.position = Vec3::new(0.0, 0.0, 5.0);
+        cam.target = Vec3::new(0.0, 0.0, 0.0);
+        cam.aspect = 1.0;
+        let planes = frustum_planes(&cam.view_proj_matrix());
+        let id = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        assert!(sphere_visible(&planes, &id, [0.0, 0.0, 0.0], 1.0), "перед камерой");
+        assert!(!sphere_visible(&planes, &id, [0.0, 0.0, 20.0], 1.0), "сзади");
+        assert!(!sphere_visible(&planes, &id, [200.0, 0.0, 0.0], 1.0), "далеко сбоку");
+        assert!(sphere_visible(&planes, &id, [0.0, 0.0, 20.0], 16.0), "большая сфера, задевающая камеру");
+        // матрица объекта сдвигает меш вперёд в кадр
+        let moved = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, -30.0, 1.0]];
+        assert!(sphere_visible(&planes, &moved, [0.0, 0.0, 20.0], 1.0), "сдвинут моделью в кадр");
     }
 }

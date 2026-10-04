@@ -298,6 +298,8 @@ struct Accum {
     vertices: Vec<Vec3>,
     normals: Vec<Vec3>,
     uv: Vec<[f32; 2]>,
+    /// пусто, пока у материала не встретился цветной OBJ (тогда дополняется белым)
+    colors: Vec<[f32; 4]>,
     indices: Vec<u32>,
 }
 
@@ -311,7 +313,7 @@ impl Accum {
         }
         // собираем напрямую, без `Mesh::new`: у чанков уже есть честные
         // нормали и UV, пересчитывать их (и копировать массивы) незачем
-        Mesh { vertices: self.vertices, indices: self.indices, normals: self.normals, uv: self.uv, bounds: (min, max) }
+        Mesh { vertices: self.vertices, indices: self.indices, normals: self.normals, uv: self.uv, colors: self.colors, bounds: (min, max) }
     }
 }
 
@@ -359,6 +361,11 @@ fn load_chunk_into(path: &Path, per_mat: &mut HashMap<String, Accum>, probe: [f3
         }
         let acc = per_mat.entry(mat_name.clone()).or_default();
         let base = acc.vertices.len() as u32;
+        // цвет вершин (фасады по снимкам): храним, только если он не белый
+        let colored = mesh.vertex_color.len() >= n * 3 && mesh.vertex_color.iter().any(|&c| (c - 1.0).abs() > 1e-3);
+        if colored && acc.colors.len() < acc.vertices.len() {
+            acc.colors.resize(acc.vertices.len(), [1.0; 4]);
+        }
         let ground = is_ground_material(&mat_name);
         for i in 0..n {
             let p = Vec3::new(mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]);
@@ -380,6 +387,11 @@ fn load_chunk_into(path: &Path, per_mat: &mut HashMap<String, Accum>, probe: [f3
             } else {
                 [0.0, 0.0]
             });
+            if colored {
+                acc.colors.push([mesh.vertex_color[i * 3], mesh.vertex_color[i * 3 + 1], mesh.vertex_color[i * 3 + 2], 1.0]);
+            } else if !acc.colors.is_empty() {
+                acc.colors.push([1.0; 4]);
+            }
         }
         acc.indices.extend(mesh.indices.iter().map(|&i| i + base));
     }

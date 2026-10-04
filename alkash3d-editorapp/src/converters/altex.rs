@@ -183,7 +183,7 @@ pub fn build_altex_with(mesh: &EditorMesh, material: &EditorMaterial, name: &str
                 bitangent: bitangents[i],
                 uv,
                 uv2: [0.0, 0.0],
-                color: [1.0, 1.0, 1.0, 1.0],
+                color: mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]),
             }
         })
         .collect();
