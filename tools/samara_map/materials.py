@@ -66,6 +66,10 @@ MATERIALS = {
     "sign_stop":        dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 2.5 «Движение без остановки запрещено»
     "sign_bus_stop":    dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 5.16 «Место остановки автобуса/троллейбуса»
     "sign_tram_stop":   dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 5.17 «Место остановки трамвая»
+    "sign_no_stopping": dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 3.27 «Остановка запрещена» (по Mapillary)
+    "sign_priority":    dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 2.1 «Главная дорога» (по Mapillary)
+    "sign_parking":     dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # 6.4 «Парковка» (по Mapillary)
+    "sign_atlas":       dict(tile=None,       rough=0.4,  metal=0.0, size=2048),  # все знаки ГОСТ по снимкам (sign_atlas.py)
     "sign_metro":       dict(tile=None,       rough=0.4,  metal=0.0, size=256),   # красная «М» над входом в метро
     "sign_back":        dict(tile=(1, 1),     rough=0.6,  metal=0.5, size=128),   # оборот знака (оцинковка)
     "sign_board":       dict(tile=(1, 1),     rough=0.4,  metal=0.1, size=128),   # фон вывесок (чёрный, как фон атласа букв)
@@ -78,6 +82,10 @@ MATERIALS = {
     "glyphs_red":       dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
     "glyphs_green":     dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
     "glyphs_blue":      dict(tile=None,       rough=0.3,  metal=0.0, size=1024, ke=(5.0, 5.0, 5.0)),
+    # адресные таблички (синяя эмаль, белые буквы): без ke — не подсвечены
+    "glyphs_addr":      dict(tile=None,       rough=0.35, metal=0.0, size=1024),
+    "addr_plate":       dict(tile=(1, 1),     rough=0.35, metal=0.0, size=64),
+    "addr_frame":       dict(tile=(1, 1),     rough=0.35, metal=0.0, size=64),
     "door_metal":       dict(tile=None,       rough=0.45, metal=0.6, size=256),   # подъездная металлическая дверь
     "entrance_lamp_glass": dict(tile=(1, 1),  rough=0.2,  metal=0.0, size=128),   # плафон над подъездом (светится от своего источника)
     "glass_shelter":    dict(tile=(1, 1),     rough=0.05, metal=0.0, size=128),   # стекло павильона остановки

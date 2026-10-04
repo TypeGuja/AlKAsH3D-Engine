@@ -5,12 +5,17 @@ Y вверх, метры):
     X = восток, Y = высота над уровнем моря (м), Z = юг (то есть -север).
 Начало координат (0, 0) = площадь Куйбышева. Высота Y абсолютная (Волга ~28 м).
 """
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]          # AlKAsH3D-Engine/
-OUT = ROOT / "samara_map"
-CACHE = OUT / "_cache"
+# SAMARA_OUT — собрать карту в другую папку (кэш OSM/рельефа и промежуточные данные
+# по-прежнему берутся из samara_map/_cache): новая версия рядом со старой, на одобрение
+OUT = Path(os.environ.get("SAMARA_OUT", ROOT / "samara_map"))
+CACHE = ROOT / "samara_map" / "_cache"
 WORK = CACHE / "work"
+# что сборка чанков пишет «для себя» (статистика, временные файлы merge) — в папку своей карты
+OUT_WORK = WORK if OUT == ROOT / "samara_map" else OUT / "_work"
 
 PBF = CACHE / "samara_oblast.osm.pbf"
 DEM_TILES = {  # имя файла -> (lon0, lat0 верхнего левого пикселя)

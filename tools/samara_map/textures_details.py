@@ -31,6 +31,9 @@ GLYPH_COLORS = {
     "green": (0.15, 0.85, 0.3),
     "blue": (0.25, 0.55, 1.0),
 }
+# адресные таблички: белые буквы на синей эмали, без подсветки
+ADDR_BG = (0.09, 0.27, 0.58)
+ADDR_INK = (0.95, 0.95, 0.95)
 
 
 def size_of(name):
@@ -162,6 +165,35 @@ def sign_tram_stop():
     finish("sign_tram_stop", img)
 
 
+def sign_no_stopping():
+    """3.27 «Остановка запрещена»: синий круг, красная кайма и красный косой крест."""
+    img, d, n = canvas("sign_no_stopping", (0.6, 0.6, 0.6))
+    d.ellipse([n * 0.03, n * 0.03, n * 0.97, n * 0.97], fill=rgb8(RED))
+    d.ellipse([n * 0.15, n * 0.15, n * 0.85, n * 0.85], fill=rgb8(BLUE))
+    w = int(n * 0.1)
+    d.line([(n * 0.26, n * 0.26), (n * 0.74, n * 0.74)], fill=rgb8(RED), width=w)
+    d.line([(n * 0.74, n * 0.26), (n * 0.26, n * 0.74)], fill=rgb8(RED), width=w)
+    finish("sign_no_stopping", img)
+
+
+def sign_priority():
+    """2.1 «Главная дорога»: жёлтый ромб в белой кайме с чёрной окантовкой."""
+    img, d, n = canvas("sign_priority", (0.6, 0.6, 0.6))
+    c = n / 2
+    for r, col in ((0.49, BLACK), (0.47, WHITE), (0.33, BLACK), (0.31, YELLOW)):
+        d.polygon([(c, c - n * r), (c + n * r, c), (c, c + n * r), (c - n * r, c)], fill=rgb8(col))
+    finish("sign_priority", img)
+
+
+def sign_parking():
+    """6.4 «Парковка»: белая «P» на синем квадрате."""
+    img, d, n = canvas("sign_parking", BLUE)
+    d.rectangle([n * 0.04, n * 0.04, n * 0.96, n * 0.96], outline=rgb8(WHITE), width=int(n * 0.025))
+    f = ImageFont.truetype(FONT, int(n * 0.72))
+    d.text((n / 2, n / 2), "P", font=f, fill=rgb8(WHITE), anchor="mm")
+    finish("sign_parking", img)
+
+
 def sign_metro():
     img, d, n = canvas("sign_metro", WHITE)
     f = ImageFont.truetype(FONT, int(n * 0.8))
@@ -262,6 +294,8 @@ def glyph_atlas():
     a = np.asarray(img, np.float32) / 255
     for color, rgb in GLYPH_COLORS.items():
         save(f"glyphs_{color}", a[..., None] * np.asarray(rgb, np.float32), 0.0, nstrength=0.0)
+    a3 = a[..., None]
+    save("glyphs_addr", np.asarray(ADDR_BG, np.float32) * (1 - a3) + np.asarray(ADDR_INK, np.float32) * a3, 0.0, nstrength=0.0)
     (TEX / "glyphs.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
 
@@ -273,8 +307,11 @@ def main():
     flat("signal_body", (0.06, 0.06, 0.06), seed=555)
     signal_lens()
     sign_crossing(); sign_give_way(); sign_stop(); sign_bus_stop(); sign_tram_stop(); sign_metro()
+    sign_no_stopping(); sign_priority(); sign_parking()
     flat("sign_back", (0.6, 0.62, 0.63), grain=0.1, seed=556)
     flat("sign_board", (0.0, 0.0, 0.0), grain=0.0, seed=557)   # чёрный, как фон атласа букв
+    flat("addr_plate", ADDR_BG, grain=0.0, seed=564)          # фон адресной таблички = фон glyphs_addr
+    flat("addr_frame", ADDR_INK, grain=0.02, seed=565)        # белая окантовка таблички
     glyph_atlas()
     door_metal()
     flat("entrance_lamp_glass", (0.92, 0.9, 0.85), grain=0.03, seed=558)

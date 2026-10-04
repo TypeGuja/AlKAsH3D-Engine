@@ -9,6 +9,10 @@
     а если их нет — по ГОСТ/типовым значениям (они указаны у констант);
   * чего нет в данных — не выдумывается (никаких случайных качелей на площадках).
 
+Объекты Mapillary (mly_features.py — распознаны на уличных снимках, места настоящие):
+светофоры, знаки, опоры контактной сети, скамейки/урны/гидранты и т.п. Где улица
+снималась, они заменяют расстановку по шаблону; где нет — остаётся шаблон.
+
 Объекты запекаются в OBJ чанка (как фонари), а не в props/*.csv: эдитор
 импортирует только геометрию чанков.
 
@@ -25,6 +29,7 @@ import shapely
 
 import config as C
 from materials import MATERIALS
+from mly_common import covered, mly_points
 
 UP = np.array([0.0, 1.0, 0.0])
 
@@ -43,6 +48,23 @@ SIGN_TEXT_H = 0.45          # высота букв вывески
 WIRE_R = 0.007              # контактный провод МФ-100: Ø ~12 мм
 
 # какие виды пропсов из точек OSM ставятся внутри зданий — их не рисуем
+MLY_FURNITURE = {"bench": {"amenity": "bench"}, "trash": {"amenity": "waste_basket"},
+                 "hydrant": {"emergency": "fire_hydrant"}, "bike_rack": {"amenity": "bicycle_parking"},
+                 "phone": {"amenity": "telephone"}, "mailbox": {"amenity": "post_box"}}
+def _atlas():
+    global _ATLAS
+    if _ATLAS is None:
+        f = C.OUT / "textures" / "sign_atlas.json"
+        _ATLAS = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    return _ATLAS
+
+
+_ATLAS = None
+# знаки по снимкам — все виды атласа (класс «sign_<номер ГОСТ>», см. mly_features / sign_atlas)
+from sign_atlas import MLY_TO_GOST as _M2G
+MLY_SIGNS = tuple(sorted({f"sign_{v}" for v in _M2G.values()}))
+CROSSING_SIGNS = ("sign_5.19.1", "sign_5.19.2", "sign_1.22")     # группируются по переходу, а не по перекрёстку
+MLY_USED = ("signal", "signal_ped", "pole", "street_light", "crosswalk") + MLY_SIGNS + tuple(MLY_FURNITURE)
 INDOOR_OK = {"atm", "vending_machine", "telephone", "parcel_locker"}
 
 
@@ -298,6 +320,46 @@ def prepare(expanded, ctx, window):
     d.foot_tree = shapely.STRtree(d.foot_crossings) if d.foot_crossings else None
     d.tram_tree = shapely.STRtree([g for g, _ in d.trams]) if d.trams else None
     d.barrier_tree = shapely.STRtree([b[0] for b in ctx.barriers]) if ctx.barriers else None
+    # --- объекты Mapillary в окне суперплитки
+    from scipy.spatial import cKDTree
+    from mly_common import cluster_along
+    d.mly = {cls: mly_points(cls, window, 2.0) for cls in MLY_USED}
+    rl = [r[0] for r in d.roads]
+    from mly_common import mly_raw
+    d.mly_dir = {}
+    for cls in MLY_SIGNS + ("signal", "signal_ped"):
+        d.mly[cls] = cluster_along(d.mly[cls], rl, d.road_tree, along=6.0, lateral=3.0, far_r=3.0)
+        raw, meta = mly_raw(cls, window)
+        dirs = np.full(len(d.mly[cls]), np.nan)
+        if len(raw) and len(d.mly[cls]):
+            rt = cKDTree(raw)
+            for k, (x, z) in enumerate(d.mly[cls]):
+                near = rt.query_ball_point((x, z), 6.0)
+                if near:
+                    j = max(near, key=lambda i: meta[i, 0])
+                    dirs[k] = meta[j, 1]
+        d.mly_dir[cls] = dirs
+    d.mly_tree = {cls: cKDTree(P) for cls, P in d.mly.items() if len(P)}
+    # переходы: узлы OSM и «зебры» со снимков — один переход часто есть в обоих, поэтому
+    # точки ближе 12 м сливаются в один
+    from mly_common import merge_close
+    cr = [(x, z) for x, z, t in d.nodes if t.get("highway") == "crossing" or t.get("crossing")]
+    cr = merge_close(np.array(cr + [tuple(p_) for p_ in d.mly["crosswalk"]]).reshape(-1, 2), 12.0)
+    d.crossing_tree = cKDTree(cr) if len(cr) else None
+    d.mly_signs_sel = select_signs(d)
+    # мебель — как узлы OSM (её рисует furniture), без дублей с размеченными
+    have = defaultdict(list)
+    for x, z, t in d.nodes:
+        for cls, tags in MLY_FURNITURE.items():
+            k, v = next(iter(tags.items()))
+            if t.get(k) == v:
+                have[cls].append((x, z))
+    for cls, tags in MLY_FURNITURE.items():
+        H = np.array(have[cls]).reshape(-1, 2)
+        for x, z in d.mly[cls]:
+            if len(H) and np.min(np.hypot(H[:, 0] - x, H[:, 1] - z)) < 5.0:
+                continue
+            d.nodes.append((float(x), float(z), dict(tags, source="mapillary")))
     d.node_by_chunk = _bucket([(x, z) for x, z, _ in d.nodes], d.nodes)
     # здания по индексу ctx.buildings — для вывесок/подъездов/досок
     d.bld_ids = {}
@@ -431,14 +493,19 @@ def _sign(geo, terr, x, z, face, mat, bottom=SIGN_BOTTOM, size=SIGN_SIZE, two_si
     g = _h(terr, x, z)
     f = np.array([face[0], 0.0, face[1]])
     right = np.cross(UP, f)            # вправо, если смотреть на лицо знака
+    # бюджет: знаков по снимкам ~70 тыс. — лицо и оборот плоскостями (торец щита 1–2 см
+    # с дороги не виден), стойка четырёхгранная: 12 треугольников вместо 36
     if pole:
-        geo.cyl("steel_grey", (x, g - 0.3, z), (x, g + bottom + size, z), 0.03, n=6)
+        geo.cyl("steel_grey", (x, g - 0.3, z), (x, g + bottom + size, z), 0.03, n=4)
     c = np.array([x, g + bottom + size / 2, z]) + f * 0.04
-    geo.box(mat, c, -right, UP, f, size / 2, size / 2, 0.01, face_uv=(2, 1))
-    if two_sided:
-        geo.box(mat, c - f * 0.025, right, UP, -f, size / 2, size / 2, 0.01, face_uv=(2, 1))
-    else:
-        geo.box("sign_back", c - f * 0.021, right, UP, -f, size / 2, size / 2, 0.001)
+    h = size / 2
+    rr, uu = right * h, UP * h
+    # лицо смотрит по f; u растёт вправо для смотрящего на знак (его право — right),
+    # у оборота — влево (смотрящий сзади видит right слева)
+    plain = ((0, 0), (1, 0), (1, 1), (0, 1))
+    geo.quad(mat, c - rr - uu, c + rr - uu, c + rr + uu, c - rr + uu, f, plain)
+    cb = c - f * 0.02
+    geo.quad(mat if two_sided else "sign_back", cb + rr - uu, cb - rr - uu, cb - rr + uu, cb + rr + uu, -f, plain)
 
 
 def crossings(env):
@@ -476,7 +543,7 @@ def crossings(env):
                 # справа по ходу подъезжающих (+t: справа r), лицом к ним
                 sx = x + r[0] * sgn * (w / 2 + 0.6) - tv[0] * sgn * cw / 2
                 sz = z + r[1] * sgn * (w / 2 + 0.6) - tv[1] * sgn * cw / 2
-                if env.inside(sx, sz) and not inside_building(env.ctx, sx, sz):
+                if env.inside(sx, sz) and not inside_building(env.ctx, sx, sz) and not covered(sx, sz):
                     _sign(geo, terr, sx, sz, -tv * sgn, "sign_crossing")
     if stripes:
         g = shapely.intersection(shapely.union_all(stripes), env.boxg)
@@ -494,10 +561,17 @@ def _signal_head(geo, base, face, h_center, vehicle=True):
     hh = 0.15 * n + 0.05
     c = base + UP * h_center
     geo.box("signal_body", c, right, UP, f, 0.16, hh, 0.12)
+    # бюджет: секций по снимкам ~10 тыс. — линза плоским шестиугольником, козырёк одной
+    # наклонной плоскостью: ~30 треугольников на секцию вместо ~170
     for k in range(n):
-        lc = c + UP * ((k - (n - 1) / 2) * 0.3) + f * 0.12
-        geo.cyl("signal_lens", lc, lc + f * 0.02, 0.1, n=10, caps=True)
-        geo.box("signal_body", lc + f * 0.1 + UP * 0.1, right, UP, f, 0.13, 0.01, 0.1)     # козырёк
+        lc = c + UP * ((k - (n - 1) / 2) * 0.3) + f * 0.125
+        ring = [lc + (right * math.cos(a) + UP * math.sin(a)) * 0.1 for a in np.linspace(0, 2 * math.pi, 7)[:-1]]
+        for i in range(1, 5):
+            geo.tri("signal_lens", (ring[0], ring[i], ring[i + 1]), (f, f, f), ((0.5, 0.5), (0.5, 0.5), (0.5, 0.5)))
+        top = lc + UP * 0.11
+        vn = UP + f * 0.4
+        geo.quad("signal_body", top - right * 0.12, top + right * 0.12, top + right * 0.12 + f * 0.18 - UP * 0.05,
+                 top - right * 0.12 + f * 0.18 - UP * 0.05, vn / np.linalg.norm(vn))
 
 
 def _signal_pole(env, x, z, face, ped_face=None):
@@ -520,6 +594,8 @@ def traffic_signals(env):
     for x, z, t in d.node_by_chunk.get(env.key, []):
         if not (t.get("highway") == "traffic_signals" or t.get("crossing") == "traffic_signals"):
             continue
+        if _mly_near(d, "signal", x, z, 45.0) or _mly_near(d, "signal_ped", x, z, 45.0):
+            continue          # столбы светофоров этого перекрёстка известны по снимкам (mly_signals)
         p = shapely.Point(x, z)
         arms = []
         if d.road_tree is not None:
@@ -568,6 +644,223 @@ def traffic_signals(env):
                 _signal_pole(env, sx, sz, -tv * sgn, ped)
 
 
+def _mly_near(d, cls, x, z, r):
+    t = d.mly_tree.get(cls)
+    return t is not None and len(t.query_ball_point((x, z), r)) > 0
+
+
+def _mly_roadside(env, x, z, maxd=20.0, max_edge=None):
+    """Объект у дороги: ближайшая проезжая ось, касательная tv, сторона sgn (справа от tv — +1),
+    и точка, вынесенная с проезжей части, если триангуляция поставила объект на неё."""
+    d = env.d
+    it = nearest_line(d.road_tree, d.roads, x, z, maxd)
+    if it is None:
+        return None
+    line, w, rt = it
+    tv, _ = tangent_at(line, x, z)
+    r = np.array([-tv[1], tv[0]])
+    q = line.interpolate(line.project(shapely.Point(x, z)))
+    o = np.array([x - q.x, z - q.y])
+    if max_edge is not None and abs(o @ r) - w / 2 > max_edge:
+        return None                          # далеко от проезжей части — скорее ложное распознавание
+    sgn = 1 if o @ r >= 0 else -1
+    if abs(o @ r) < w / 2 + 0.4:
+        x, z = q.x + r[0] * sgn * (w / 2 + 0.7), q.y + r[1] * sgn * (w / 2 + 0.7)
+    return x, z, tv, r, sgn, w
+
+
+def mly_signals(env):
+    """Светофоры по снимкам: столб на месте распознанного светофора, лицом к подъезжающим
+    по своей стороне (едут вдоль tv*sgn, столб справа); пешеходные — поперёк дороги."""
+    d, geo = env.d, env.geo
+    for x, z in d.mly["signal"]:
+        if not env.inside(x, z) or inside_building(env.ctx, x, z):
+            continue
+        rs = _mly_roadside(env, x, z)
+        if rs is None:
+            continue
+        x, z, tv, r, sgn, w = rs
+        if _on_carriageway(d, x, z) > 0:
+            continue                         # на проезжей части соседней улицы (перекрёсток)
+        _signal_pole(env, x, z, -tv * sgn)
+    for x, z in d.mly["signal_ped"]:
+        if not env.inside(x, z) or inside_building(env.ctx, x, z):
+            continue
+        rs = _mly_roadside(env, x, z)
+        if rs is None:
+            continue
+        x, z, tv, r, sgn, w = rs
+        face = -r * sgn                      # к пешеходам на той стороне
+        host = [(px, pz) for px, pz in d.placed if (px - x) ** 2 + (pz - z) ** 2 < 9.0]
+        if host:                             # на столбе автомобильного светофора
+            px, pz = host[0]
+            _signal_head(geo, np.array([px, _h(env.terr, px, pz), pz]), face, 2.3, vehicle=False)
+            continue
+        d.placed.append((x, z))
+        g = _h(env.terr, x, z)
+        base = np.array([x, g, z])
+        geo.cyl("steel_grey", base - UP * 0.3, base + UP * 2.9, 0.05, 0.045, n=8)
+        _signal_head(geo, base, face, 2.4, vehicle=False)
+
+
+def _near_crossing(d, x, z, r):
+    """Есть ли рядом переход (узел highway=crossing из OSM или «зебра» со снимков)."""
+    if d.crossing_tree is not None and len(d.crossing_tree.query_ball_point((x, z), r)):
+        return True
+    return False
+
+
+def _junctions(d):
+    """Перекрёстки: вершины проезжих осей, где сходится ≥ 3 ветвей (ключ — округление до 0.5 м)."""
+    deg = defaultdict(int)
+    for line, w, t in d.roads:
+        co = np.asarray(line.coords)[:, :2]
+        for i, (x, z) in enumerate(co):
+            deg[(round(x * 2) / 2, round(z * 2) / 2)] += 1 if i in (0, len(co) - 1) else 2
+    return np.array([k for k, v in deg.items() if v >= 3]).reshape(-1, 2)
+
+
+def _on_carriageway(d, x, z, margin=0.3):
+    """Сколько проезжих частей накрывают точку (0 — на тротуаре/газоне, ≥ 2 — зона перекрёстка)."""
+    if d.road_tree is None:
+        return 0
+    pt = shapely.Point(x, z)
+    n = 0
+    for i in d.road_tree.query(pt.buffer(15.0)):
+        line, w, t = d.roads[i]
+        if line.distance(pt) < w / 2 - margin:
+            n += 1
+    return n
+
+
+def select_signs(d):
+    """Один знак каждого вида на подход: Mapillary видит знак с каждого проезда и триангулирует
+    его каждый раз немного иначе, поэтому у перекрёстка набегают десятки копий. Для каждой
+    проезжей оси, стороны и вида знака берётся участок между соседними перекрёстками, и на нём
+    остаётся один знак — ближайший к перекрёстку, к которому едут по этой стороне (тот, что водитель
+    видит в кадре на подъезде). «Переход» — по одному на сторону у каждого перехода.
+    Возвращает [(вид, x, z)] — уже без дублей, вынесенные с проезжей части."""
+    if d.road_tree is None:
+        return []
+    from scipy.spatial import cKDTree
+    J = _junctions(d)
+    roads = [r[0] for r in d.roads]
+    best = {}                                # ключ -> (оценка, вид, x, z)
+    for cls in MLY_SIGNS:
+        P = d.mly.get(cls)
+        if P is None or len(P) == 0:
+            continue
+        D = d.mly_dir.get(cls, np.full(len(P), np.nan))
+        for (x, z), az in zip(P, D):
+            pt = shapely.Point(x, z)
+            k = d.road_tree.nearest(pt)
+            line, w, t = d.roads[k]
+            o_dist = line.distance(pt)
+            if o_dist - w / 2 > 10.0:
+                continue                     # далеко от проезжей части
+            s = line.project(pt)
+            tv, _ = tangent_at(line, x, z)
+            r = np.array([-tv[1], tv[0]])
+            q = line.interpolate(s)
+            o = np.array([x - q.x, z - q.y])
+            sgn = 1 if o @ r >= 0 else -1
+            if np.isfinite(az):
+                # лицо знака смотрит навстречу тем, для кого он: они едут по −face
+                face = np.array([math.sin(math.radians(az)), -math.cos(math.radians(az))])
+                if abs(face @ tv) < 0.5:
+                    continue                 # знак смотрит поперёк этой дороги — он для другой улицы
+                sgn = 1 if (-face) @ tv > 0 else -1
+            if cls in CROSSING_SIGNS:
+                if not _near_crossing(d, x, z, 40.0):
+                    continue
+                # ключ — ближайший переход (узел OSM или «зебра») и сторона
+                dd, cid = d.crossing_tree.query((x, z))
+                key = (cls, int(cid), sgn)
+                score = dd
+            else:
+                # участок между перекрёстками на этой оси
+                co = np.asarray(line.coords)[:, :2]
+                js = [line.project(shapely.Point(*c)) for c in co
+                      if len(J) and np.min(np.hypot(J[:, 0] - c[0], J[:, 1] - c[1])) < 0.6]
+                js = sorted(set([0.0, line.length] + js))
+                seg = int(np.searchsorted(js, s))
+                end = js[min(seg, len(js) - 1)] if sgn > 0 else js[max(seg - 1, 0)]
+                key = (cls, k, seg, sgn)
+                score = abs(end - s)             # ближе к перекрёстку, к которому едут по этой стороне
+            if key not in best or score < best[key][0]:
+                best[key] = (score, cls, float(x), float(z), float(az), sgn)
+    return [(cls, x, z, az, sgn) for score, cls, x, z, az, sgn in best.values()]
+
+
+def mly_signs(env):
+    """Знаки по снимкам (select_signs — уже по одному на подход), лицом к подъезжающим.
+    Картинка — из атласа ГОСТ, щит — плоскость формы знака (треугольник, круг, ромб…).
+    Знаки в одной точке (≤ 1.2 м) — на одной стойке: основные друг над другом, таблички 8.x под
+    ними. 5.16 — поперёк дороги, двусторонний."""
+    d = env.d
+    atlas = _atlas()
+    posts = []                               # [x, z, face, [коды]]
+    for cls, x, z, az, travel in d.mly_signs_sel:
+        code = cls[5:]
+        if code not in atlas:
+            continue
+        if not env.inside(x, z) or inside_building(env.ctx, x, z):
+            continue
+        rs = _mly_roadside(env, x, z, max_edge=10.0)
+        if rs is None:
+            continue
+        x, z, tv, r, sgn, w = rs
+        if _on_carriageway(d, x, z) > 0:
+            continue                         # после выноса всё равно на проезжей части (перекрёсток)
+        if any((px - x) ** 2 + (pz - z) ** 2 < 1.0 for px, pz in d.placed):
+            continue                         # на месте светофора
+        face = tv if code == "5.16" else -tv * travel
+        for pst in posts:
+            if (pst[0] - x) ** 2 + (pst[1] - z) ** 2 < 1.44 and pst[2] @ face > 0.5:
+                if code not in pst[3]:       # один и тот же знак дважды на стойке не вешают
+                    pst[3].append(code)
+                break
+        else:
+            posts.append([x, z, face, [code]])
+    for x, z, face, codes in posts:
+        main = [c for c in codes if not c.startswith("8.")]
+        plates = [c for c in codes if c.startswith("8.")]
+        y = SIGN_BOTTOM
+        stack = []
+        for c in plates[:2]:                 # таблички — снизу, вплотную под знаком
+            stack.append((c, y))
+            y += atlas[c]["size"][1] + 0.03
+        for c in main[:3]:
+            stack.append((c, y))
+            y += atlas[c]["size"][1] + 0.05
+        g = _h(env.terr, x, z)
+        env.geo.cyl("steel_grey", (x, g - 0.3, z), (x, g + y - 0.05, z), 0.03, n=4)
+        for c, bottom in stack:
+            _atlas_sign(env.geo, atlas[c], np.array([x, g + bottom, z]), face, two_sided=(c == "5.16"))
+
+
+def _atlas_sign(geo, m, base, face, two_sided=False):
+    """Щит знака формы m["outline"] (из атласа): низ щита — в base, смотрит по face."""
+    f = np.array([face[0], 0.0, face[1]])
+    right = np.cross(UP, f)
+    w, h = m["size"]
+    u0, v0, u1, v1 = m["uv"]
+    ol = np.array(m["outline"])               # 0..1 внутри клетки, v вверх
+    # клетка квадратная, щит вписан по большей стороне: метры на единицу клетки
+    k = w / max(ol[:, 0].max() - ol[:, 0].min(), 1e-3)
+    ymin = ol[:, 1].min()
+    c0 = base + f * 0.04
+    P = [c0 + right * ((x - 0.5) * k) + UP * ((y - ymin) * k) for x, y in ol]
+    UV = [(u0 + x * (u1 - u0), v0 + y * (v1 - v0)) for x, y in ol]
+    for i in range(1, len(P) - 1):
+        geo.tri("sign_atlas", (P[0], P[i], P[i + 1]), (f, f, f), (UV[0], UV[i], UV[i + 1]))
+    # оборот: тот же контур, оцинковка (или тот же знак у двусторонних)
+    Pb = [p - f * 0.02 for p in P]
+    mat = "sign_atlas" if two_sided else "sign_back"
+    for i in range(1, len(Pb) - 1):
+        uvb = (UV[0], UV[i + 1], UV[i]) if two_sided else ((0.5, 0.5),) * 3
+        geo.tri(mat, (Pb[0], Pb[i + 1], Pb[i]), (-f, -f, -f), uvb)
+
 def priority_signs(env):
     """2.4 «Уступите дорогу» / 2.5 «STOP»: справа, лицом к подъезжающим к перекрёстку."""
     d = env.d
@@ -589,6 +882,8 @@ def priority_signs(env):
             sgn = 1 if (line.length - s) < s else -1
         r = np.array([-tv[1], tv[0]]) * sgn
         sx, sz = x + r[0] * (w / 2 + 0.6), z + r[1] * (w / 2 + 0.6)
+        if covered(sx, sz):
+            continue          # снятая улица: знаки ставит mly_signs по снимкам
         _sign(env.geo, env.terr, sx, sz, -tv * sgn, "sign_give_way" if hw == "give_way" else "sign_stop")
 
 
@@ -716,7 +1011,7 @@ def _shelter(env, cx, cz, along, away, length=4.0, depth=1.6, name=None):
             tw = tw_max
         bc = c + front * (depth / 2 + 0.22) + UP * (H - 0.12)
         geo.box("sign_board", bc, right, UP, front, tw / 2 + 0.1, th / 2 + 0.06, 0.02)
-        text_quads(geo, "glyphs_white", name, bc + front * 0.021 - right * tw / 2 - UP * th / 2, right, UP, front, th)
+        text_quads(geo, "glyphs_white", name, bc + front * 0.025 - right * tw / 2 - UP * th / 2, right, UP, front, th)
 
 
 def stops(env):
@@ -801,7 +1096,7 @@ def stops(env):
 
 # ------------------------------------------------------------------ контактная сеть
 
-def _wire_points(terr, line, off, h, step=4.0):
+def _wire_points(terr, line, off, h, step=10.0):     # 2026-10-03: было 4 м — провод почти прямой
     """Ломаная провода над дорогой: смещение off вбок (к r), высота h над рельефом."""
     if abs(off) > 1e-3:
         line = line.offset_curve(off, quad_segs=2)
@@ -834,6 +1129,29 @@ def _pole_ok(env, x, z):
     return asph is None or not asph.contains(shapely.Point(x, z))
 
 
+def _real_poles(env, line, dmin, dmax):
+    """Опоры Mapillary вдоль линии: (x, z, s по линии, сторона ±1) в полосе dmin..dmax от оси."""
+    P = env.d.mly["pole"]
+    if len(P) == 0:
+        return []
+    b = line.bounds
+    m = (P[:, 0] > b[0] - dmax) & (P[:, 0] < b[2] + dmax) & (P[:, 1] > b[1] - dmax) & (P[:, 1] < b[3] + dmax)
+    out = []
+    for x, z in P[m]:
+        pt = shapely.Point(x, z)
+        dist = line.distance(pt)
+        if not (dmin <= dist <= dmax):
+            continue
+        s = line.project(pt)
+        if s < 0.5 or s > line.length - 0.5:
+            continue                         # у концов линии — скорее чужая опора
+        tv, _ = tangent_at(line, x, z)
+        q = line.interpolate(s)
+        side = 1 if (x - q.x) * -tv[1] + (z - q.y) * tv[0] >= 0 else -1
+        out.append((float(x), float(z), s, side))
+    return out
+
+
 def trolley(env):
     """Троллейбусная контактная сеть: пара проводов над правой полосой каждого направления
     на 5.8 м, опоры по обеим сторонам каждые ~35 м с поперечной растяжкой."""
@@ -847,8 +1165,25 @@ def trolley(env):
             for dw in (-TROLLEY_SPACING / 2, TROLLEY_SPACING / 2):
                 _emit_wire(env, _wire_points(terr, line, sgn * lane + dw, TROLLEY_H))
         L = line.length
+        real = _real_poles(env, line, w / 2 - 1.0, w / 2 + 6.0)
+        for x, z, s, side in real:
+            # опора со снимков; поперечная растяжка — к опоре напротив (рисует опора со стороны +1)
+            gy = _h(terr, x, z)
+            if env.inside(x, z) and not _mly_near(env.d, "street_light", x, z, 1.5):
+                geo.cyl("steel_grey", (x, gy - 0.5, z), (x, gy + 9.0, z), 0.13, 0.09, n=8)
+            if side < 0 or not env.inside(x, z):
+                continue
+            opp = [(ox, oz) for ox, oz, os_, sd in real if sd < 0 and abs(os_ - s) < 10.0]
+            if opp:
+                ox, oz = min(opp, key=lambda o: (o[0] - x) ** 2 + (o[1] - z) ** 2)
+                geo.cyl("cable", (x, gy + 6.6, z), (ox, _h(terr, ox, oz) + 6.6, oz), 0.006, n=3)
+            else:                            # опора с одной стороны — консоль над проводами
+                q = line.interpolate(s)
+                geo.cyl("steel_grey", (x, gy + 6.6, z), (q.x, _h(terr, q.x, q.y) + TROLLEY_H + 0.4, q.y), 0.04, n=4)
         for s in np.arange(CATENARY_POLE_STEP / 2, L, CATENARY_POLE_STEP):
             p = line.interpolate(s)
+            if covered(p.x, p.y):
+                continue                     # снятая улица — опоры только настоящие
             tv, _ = tangent_at(line, p.x, p.y)
             r = np.array([-tv[1], tv[0]])
             ends = []
@@ -872,9 +1207,28 @@ def trams(env):
         if t.get("electrified") == "no":
             continue
         _emit_wire(env, _wire_points(terr, line, 0.0, TRAM_WIRE_H))
+        for x, z, s, side in _real_poles(env, line, 1.0, 5.5):
+            # опора со снимков: консоль к проводу этого пути; общую опору между путями
+            # (сосед ближе 5.5 м) рисует путь, у которого она справа (+1)
+            if not env.inside(x, z):
+                continue
+            q = line.interpolate(s)
+            pt = shapely.Point(x, z)
+            other = [g for g, _ in (d.trams[i] for i in d.tram_tree.query(pt.buffer(5.5))) if g is not line]
+            other = [g for g in other if g.distance(pt) < 5.5]
+            if other and side < 0:
+                continue
+            gy = _h(terr, x, z)
+            if not _mly_near(d, "street_light", x, z, 1.5):
+                geo.cyl("steel_grey", (x, gy - 0.5, z), (x, gy + 7.5, z), 0.13, 0.09, n=8)
+            top = np.array([x, gy + 6.4, z])
+            geo.cyl("steel_grey", top, np.array([q.x, _h(terr, q.x, q.y) + TRAM_WIRE_H + 0.3, q.y]), 0.04, n=4)
+            for g in other[:1]:
+                q2 = g.interpolate(g.project(pt))
+                geo.cyl("steel_grey", top, np.array([q2.x, _h(terr, q2.x, q2.y) + TRAM_WIRE_H + 0.3, q2.y]), 0.04, n=4)
         for s in np.arange(CATENARY_POLE_STEP / 2, line.length, CATENARY_POLE_STEP):
             p = line.interpolate(s)
-            if not env.inside(p.x, p.y):
+            if not env.inside(p.x, p.y) or covered(p.x, p.y):
                 continue
             tv, _ = tangent_at(line, p.x, p.y)
             r = np.array([-tv[1], tv[0]])
@@ -1279,7 +1633,121 @@ def shop_signs(env):
         right = np.cross(UP, N)          # вправо, если смотреть на вывеску снаружи
         c = np.array([q[0], gq + y_off, q[1]]) + N * 0.08
         geo.box("sign_board", c, right, UP, N, sl / 2, th / 2 + 0.08, 0.06)
-        text_quads(geo, f"glyphs_{_sign_color(t, name)}", name, c + N * 0.061 - right * tw / 2 - UP * th / 2, right, UP, N, th)
+        text_quads(geo, f"glyphs_{_sign_color(t, name)}", name, c + N * 0.065 - right * tw / 2 - UP * th / 2, right, UP, N, th)
+
+
+# ------------------------------------------------------------------ адресные таблички
+
+ADDR_STREET_H = 0.11         # высота букв названия улицы
+ADDR_NUM_H = 0.20            # высота цифр номера дома
+ADDR_MAX_W = 1.3             # ширина строки, дальше название ужимается
+ADDR_ABBR = (("улица", "ул."), ("проспект", "пр-т"), ("переулок", "пер."), ("проезд", "пр-д"),
+             ("бульвар", "б-р"), ("площадь", "пл."), ("набережная", "наб."), ("шоссе", "ш."),
+             ("тупик", "туп."), ("микрорайон", "мкр"))
+
+
+def addr_street_label(street):
+    """«Ленинградская улица» -> «ул. Ленинградская», как на табличках."""
+    words = street.split()
+    low = [w.lower() for w in words]
+    for full, ab in ADDR_ABBR:
+        if full in low:
+            rest = [w for w, l in zip(words, low) if l != full]
+            return f"{ab} {' '.join(rest)}" if rest else street
+    return street
+
+
+def address_plates(env):
+    """Адресные таблички из addr:street + addr:housenumber: синяя эмаль, белые буквы,
+    на стене, обращённой к своей улице, у угла, на высоте ~2.6 м."""
+    ctx, d, geo, terr = env.ctx, env.d, env.geo, env.terr
+    for i, (g, t, is_part) in env.bld_here:
+        hn = (t.get("addr:housenumber") or "").strip()
+        if is_part or not hn or i in ctx.skip_outline:
+            continue
+        street = (t.get("addr:street") or "").strip()
+        rp = g.representative_point()
+        # своя улица (по имени) — иначе ближайшая проезжая дорога
+        line = None
+        if street and d.way_tree is not None:
+            cand = [d.ways[k][0] for k in d.way_tree.query(rp.buffer(150.0)) if d.ways[k][2].get("name") == street]
+            if cand:
+                line = min(cand, key=lambda L: L.distance(rp))
+        if line is None:
+            it = nearest_line(d.road_tree, d.roads, rp.x, rp.y, 60.0)
+            if it is None:
+                continue
+            line = it[0]
+        poly = max((p for p in shapely.get_parts(g) if p.geom_type == "Polygon"), key=lambda p: p.area, default=None)
+        if poly is None:
+            continue
+        co = np.asarray(poly.exterior.coords)
+        best = None
+        for k in range(len(co) - 1):
+            a, b = co[k], co[k + 1]
+            L = float(np.linalg.norm(b - a))
+            if L < 2.0:
+                continue
+            tv = (b - a) / L
+            nrm = np.array([tv[1], -tv[0]])
+            mid = (a + b) / 2
+            if poly.contains(shapely.Point(mid[0] + nrm[0] * 0.05, mid[1] + nrm[1] * 0.05)):
+                nrm = -nrm
+            q = line.interpolate(line.project(shapely.Point(*mid)))
+            to = np.array([q.x - mid[0], q.y - mid[1]])
+            dist = float(np.linalg.norm(to))
+            facing = float(nrm @ to) / max(dist, 1e-6)
+            if facing < 0.3:
+                continue
+            score = dist - 2.0 * facing
+            if best is None or score < best[0]:
+                best = (score, k, a, b, L, tv, nrm)
+        if best is None:
+            continue
+        _, k, a, b, L, tv, nrm = best
+
+        top = addr_street_label(street) if street else ""
+        th1 = ADDR_STREET_H
+        if top and text_width(top) * th1 > ADDR_MAX_W:
+            th1 = ADDR_MAX_W / text_width(top)
+            if th1 < 0.06:
+                top = ""
+        th2 = ADDR_NUM_H
+        w1 = text_width(top) * th1 if top else 0.0
+        w2 = text_width(hn) * th2
+        pw = max(w1, w2) + 0.16
+        ph = th2 + 0.12 + (th1 + 0.04 if top else 0.0)
+        if pw + 0.6 > L:
+            continue
+        # у угла: со стороны, выбранной детерминированно; если занято вывеской — у другого
+        used = d.wall_used[(i, k)]
+        def free(c):
+            return all(c + pw / 2 <= lo - 0.2 or c - pw / 2 >= hi + 0.2 for lo, hi in used)
+        near = 0.4 + pw / 2
+        order = [near, L - near] if h01(rp.x, rp.y, 11) < 0.5 else [L - near, near]
+        pos = next((c for c in order + [L / 2] if free(c)), None)
+        if pos is None:
+            continue
+        used.append((pos - pw / 2, pos + pw / 2))
+        _, st, H = _bld_info(ctx, i)
+        q = a + tv * pos
+        gq = _h(terr, q[0], q[1])
+        yc = gq + max(min(2.6, H - ph / 2 - 0.3), 1.8)
+        N = np.array([nrm[0], 0, nrm[1]])
+        right = np.cross(UP, N)
+        c = np.array([q[0], yc, q[1]]) + N * 0.04
+        # плоскостями (было две коробки — 24 треугольника; торцы 1–2 см с улицы не видны)
+        fr, fu = right * (pw / 2 + 0.025), UP * (ph / 2 + 0.025)
+        cf = c + N * 0.002
+        geo.quad("addr_frame", cf - fr - fu, cf + fr - fu, cf + fr + fu, cf - fr + fu, N)
+        pr_, pu = right * (pw / 2), UP * (ph / 2)
+        cp = c + N * 0.01
+        geo.quad("addr_plate", cp - pr_ - pu, cp + pr_ - pu, cp + pr_ + pu, cp - pr_ + pu, N)
+        face = c + N * 0.014
+        y = face - UP * ph / 2 + UP * 0.06
+        text_quads(geo, "glyphs_addr", hn, y - right * w2 / 2, right, UP, N, th2)
+        if top:
+            text_quads(geo, "glyphs_addr", top, y + UP * (th2 + 0.04) - right * w1 / 2, right, UP, N, th1)
 
 
 def _kiosk(env, x, z, name, t):
@@ -1294,7 +1762,7 @@ def _kiosk(env, x, z, name, t):
     tw = text_width(name) * th
     c = base + UP * 2.85 + N * 1.0
     geo.box("sign_board", c, R, UP, N, max(tw / 2 + 0.1, 1.3), th / 2 + 0.06, 0.04)
-    text_quads(geo, f"glyphs_{_sign_color(t, name)}", name, c + N * 0.041 - R * tw / 2 - UP * th / 2, R, UP, N, th)
+    text_quads(geo, f"glyphs_{_sign_color(t, name)}", name, c + N * 0.045 - R * tw / 2 - UP * th / 2, R, UP, N, th)
 
 
 # ------------------------------------------------------------------ памятники, фонтаны
@@ -1661,8 +2129,8 @@ def build(mesh, ctx, terr, gx, gz, classes, drape, lights, blocked):
             if env.inside(rp.x, rp.y):
                 env.bld_here.append((i, ctx.buildings[i]))
     stats = {}
-    for fn in (crossings, turn_arrows, level_crossings, traffic_signals, priority_signs, stops, trolley, trams,
-               power, kerbs, barrier_nodes, steps, entrances, shop_signs, memorials, fountains, furniture,
+    for fn in (crossings, turn_arrows, level_crossings, mly_signals, traffic_signals, priority_signs, mly_signs, stops, trolley, trams,
+               power, kerbs, barrier_nodes, steps, entrances, shop_signs, address_plates, memorials, fountains, furniture,
                metro, trees, scrub):
         try:
             fn(env)

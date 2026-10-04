@@ -91,24 +91,28 @@ def crown(center, radius, squash, seed, sub=2):
 
 
 def tree_deciduous():
+    # 2026-10-03: деревьев из OSM запечено много (листва была 16% треугольников карты) —
+    # кроны икосферами 1-го подразбиения (80 граней) вместо 2-го (320): те же три шара с теми же
+    # неровностями, силуэт тот же; ~250 треугольников вместо 980
     o = Obj()
-    o.group("trunk", "bark", *cylinder(0.22, 0.14, 4.2, 10))
+    o.group("trunk", "bark", *cylinder(0.22, 0.14, 4.2, 6))
     for k, (c, r, sq) in enumerate((((0, 6.3, 0), 2.9, 1.1), ((0.9, 5.4, 0.6), 2.0, 1.0), ((-0.8, 5.6, -0.5), 2.1, 1.0))):
-        o.group(f"crown{k}", "leaves", *crown(np.array(c, float), r, sq, 10 + k))
+        o.group(f"crown{k}", "leaves", *crown(np.array(c, float), r, sq, 10 + k, sub=1))
     o.save(C.OUT / "models" / "tree_deciduous.obj", "# Лиственное дерево ~9 м (липа/тополь/берёза условно). Y вверх, основание в 0.")
 
 
 def tree_pine():
     o = Obj()
-    o.group("trunk", "bark", *cylinder(0.24, 0.08, 15.0, 10))
+    o.group("trunk", "bark", *cylinder(0.24, 0.08, 15.0, 6))
+    SEG = 9                                   # 2026-10-03: было 12 граней у ярусов
     for k, (y, r, h) in enumerate(((7.0, 2.6, 4.0), (9.5, 2.1, 3.6), (11.8, 1.6, 3.2), (13.8, 1.0, 2.6))):
-        V, N, UV, F = cylinder(r, 0.05, h, 12, y0=y)
+        V, N, UV, F = cylinder(r, 0.05, h, SEG, y0=y)
         o.group(f"crown{k}", "pine_needles", V, N, UV, F)
         # донышко яруса
-        cV = [(0, y, 0)] + [(r * math.cos(2 * math.pi * s / 12), y, r * math.sin(2 * math.pi * s / 12)) for s in range(12)]
-        cN = [(0, -1, 0)] * 13
-        cUV = [(0.5, 0.5)] + [(0.5 + 0.5 * math.cos(2 * math.pi * s / 12), 0.5 + 0.5 * math.sin(2 * math.pi * s / 12)) for s in range(12)]
-        cF = fix(cV, [(0, 1 + s, 1 + (s + 1) % 12) for s in range(12)], cN)
+        cV = [(0, y, 0)] + [(r * math.cos(2 * math.pi * s / SEG), y, r * math.sin(2 * math.pi * s / SEG)) for s in range(SEG)]
+        cN = [(0, -1, 0)] * (SEG + 1)
+        cUV = [(0.5, 0.5)] + [(0.5 + 0.5 * math.cos(2 * math.pi * s / SEG), 0.5 + 0.5 * math.sin(2 * math.pi * s / SEG)) for s in range(SEG)]
+        cF = fix(cV, [(0, 1 + s, 1 + (s + 1) % SEG) for s in range(SEG)], cN)
         o.group(f"crown{k}_base", "pine_needles", cV, cN, cUV, cF)
     o.save(C.OUT / "models" / "tree_pine.obj", "# Сосна ~16 м. Y вверх, основание в 0.")
 
@@ -167,26 +171,26 @@ def street_lamp():
     o = Obj()
     # фланец + "стакан" основания
     # (фонарей в городе ~60 тыс. и они впекаются в чанки — поэтому бюджет ~150 треугольников)
-    o.group("base", "lamp_pole", *cylinder(0.11, 0.1, 0.55, 8))
-    # коническая опора (8 граней, как у настоящих гнутых опор)
-    o.group("pole", "lamp_pole", *tube([[0, 0.5, 0], [0, LAMP_POLE_H - 0.35, 0]], [0.085, 0.048], 8, 0.6, 3.0))
+    # (2026-10-03: фонарей по снимкам 80 тыс. — бюджет урезан до ~90 треугольников)
+    # коническая опора (6 граней, с дороги не отличить от гнутой 8-гранной); фланец у земли убран
+    o.group("pole", "lamp_pole", *tube([[0, -0.1, 0], [0, LAMP_POLE_H - 0.35, 0]], [0.09, 0.048], 6, 0.6, 3.0))
     # кронштейн: из вершины опоры плавной дугой вбок и чуть вверх
     arc = []
-    for k in range(6):
-        t = k / 5
+    for k in range(3):
+        t = k / 2
         x = LAMP_REACH * t
         y = LAMP_POLE_H - 0.45 + 0.5 * math.sin(t * math.pi / 2)
         arc.append([x, y, 0.0])
     arc[0] = [0.0, LAMP_POLE_H - 0.45, 0.0]
-    o.group("arm", "lamp_pole", *tube(arc, [0.045] + [0.032] * 5, 5, 0.6, 3.0))
+    o.group("arm", "lamp_pole", *tube(arc, [0.045] + [0.032] * 2, 4, 0.6, 3.0))
     # крышка опоры
-    capV = [(0, LAMP_POLE_H - 0.35, 0)] + [(0.048 * math.cos(2 * math.pi * k / 8), LAMP_POLE_H - 0.35, 0.048 * math.sin(2 * math.pi * k / 8)) for k in range(8)]
-    o.group("pole_cap", "lamp_pole", capV, [(0, 1, 0)] * 9, [(0.5, 0.5)] * 9, fix(capV, [(0, 1 + k, 1 + (k + 1) % 8) for k in range(8)], [(0, 1, 0)] * 9))
+    capV = [(0, LAMP_POLE_H - 0.35, 0)] + [(0.048 * math.cos(2 * math.pi * k / 6), LAMP_POLE_H - 0.35, 0.048 * math.sin(2 * math.pi * k / 6)) for k in range(6)]
+    o.group("pole_cap", "lamp_pole", capV, [(0, 1, 0)] * 7, [(0.5, 0.5)] * 7, fix(capV, [(0, 1 + k, 1 + (k + 1) % 6) for k in range(6)], [(0, 1, 0)] * 7))
     # корпус светильника: лофт суперэллипсов вдоль +X, с лёгким подъёмом 5°
     tilt = math.radians(5)
     x0 = LAMP_REACH - 0.25
-    sections = [(0.00, 0.06, 0.045), (0.14, 0.15, 0.08), (0.52, 0.17, 0.08), (0.80, 0.09, 0.04)]
-    ring_n = 8
+    sections = [(0.00, 0.06, 0.045), (0.30, 0.16, 0.08), (0.80, 0.09, 0.04)]
+    ring_n = 6
     V, N, UV, F = [], [], [], []
     y_mount = LAMP_POLE_H + 0.05
     for si, (dx, hw, hh) in enumerate(sections):

@@ -26,7 +26,7 @@ def main():
             print(f"[get] {url}")
             urllib.request.urlretrieve(url, path)
     here = C.Path(__file__).parent
-    for step in ("extract_osm.py", "terrain.py", "textures.py", "models.py", "build_chunks.py", "export_data.py"):
+    for step in ("extract_osm.py", "bld_levels.py", "terrain.py", "textures.py", "models.py", "build_chunks.py", "export_data.py"):
         print(f"=== {step}", flush=True)
         subprocess.run([sys.executable, step], check=True, cwd=here)
     # свет фонарей для движка — пишется Rust-инструментом структурами самого движка

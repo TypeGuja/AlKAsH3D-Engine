@@ -36,6 +36,9 @@ def num(s, default=None):
         return default
 
 
+FINE_MATS = ("glyphs_", "addr_", "sign_board")   # пишутся в OBJ с точностью 1 мм
+
+
 def h01(x, z, salt=0):
     v = (int(x * 7.3) * 73856093) ^ (int(z * 7.3) * 19349663) ^ (salt * 83492791)
     v = (v ^ (v >> 13)) * 1274126177 & 0xFFFFFFFF
@@ -196,6 +199,10 @@ class Terrain:
 class Mesh:
     def __init__(self):
         self.g = defaultdict(list)
+        # оттенок стен текущего здания (цвет фасада по снимкам): (материал, rgb) или None —
+        # множитель альбедо-текстуры в движке, пишется цветом вершин OBJ (v x y z r g b)
+        self.tint = None
+        self.colored = False
 
     def add(self, mat, P, N, UV, want=None):
         """P,N: (n,3,3), UV: (n,3,2). want: (n,3) желаемое направление нормали грани
@@ -210,10 +217,16 @@ class Mesh:
         flip = (cr * want).sum(1) < 0
         idx = np.array([0, 2, 1])
         P[flip] = P[flip][:, idx]; N[flip] = N[flip][:, idx]; UV[flip] = UV[flip][:, idx]
-        self.g[mat].append((P[ok], N[ok], UV[ok]))
+        n = int(ok.sum())
+        if self.tint is not None and self.tint[0] == mat:
+            col = np.broadcast_to(np.asarray(self.tint[1], np.float64), (n, 3, 3))
+            self.colored = True
+        else:
+            col = np.ones((n, 3, 3))
+        self.g[mat].append((P[ok], N[ok], UV[ok], col))
 
     def tri_count(self):
-        return sum(sum(len(p) for p, _, _ in lst) for lst in self.g.values())
+        return sum(sum(len(e[0]) for e in lst) for lst in self.g.values())
 
     def write(self, path, header):
         out = [header, "mtllib ../samara.mtl"]
@@ -221,12 +234,16 @@ class Mesh:
         stats = {}
         chunks = []
         for mat in sorted(self.g):
-            P = np.concatenate([p for p, _, _ in self.g[mat]]).reshape(-1, 3)
-            N = np.concatenate([n for _, n, _ in self.g[mat]]).reshape(-1, 3)
-            T = np.concatenate([t for _, _, t in self.g[mat]]).reshape(-1, 2)
+            P = np.concatenate([e[0] for e in self.g[mat]]).reshape(-1, 3)
+            N = np.concatenate([e[1] for e in self.g[mat]]).reshape(-1, 3)
+            T = np.concatenate([e[2] for e in self.g[mat]]).reshape(-1, 2)
+            K = np.concatenate([e[3] for e in self.g[mat]]).reshape(-1, 3)
             if len(P) == 0:
                 continue
-            pq = np.rint(P * 100).astype(np.int64)
+            # буквы и фон вывесок/табличек — с точностью 1 мм: при 1 см буквы
+            # ложатся в плоскость фона и мерцают, а узкие глифы искажаются
+            scale = 1000 if mat.startswith(FINE_MATS) else 100
+            pq = np.rint(P * scale).astype(np.int64)
             nq = np.rint(N * 1000).astype(np.int64)
             tq = np.rint(T * 1000).astype(np.int64)
             # после округления до 1 см «иголки» могут выродиться или перевернуться — выкидываем
@@ -235,21 +252,28 @@ class Mesh:
             good = ((cr * N.reshape(-1, 3, 3).mean(1)).sum(1) > 0) & (np.linalg.norm(cr, axis=1) > 0)
             good3 = np.repeat(good, 3)
             pq, nq, tq = pq[good3], nq[good3], tq[good3]
+            kq = np.rint(K[good3] * 1000).astype(np.int64)
             if len(pq) == 0:
                 continue
-            up, ip = np.unique(pq, axis=0, return_inverse=True)
+            # вершина = положение + цвет (у соседних домов общий угол, но цвет разный)
+            up, ip = np.unique(np.hstack([pq, kq]), axis=0, return_inverse=True)
             un, inn = np.unique(nq, axis=0, return_inverse=True)
             ut, it = np.unique(tq, axis=0, return_inverse=True)
             ip = ip.ravel(); inn = inn.ravel(); it = it.ravel()
-            chunks.append((mat, up, un, ut, ip + vo + 1, it + to + 1, inn + no + 1))
+            chunks.append((mat, scale, up, un, ut, ip + vo + 1, it + to + 1, inn + no + 1))
             vo += len(up); to += len(ut); no += len(un)
             stats[mat] = len(pq) // 3
         import io
         buf = io.StringIO()
         buf.write("\n".join(out) + "\n")
-        for mat, up, un, ut, ip, it, inn in chunks:
+        for mat, scale, up, un, ut, ip, it, inn in chunks:
             buf.write(f"o {mat}\nusemtl {mat}\n")
-            np.savetxt(buf, up / 100.0, fmt="v %.2f %.2f %.2f")
+            if self.colored:
+                # цвет либо у всех вершин файла, либо ни у одной (так читает OBJ эдитор, tobj)
+                np.savetxt(buf, np.hstack([up[:, :3] / scale, up[:, 3:] / 1000.0]),
+                           fmt=("v %.3f %.3f %.3f" if scale == 1000 else "v %.2f %.2f %.2f") + " %.3f %.3f %.3f")
+            else:
+                np.savetxt(buf, up[:, :3] / scale, fmt="v %.3f %.3f %.3f" if scale == 1000 else "v %.2f %.2f %.2f")
             np.savetxt(buf, ut / 1000.0, fmt="vt %.3f %.3f")
             np.savetxt(buf, un / 1000.0, fmt="vn %.3f %.3f %.3f")
             f = np.stack([ip, it, inn], 1).reshape(-1, 9)
@@ -353,6 +377,13 @@ def building_style(t, area, cx, cz):
     mat_tag = t.get("building:material")
     r = h01(cx, cz, 1)
     lv = num(t.get("building:levels"))
+    ph = t.get("_photo") or {}
+    # Высота карниза со снимков (bld_photo.pkl: h) в этажность НЕ идёт: проверка 2026-10-03 на
+    # 5726 домах с этажностью в OSM — даже в лучшем случае (≤ 4 эт., < 1000 м², ≥ 2 кадров)
+    # ошибка 1.23 эт., ±1 77%, а оценка по соседям (bld_levels) — 1.04 эт., ±1 82%. Крыши высоких
+    # домов в кадр с торпеды не попадают, и высота сильно занижается (6–9 эт.: −5, 10+: −10).
+    if lv is None:
+        lv = t.get("_levels_est")          # оценка по размеченным соседям (bld_levels.py)
     hist = HISTORIC_BOX[0] < cx < HISTORIC_BOX[2] and HISTORIC_BOX[1] < cz < HISTORIC_BOX[3]
     if b in GARAGE:
         facade, lv = "wall_garage", lv or 1
@@ -405,6 +436,10 @@ def building_style(t, area, cx, cz):
                 facade = "facade_brick"
         else:
             facade = ("facade_glass" if lv >= 5 else "facade_commercial") if b in COMMERCIAL else "facade_brick"
+    rgb = ph.get("rgb")
+    if rgb is not None and mat_tag is None and facade in ("facade_panel", "facade_historic", "facade_commercial") \
+            and is_red_brick(rgb):
+        facade = "facade_brick"           # на снимках — красный кирпич
     if mat_tag == "glass":
         facade = "facade_glass"
     elif mat_tag == "wood":
@@ -623,6 +658,10 @@ def building(mesh, terr, geom, t, is_part=False):
     yb = gref + minh if minh else gmin - 0.5
     ye = gref + eave
     wall_mat = st["facade"]
+    ph = t.get("_photo")
+    tint = photo_tint(wall_mat, ph.get("rgb")) if ph else None
+    if tint is not None:
+        mesh.tint = (wall_mat, tint)
     for p in polys:
         p = shapely.orient_polygons(p)
         ring_walls(mesh, p.exterior, yb, ye, gref if not minh else yb, wall_mat)
@@ -644,6 +683,7 @@ def building(mesh, terr, geom, t, is_part=False):
     if not done:
         for p in polys:
             flat_cap(mesh, p, ye, "roof_flat")
+    mesh.tint = None
     return 1
 
 
@@ -711,9 +751,12 @@ def rail_profiles(top_dy, ballast=True):
                  ("ballast", [(1.6, top_dy, False), (2.2, -0.1, True)], (0.864, 1.0))]
     rh = 0.18 if ballast else 0.02
     for c in (-0.76, 0.76):
-        prof += [("rail_steel", [(c - 0.036, top_dy, False), (c - 0.036, top_dy + rh, False)], (0.3, 0.7)),
-                 ("rail_steel", [(c - 0.036, top_dy + rh, False), (c + 0.036, top_dy + rh, False)], (0.0, 0.2)),
-                 ("rail_steel", [(c + 0.036, top_dy + rh, False), (c + 0.036, top_dy, False)], (0.3, 0.7))]
+        if ballast:
+            prof += [("rail_steel", [(c - 0.036, top_dy, False), (c - 0.036, top_dy + rh, False)], (0.3, 0.7))]
+        prof += [("rail_steel", [(c - 0.036, top_dy + rh, False), (c + 0.036, top_dy + rh, False)], (0.0, 0.2))]
+        if ballast:
+            prof += [("rail_steel", [(c + 0.036, top_dy + rh, False), (c + 0.036, top_dy, False)], (0.3, 0.7))]
+        # у рельсов в асфальте (трамвай, мосты) боковины 2 см не видны — только верх
     return prof
 
 
@@ -843,6 +886,63 @@ class Ctx:
     pass
 
 
+_LEVELS_EST = None
+
+
+def levels_estimates():
+    global _LEVELS_EST
+    if _LEVELS_EST is None:
+        f = C.WORK / "bld_levels.pkl"
+        _LEVELS_EST = pickle.load(open(f, "rb")) if f.exists() else {}
+    return _LEVELS_EST
+
+
+_PHOTO = None
+_TEX_WALL = {}
+
+
+def photo_data():
+    """CACHE/work/bld_photo.pkl (mly_aggregate.py): {ключ здания: dict(rgb, h, h_lo, n)} или {}."""
+    global _PHOTO
+    if _PHOTO is None:
+        f = C.WORK / "bld_photo.pkl"
+        _PHOTO = pickle.load(open(f, "rb")) if f.exists() else {}
+    return _PHOTO
+
+
+def tex_wall_color(mat):
+    """Линейный средний цвет стены в текстуре материала (без окон — тёмной трети пикселей)."""
+    if mat not in _TEX_WALL:
+        from PIL import Image
+        f = C.OUT / "textures" / f"{mat}_albedo.png"
+        if not f.exists():
+            _TEX_WALL[mat] = None
+        else:
+            a = (np.asarray(Image.open(f).convert("RGB"), np.float64) / 255.0) ** 2.2
+            a = a.reshape(-1, 3)
+            lum = a @ [0.2126, 0.7152, 0.0722]
+            _TEX_WALL[mat] = a[lum >= np.percentile(lum, 33)].mean(0)
+    return _TEX_WALL[mat]
+
+
+def photo_tint(mat, rgb):
+    """Оттенок вершин: цвет фасада со снимков / цвет стены в текстуре (рисунок текстуры сохраняется)."""
+    if mat == "facade_glass" or rgb is None:
+        return None                       # у стекла на снимках — отражения, а не цвет
+    w = tex_wall_color(mat)
+    if w is None:
+        return None
+    return tuple(np.clip(np.asarray(rgb) / np.maximum(w, 1e-3), 0.3, 2.5))
+
+
+def is_red_brick(rgb):
+    """Красный/коричневый кирпич: тёмный, тёплый, насыщенный."""
+    r, g, b = (np.asarray(rgb) ** (1 / 2.2))            # в sRGB — ближе к глазу
+    mx, mn = max(r, g, b), min(r, g, b)
+    sat = (mx - mn) / max(mx, 1e-6)
+    return r == mx and r > g * 1.18 and sat > 0.3 and mx < 0.75
+
+
 def prepare_super(sx, sz, terr, bridges):
     ss = C.SUPER * C.CHUNK
     items = pickle.load(open(C.WORK / "bins" / f"st_{sx}_{sz}.pkl", "rb"))
@@ -856,6 +956,8 @@ def prepare_super(sx, sz, terr, bridges):
     ctx.markings = []        # (line, tags, width)
     ctx.lamps_lines = []     # (line, width, kind, spacing, both_sides, scale)
     ctx.road_lines = []      # все проезжие оси — чтобы развернуть фонари из OSM к дороге
+    ctx.road_kinds = []      # вид света фонаря у этой дороги (led — магистрали, sodium — остальные)
+    ctx.road_widths = []     # ширина проезжей части (для проверки «фонарь на дороге»)
     ctx.trees = []           # (x, z, model)
     ctx.tree_rows = []
     ctx.forests = []         # (geom, leaf_type)
@@ -870,8 +972,17 @@ def prepare_super(sx, sz, terr, bridges):
                     expanded.append((kind, t, part))
         else:
             expanded.append((kind, t, g))
+    est = levels_estimates()
     for kind, t, g in expanded:
         if kind in ("building", "part"):
+            if kind == "building" and est:
+                rp = g.representative_point()
+                v = est.get((round(rp.x, 1), round(rp.y, 1)))
+                if v is not None:
+                    t["_levels_est"] = v
+                ph = photo_data().get((round(rp.x, 1), round(rp.y, 1)))
+                if ph is not None:
+                    t["_photo"] = ph
             ctx.buildings.append((g, t, kind == "part"))
         elif kind == "prism":
             ctx.prisms.append((g, t))
@@ -908,6 +1019,8 @@ def prepare_super(sx, sz, terr, bridges):
                             and mat == "asphalt":
                         ctx.markings.append((g, lanes))
                     ctx.road_lines.append(g)
+                    ctx.road_widths.append(w_)
+                    ctx.road_kinds.append("led" if hw.replace("_link", "") in ("motorway", "trunk", "primary", "secondary", "tertiary") else "sodium")
                     lit = t.get("lit")
                     base_hw = hw.replace("_link", "")
                     if lit != "no" and base_hw in ("motorway", "trunk", "primary", "secondary", "tertiary"):
@@ -943,6 +1056,13 @@ def prepare_super(sx, sz, terr, bridges):
                 ctx.tree_rows.append(g)
     ctx.ground.sort(key=lambda r: r[0])
     ctx.road_tree = shapely.STRtree(ctx.road_lines) if ctx.road_lines else None
+    # фонари, распознанные Mapillary на снимках (настоящие места столбов)
+    from mly_common import mly_points
+    ss_ = C.SUPER * C.CHUNK
+    # столбы: фонари вдоль улиц стоят через 25–40 м, через улицу их разделяет её ширина
+    from mly_common import cluster_along
+    ctx.mly_lamps = cluster_along(mly_points("street_light", (sx * ss_ - 50, sz * ss_ - 50, (sx + 1) * ss_ + 50, (sz + 1) * ss_ + 50), 2.0),
+                                  ctx.road_lines, ctx.road_tree, along=11.0, lateral=6.0)
     ctx.ground_tree = shapely.STRtree([r[2] for r in ctx.ground]) if ctx.ground else None
     ctx.bridges = [b for b in bridges if b[1][:, 0].max() > sx * ss - 64 and b[1][:, 0].min() < (sx + 1) * ss + 64
                    and b[1][:, 2].max() > sz * ss - 64 and b[1][:, 2].min() < (sz + 1) * ss + 64]
@@ -1057,7 +1177,7 @@ def build_chunk(gx, gz, ctx, terr):
     for line, t in ctx.rails:
         if not line.intersects(box):
             continue
-        co = densify(np.asarray(line.coords)[:, :2], 4.0)
+        co = densify(np.asarray(line.coords)[:, :2], 8.0)     # 2026-10-03: было 4 м
         m = seg_in_chunk(co, boxt)
         if not m.any():
             continue
@@ -1182,6 +1302,84 @@ def build_chunk(gx, gz, ctx, terr):
     if road_surface is not None:
         road_surface = road_surface.buffer(-0.3)
         shapely.prepare(road_surface)
+    # фонари со снимков Mapillary: кронштейн к ближайшей проезжей части, свет — по её классу;
+    # дальше 12 м от дорог — парковый (ниже и слабее)
+    road_lamps = []          # (x, z, дорога, поперечное смещение) — для отсева дублей у дорог
+    for x, z in ctx.mly_lamps:
+        if not inside(x, z):
+            continue
+        if any((x - a) ** 2 + (z - b) ** 2 < 16.0 for a, b in lamp_pts):
+            continue
+        if bl is not None and len(bl.query(shapely.Point(x, z), predicate="intersects")):
+            continue
+        kind, scale, yaw = "park", 0.55, h01(x, z, 5) * 360
+        if ctx.road_tree is not None:
+            pt = shapely.Point(x, z)
+            # на проезжей части: в зоне перекрёстка (≥ 2 дорог) — убрать; на одной дороге —
+            # к ближайшему краю, кроме оси широкого бульвара (там столбы стоят посередине)
+            hits = [i for i in ctx.road_tree.query(pt.buffer(15.0))
+                    if ctx.road_lines[i].distance(pt) < ctx.road_widths[i] / 2 - 0.2]
+            if len(hits) >= 2:
+                continue
+            if hits:
+                i = hits[0]
+                ln, wi = ctx.road_lines[i], ctx.road_widths[i]
+                si = ln.project(pt)
+                qi = ln.interpolate(si)
+                a_, b_ = ln.interpolate(max(si - 1.0, 0.0)), ln.interpolate(min(si + 1.0, ln.length))
+                tl = max(math.hypot(b_.x - a_.x, b_.y - a_.y), 1e-6)
+                rx, rz = -(b_.y - a_.y) / tl, (b_.x - a_.x) / tl
+                lat_ = (x - qi.x) * rx + (z - qi.y) * rz
+                if not (wi >= 14.0 and abs(lat_) < 1.5):
+                    sg = 1.0 if lat_ >= 0 else -1.0
+                    x, z = qi.x + rx * sg * (wi / 2 + 0.7), qi.y + rz * sg * (wi / 2 + 0.7)
+                    pt = shapely.Point(x, z)
+                    if any(ctx.road_lines[j].distance(pt) < ctx.road_widths[j] / 2 - 0.2
+                           for j in ctx.road_tree.query(pt.buffer(15.0))):
+                        continue             # у края — уже другая дорога
+                    if bl is not None and len(bl.query(pt, predicate="intersects")):
+                        continue
+            k = ctx.road_tree.nearest(pt)
+            line = ctx.road_lines[k]
+            s_ = line.project(pt)
+            q = line.interpolate(s_)
+            dx, dz = q.x - x, q.y - z
+            dist = math.hypot(dx, dz)
+            if dist >= 12.0:
+                # вдали от проезжих частей фонарь бывает только у дорожки/аллеи; иначе это
+                # чаще всего ложное распознавание (свет на здании, отражение)
+                wt = getattr(getattr(ctx, "det", None), "way_tree", None)
+                if wt is None:
+                    continue
+                wi = wt.nearest(pt)
+                if wi is None or ctx.det.ways[wi][0].distance(pt) > 6.0:
+                    continue
+            if dist < 12.0:
+                # один столб с разных проездов триангулируется со сдвигом вдоль улицы до ~7 м, а у
+                # двухрожкового каждый светильник распознаётся отдельно; у проезжей части фонари на
+                # одной стороне ближе 8 м не ставят (через улицу смещение отличается на её ширину)
+                a_, b_ = line.interpolate(max(s_ - 1.0, 0.0)), line.interpolate(min(s_ + 1.0, line.length))
+                tl = max(math.hypot(b_.x - a_.x, b_.y - a_.y), 1e-6)
+                lat = ((x - q.x) * -(b_.y - a_.y) + (z - q.y) * (b_.x - a_.x)) / tl
+                if any(kk == k and abs(la - lat) < 4.0 and (x - a) ** 2 + (z - b) ** 2 < 64.0
+                       for a, b, kk, la in road_lamps):
+                    continue
+                road_lamps.append((x, z, k, lat))
+                kind, scale = ctx.road_kinds[k], 1.0
+                if road_surface is not None and shapely.contains_xy(road_surface, x, z) and dist > 0.3:
+                    # ошибка триангуляции загнала столб на проезжую часть — на ближайший край
+                    edge = road_surface.boundary
+                    e = edge.interpolate(edge.project(pt))
+                    el = max(math.hypot(e.x - q.x, e.y - q.y), 1e-6)
+                    x, z = e.x + (e.x - q.x) / el * 0.6, e.y + (e.y - q.y) / el * 0.6
+                    dx, dz = q.x - x, q.y - z
+            if 0.3 < math.hypot(dx, dz) < 40:
+                yaw = yaw_towards(dx, dz)
+        y = float(terr.height(x, z)) - 0.05
+        light = bake_lamp(mesh, x, y, z, yaw, scale)
+        lights.append((light[0], light[1], light[2], kind))
+        lamp_pts.append((x, z))
+    from mly_common import covered
     for line, w, kind, spacing, both, scale in ctx.lamps_lines:
         if not line.intersects(box):
             continue
@@ -1203,6 +1401,8 @@ def build_chunk(gx, gz, ctx, terr):
                     continue
                 if any((lx - a) ** 2 + (lz - b) ** 2 < 100.0 for a, b in lamp_pts):
                     continue
+                if covered(lx, lz):
+                    continue          # улица снята: фонари там, где их нашёл Mapillary, а не «через каждые N м»
                 if bl is not None and len(bl.query(shapely.Point(lx, lz), predicate="intersects")):
                     continue
                 if "water" in classes and classes["water"].contains(shapely.Point(lx, lz)):
@@ -1277,7 +1477,8 @@ def main():
             print(f"[chunks] st {sx},{sz}: {len(out)} чанков за {dt:.0f}s | {done_chunks}/{total} "
                   f"| прошло {el/60:.1f} мин, осталось ~{el/done_chunks*(total-done_chunks)/60:.0f} мин", flush=True)
     if only is None:
-        json.dump(results, open(C.WORK / "chunk_stats.json", "w"))
+        C.OUT_WORK.mkdir(parents=True, exist_ok=True)
+        json.dump(results, open(C.OUT_WORK / "chunk_stats.json", "w"))
     print(f"[chunks] готово: {done_chunks} чанков за {(time.time()-t0)/60:.1f} мин")
 
 

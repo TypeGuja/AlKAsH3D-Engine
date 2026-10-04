@@ -79,7 +79,7 @@ def main():
             for m, F in faces.items():
                 F = F + np.array([ov, ot, on] * 3)
                 if m not in tmp:
-                    tmp[m] = open(C.WORK / f"_merge_{out.stem}_{m}.txt", "w", newline="\n")
+                    tmp[m] = open(C.OUT_WORK / f"_merge_{out.stem}_{m}.txt", "w", newline="\n")
                 buf = tmp[m]
                 np.savetxt(buf, F, fmt="f %d/%d/%d %d/%d/%d %d/%d/%d")
                 tris += len(F)
@@ -89,13 +89,13 @@ def main():
         for m, buf in sorted(tmp.items()):
             buf.close()
             fo.write(f"o {m}\nusemtl {m}\n")
-            with open(C.WORK / f"_merge_{out.stem}_{m}.txt", encoding="utf-8") as fi:
+            with open(C.OUT_WORK / f"_merge_{out.stem}_{m}.txt", encoding="utf-8") as fi:
                 while True:
                     s = fi.read(1 << 24)
                     if not s:
                         break
                     fo.write(s)
-            (C.WORK / f"_merge_{out.stem}_{m}.txt").unlink()
+            (C.OUT_WORK / f"_merge_{out.stem}_{m}.txt").unlink()
     print(f"[merge] {out.name}: {len(files)} чанков, {tris:,} треугольников, {ov:,} вершин, "
           f"yshift {yshift:+.0f}, {out.stat().st_size/2**20:.0f} МБ, {time.time()-t0:.0f}s")
 
