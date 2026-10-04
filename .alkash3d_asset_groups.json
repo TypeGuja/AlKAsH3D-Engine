@@ -1,0 +1,39 @@
+{
+  "asset_groups": [
+    {
+      "name": "Group 1",
+      "collapsed": false,
+      "member_names": []
+    }
+  ],
+  "light_color_groups": {
+    "1": {
+      "name": "Shade 1",
+      "color": [
+        0.34909093,
+        0.36802614,
+        1.0
+      ],
+      "intensity": 20.0
+    },
+    "2": {
+      "name": "Shade 2",
+      "color": [
+        1.0,
+        0.307451,
+        0.061818182
+      ],
+      "intensity": 20.0
+    },
+    "3": {
+      "name": "Shade 3",
+      "color": [
+        1.0,
+        0.9499999,
+        0.85
+      ],
+      "intensity": 20.0
+    }
+  },
+  "next_light_color_group_id": 4
+}
