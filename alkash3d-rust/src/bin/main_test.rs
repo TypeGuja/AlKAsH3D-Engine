@@ -103,7 +103,7 @@ const ENABLE_MSAA: bool = false;
 const ENABLE_SSAO: bool = false;
 const ENABLE_BLOOM: bool = false;
 const ENABLE_VOLUMETRIC: bool = false;
-const ENABLE_SHADOWS: bool = false;
+const ENABLE_SHADOWS: bool = true;
 
 // УВЕЛИЧЕНО (по прямому запросу пользователя: "дальность прорисовки мира
 // больше"): `Camera::new` по умолчанию ставит `far = 100.0` (см.
@@ -404,17 +404,17 @@ fn setup_lights_from_alfar(engine: &mut AlkashEngine, alfars: &[std::path::PathB
     // на дистанции 200 ещё до того, как размер сетки стал бы иметь
     // значение.
     //
-    // ОБНОВЛЕНО: порог 1км больше не действует — сетка FirstFires теперь
-    // едет за камерой (far_plane = её полуразмер вокруг камеры, а не вокруг
-    // начала координат), а lod_distances больше не отсекают свет, только
-    // метят LOD-уровень. Фонари работают по всей карте; отсекает только
-    // frustum камеры (включая её дальнюю плоскость).
+    // ИЗМЕНЕНО (лаги на карте Самары с реальными фонарями Mapillary): сетка
+    // FirstFires теперь ездит за камерой и по высоте ограничена ±128 м, так что
+    // ячейку можно сделать мельче — 25 м вместо 100 (80×11×80 ≈ 70 тыс. ячеек).
+    // В ячейку 100 м в центре попадало 50+ фонарей, и каждый пиксель перебирал
+    // их все, хотя светят на него 3–4.
     let config = LightConfig {
         max_lights: 64,
         tile_size: 16,
         far_plane: 1000.0,
         lod_distances: [30.0, 60.0, 1000.0],
-        grid_cell_size: 100.0,
+        grid_cell_size: 25.0,
     };
 
     if alfars.is_empty() {

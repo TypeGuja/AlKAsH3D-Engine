@@ -279,7 +279,7 @@ impl AlkashEngine {
             let state = STATE.lock().unwrap();
             if let Some(swap_chain) = &state.swap_chain {
                 let hr = unsafe {
-                    swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
+                    swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, crate::swap_chain::swap_chain_flags())
                 };
                 match hr {
                     Ok(()) => true,

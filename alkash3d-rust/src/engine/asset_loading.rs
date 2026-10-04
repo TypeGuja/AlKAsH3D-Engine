@@ -184,6 +184,7 @@ impl AlkashEngine {
                         let material_name = altex.strings.get(material.name_id as usize).map(String::as_str).unwrap_or("");
                         mesh.light_emitter_area = light_emitter_area_for_material(material_name);
                     }
+                    mesh.max_draw_distance = Self::detail_draw_distance(altex_path);
 
                     let index = self.add_mesh(mesh);
                     mesh_indices.push(index);
@@ -216,6 +217,30 @@ impl AlkashEngine {
     /// lightmap/AO-запечёнку) по-прежнему отбрасывается — движок пока не
     /// поддерживает lightmap-запекание, это отдельное, не относящееся к
     /// normal mapping расширение.
+    /// ДОБАВЛЕНО (производительность карты города): дальность отрисовки мелочи по имени
+    /// .altex. Эдитор называет файлы города «<материал>_<квартал>_<id>_<gx>_<gz>.altex»
+    /// (converters/alworld.rs), так что префикс = материал из tools/samara_map/materials.py.
+    /// Дальности — с запасом: на них предмет уже несколько пикселей.
+    pub(super) fn detail_draw_distance(altex_path: &str) -> f32 {
+        let name = std::path::Path::new(altex_path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        const TABLE: &[(&str, f32)] = &[
+            ("glyphs_", 120.0), ("addr_", 120.0), ("sign_", 180.0), ("signal_", 250.0),
+            ("wood_planks", 150.0), ("door_metal", 150.0), ("entrance_lamp", 200.0), ("insulator", 250.0),
+            ("cable", 300.0), ("paint_", 250.0), ("glass_shelter", 250.0), ("boom_stripes", 250.0),
+            ("steel_grey", 350.0), ("fence_metal", 300.0), ("lamp_", 450.0), ("road_marking", 400.0),
+            ("bronze", 400.0), ("granite", 350.0),
+        ];
+        for (prefix, d) in TABLE {
+            if name.starts_with(prefix) {
+                return *d;
+            }
+        }
+        f32::INFINITY
+    }
+
     fn altex_vertex_to_engine_vertex(v: &crate::altex_format::Vertex) -> Vertex {
         let handedness = Self::compute_tangent_handedness(v.normal, v.tangent, v.bitangent);
         Vertex {

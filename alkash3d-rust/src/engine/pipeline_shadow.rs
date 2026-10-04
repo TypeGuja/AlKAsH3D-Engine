@@ -209,6 +209,9 @@ impl AlkashEngine {
     pub fn disable_shadows_for_diagnostics(&mut self) {
         println!("[DIAG] Shadow mapping принудительно отключён для диагностики зависания");
         self.shadow_pipeline_state = None;
+        // ИСПРАВЛЕНО: тени фонарей тоже выключаются — без этого select_spot/point_shadow_lights
+        // продолжали выбирать фонари и рендерить атласы (тысячи draw за кадр) при shadows=false.
+        self.spot_shadow_pipeline_state = None;
     }
 
     pub(super) fn create_shadow_pipeline_state(&mut self) -> Result<()> {

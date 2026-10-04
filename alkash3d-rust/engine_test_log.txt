@@ -5,14 +5,15 @@ Alkash3D Engine v0.1.0 — MAIN_TEST
 ==========================================
 WASD — ходьба, стрелки — осмотреться, ESC — выход
 
-[MAIN_TEST] test.alworld уже существует — использую как есть (не перезаписываю)
+[MAIN_TEST] Карта: C:\Users\user\Desktop\иршгн (мир C:\Users\user\Desktop\иршгн\world.alworld, свет: 2 файл(ов))
+[MAIN_TEST]   свет: C:\Users\user\Desktop\иршгн\lighting.alfar
+[MAIN_TEST]   свет: C:\Users\user\Desktop\иршгн\lights\samara_lamps.alfar
 [MAIN_TEST] GraphicsSettings: msaa=false ssao=false bloom=false volumetric=false shadows=false (правь константы ENABLE_* в начале файла)
 [ENGINE] Initializing Alkash3D Engine v0.1.0...
-[ENGINE] Window created: HWND=0x40390
+[ENGINE] Window created: HWND=0x50A26
 [ENGINE] ✓ Window created
 [DEVICE] ========== CREATING D3D12 DEVICE ==========
-[DEVICE] ✓ D3D12 debug layer enabled
-[DEVICE] GPU-Based Validation доступен, но отключён по умолчанию (см. комментарий в device.rs — на тяжёлой сцене раздувает кадр до минут и может подвесить систему; установи ALKASH3D_GBV=1 для диагностики на лёгкой сцене)
+[DEVICE] D3D12 debug layer выключен (ALKASH3D_D3D_DEBUG=1 — включить)
 [DEVICE] ✓ DRED enabled (auto-breadcrumbs + page fault reporting)
 [DEVICE] Creating DXGI factory...
 [DEVICE] DXGI factory created
@@ -24,7 +25,6 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [DEVICE] D3D12 device created (feature level 12_1)
 [DEVICE] Getting descriptor sizes...
 [DEVICE] RTV size: 32, DSV size: 8, CBV/SRV/UAV size: 32
-[DEVICE] ✓ D3D12 info queue obtained (подробные сообщения об ошибках доступны)
 [DEVICE] ✓ D3D12 device initialized successfully
 [ENGINE] ✓ Device created
 [QUEUE] Creating command queue...
@@ -32,7 +32,7 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [QUEUE] ✓ Command queue created
 [ENGINE] ✓ Command queue created
 [SWAPCHAIN] ========== CREATING SWAP CHAIN ==========
-[SWAPCHAIN] HWND: 0x40390, Width: 1024, Height: 576, Buffer count: 2
+[SWAPCHAIN] HWND: 0x50A26, Width: 1600, Height: 900, Buffer count: 2
 [SWAPCHAIN] Command queue obtained
 [SWAPCHAIN] Creating DXGI factory...
 [SWAPCHAIN] DXGI factory created
@@ -53,7 +53,7 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [UTILS] ✓ Fence created
 [ENGINE] ✓ Fence created
 [RENDERER] ========== CREATING RENDERER ==========
-[RENDERER] Width: 1024, Height: 576, Buffer count: 2
+[RENDERER] Width: 1600, Height: 900, Buffer count: 2
 [RENDERER] Device obtained
 [RENDERER] Swap chain obtained
 [RENDERER] RTV size: 32, DSV size: 8
@@ -70,17 +70,21 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [RENDERER] Back buffer 1 resource obtained
 [RENDERER] ✓ RTV 1 created
 [RENDERER] Creating depth stencil...
-[RENDERER] Creating depth stencil: 1024x576 (1x MSAA)
+[RENDERER] Creating depth stencil: 1600x900 (1x MSAA)
 [RENDERER] ✓ Depth stencil created
 [RENDERER] ✓ Depth stencil created
 [RENDERER] Creating HDR target...
-[RENDERER] Creating HDR render target: 1024x576 (1x MSAA)
+[RENDERER] Creating HDR render target: 1600x900 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
-[RENDERER] Creating HDR render target: 1024x576 (1x MSAA)
+[RENDERER] Creating HDR render target: 1600x900 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
+[RENDERER] Creating HDR render target: 1600x900 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[RENDERER] Creating HDR render target: 1600x900 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating CBV/SRV/UAV heap with 5 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
 [RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created
 [RENDERER] ✓ Renderer created successfully
@@ -88,13 +92,13 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 2516 bytes
 [SHADER] Compiling ps_5_0 - entry: main
-[SHADER] ✓ Compiled successfully, 24412 bytes
+[SHADER] ✓ Compiled successfully, 30756 bytes
 [ENGINE] ✓ Default shaders compiled (нормали + сетка каллинга + spot-конус фонарей)
-[ENGINE] ✓ Root signature created (CBV b0 + SRV t0 фонари + SRV t1/t2 сетка каллинга + SRV table t3..t5 shadow map + t9 spot-атлас + SRV table t6 albedo + CBV b2 spot-матрицы + comparison sampler s0 + linear sampler s1)
+[ENGINE] ✓ Root signature created (CBV b0 + SRV t0 фонари + SRV t1/t2 сетка каллинга + SRV table t3..t5 shadow map + t9 spot-атлас + t10 point-атлас + SRV table t6 albedo + CBV b2 spot-матрицы + comparison sampler s0 + linear sampler s1)
 [PSO] ========== CREATING GRAPHICS PIPELINE STATE ==========
 [PSO] VS size: 2516 bytes
-[PSO] PS size: 24412 bytes
-[PSO] RTV format: DXGI_FORMAT(10)
+[PSO] PS size: 30756 bytes
+[PSO] RTV formats: [DXGI_FORMAT(10), DXGI_FORMAT(10)]
 [PSO] DSV format: DXGI_FORMAT(40)
 [PSO] Device obtained successfully
 [PSO] Creating input layout...
@@ -105,20 +109,20 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [PSO] Blend state created
 [PSO] Creating depth stencil state (ENABLED)...
 [PSO] Depth stencil: DepthEnable=TRUE, DepthWriteMask=ALL
-[PSO] Root signature: 0xe2d55becf8
+[PSO] Root signature: 0xb7209ae8d0
 [PSO] Pipeline state descriptor created
 [PSO] Calling CreateGraphicsPipelineState...
-[PSO] ✓ PSO created successfully! PSO: 0xe2d55bcb38
+[PSO] ✓ PSO created successfully! PSO: 0xb7209ac3c8
 [ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, 1x MSAA)
-[BUFFER] Creating constant buffer ARRAY: 256 slots x 768 bytes = 196608 bytes total
-[BUFFER] Creating constant buffer, size: 196608 bytes
+[BUFFER] Creating constant buffer ARRAY: 2048 slots x 768 bytes = 1572864 bytes total
+[BUFFER] Creating constant buffer, size: 1572864 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] Constant buffer (re)allocated: 128 slots/кадр x2 = 256 слотов
+[ENGINE] Constant buffer (re)allocated: 1024 slots/кадр x2 = 2048 слотов
 [ENGINE] ✓ Constant buffer created
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 772 bytes
 [SHADER] Compiling ps_5_0 - entry: main
-[SHADER] ✓ Compiled successfully, 1768 bytes
+[SHADER] ✓ Compiled successfully, 1972 bytes
 [ENGINE] ✓ Tonemap shaders compiled (ACES + экспозиция)
 [ENGINE] ✓ Tonemap root signature created (SRV table t0 + static sampler s0 + CBV b0)
 [ENGINE] ✓ Tonemap pipeline state created
@@ -132,9 +136,9 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [ENGINE] ✓ Bloom shaders compiled (extract + separable Gaussian blur)
 [ENGINE] ✓ Bloom root signature created (SRV table t0 + static sampler s0 + CBV b0)
 [ENGINE] ✓ Bloom pipeline states created (extract + blur)
-[RENDERER] Creating HDR render target: 512x288 (1x MSAA)
+[RENDERER] Creating HDR render target: 800x450 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[RENDERER] Creating HDR render target: 512x288 (1x MSAA)
+[RENDERER] Creating HDR render target: 800x450 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
@@ -142,16 +146,16 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [HEAP] ✓ CBV/SRV/UAV heap created
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] ✓ Bloom resources created: 512x288 half-res ping-pong targets
+[ENGINE] ✓ Bloom resources created: 800x450 half-res ping-pong targets
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 884 bytes
 [ENGINE] ✓ Shadow shaders compiled (depth-only, без PS)
 [ENGINE] ✓ Shadow root signature created (CBV b0, только матрица)
 [ENGINE] ✓ Shadow pipeline state created (depth-only, DSVFormat=D32_FLOAT)
 [ENGINE] ✓ Spot shadow pipeline state created
-[HEAP] Creating DSV heap with 4 descriptors
+[HEAP] Creating DSV heap with 5 descriptors
 [HEAP] ✓ DSV heap created
-[HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
+[HEAP] Creating CBV/SRV/UAV heap with 5 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
 [RENDERER] Creating shadow map: 2048x2048
 [RENDERER] ✓ Shadow map created
@@ -161,8 +165,10 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [RENDERER] ✓ Shadow map created
 [RENDERER] Creating shadow map: 4096x4096
 [RENDERER] ✓ Shadow map created
-[BUFFER] Creating constant buffer ARRAY: 2 slots x 1280 bytes = 2560 bytes total
-[BUFFER] Creating constant buffer, size: 2560 bytes
+[RENDERER] Creating shadow map: 4096x4096
+[RENDERER] ✓ Shadow map created
+[BUFFER] Creating constant buffer ARRAY: 2 slots x 4352 bytes = 8704 bytes total
+[BUFFER] Creating constant buffer, size: 8704 bytes
 [BUFFER] Constant buffer created successfully
 [ENGINE] ✓ Shadow map resources created: 3 каскадов по 2048x2048
 [HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
@@ -175,7 +181,7 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [ENGINE] ✓ Volumetric shaders compiled (screen-space raymarch, 24 шагов, MSAA=1x)
 [ENGINE] ✓ Volumetric root signature created (SRV table t0/t1 + point sampler s0 + comparison sampler s1 + CBV b0)
 [ENGINE] ✓ Volumetric pipeline state created
-[RENDERER] Creating HDR render target: 512x288 (1x MSAA)
+[RENDERER] Creating HDR render target: 800x450 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -183,7 +189,7 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [HEAP] ✓ CBV/SRV/UAV heap created
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] ✓ Volumetric resources created: 512x288 half-res target
+[ENGINE] ✓ Volumetric resources created: 800x450 half-res target
 [SHADER] Compiling vs_5_0 - entry: main
 [SHADER] ✓ Compiled successfully, 772 bytes
 [SHADER] Compiling ps_5_0 - entry: main
@@ -191,7 +197,7 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [ENGINE] ✓ SSAO shaders compiled (12 сэмплов, без normal G-buffer/blur-прохода, MSAA=1x)
 [ENGINE] ✓ SSAO root signature created (SRV table t0 + point sampler s0 + CBV b0)
 [ENGINE] ✓ SSAO pipeline state created
-[RENDERER] Creating HDR render target: 512x288 (1x MSAA)
+[RENDERER] Creating HDR render target: 800x450 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -199,8 +205,8 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [HEAP] ✓ CBV/SRV/UAV heap created
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] ✓ SSAO resources created: 512x288 half-res target
-[RENDERER] Creating HDR render target: 512x288 (1x MSAA)
+[ENGINE] ✓ SSAO resources created: 800x450 half-res target
+[RENDERER] Creating HDR render target: 800x450 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -210,11 +216,11 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [BUFFER] Constant buffer created successfully
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] ✓ SSAO blur resources created: 512x288 scratch target (устраняет зернистость 12-сэмпловой SSAO)
+[ENGINE] ✓ SSAO blur resources created: 800x450 scratch target (устраняет зернистость 12-сэмпловой SSAO)
 [DIAG] Shadow mapping принудительно отключён для диагностики зависания
-[ENGINE] Handling resize: 1008x537
+[ENGINE] Handling resize: 1584x861
 [RENDERER] ========== CREATING RENDERER ==========
-[RENDERER] Width: 1008, Height: 537, Buffer count: 2
+[RENDERER] Width: 1584, Height: 861, Buffer count: 2
 [RENDERER] Device obtained
 [RENDERER] Swap chain obtained
 [RENDERER] RTV size: 32, DSV size: 8
@@ -231,27 +237,31 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [RENDERER] Back buffer 1 resource obtained
 [RENDERER] ✓ RTV 1 created
 [RENDERER] Creating depth stencil...
-[RENDERER] Creating depth stencil: 1008x537 (1x MSAA)
+[RENDERER] Creating depth stencil: 1584x861 (1x MSAA)
 [RENDERER] ✓ Depth stencil created
 [RENDERER] ✓ Depth stencil created
 [RENDERER] Creating HDR target...
-[RENDERER] Creating HDR render target: 1008x537 (1x MSAA)
+[RENDERER] Creating HDR render target: 1584x861 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[HEAP] Creating RTV heap with 1 descriptors
+[HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
-[RENDERER] Creating HDR render target: 1008x537 (1x MSAA)
+[RENDERER] Creating HDR render target: 1584x861 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[HEAP] Creating CBV/SRV/UAV heap with 4 descriptors
+[RENDERER] Creating HDR render target: 1584x861 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[RENDERER] Creating HDR render target: 1584x861 (1x MSAA)
+[RENDERER] ✓ HDR render target created
+[HEAP] Creating CBV/SRV/UAV heap with 5 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
 [RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created
 [RENDERER] ✓ Renderer created successfully
-[ENGINE] ✓ Renderer recreated after resize: 1008x537
+[ENGINE] ✓ Renderer recreated after resize: 1584x861
 [HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
 [ENGINE] ✓ Depth SRV created (для volumetric raymarch)
-[RENDERER] Creating HDR render target: 504x268 (1x MSAA)
+[RENDERER] Creating HDR render target: 792x430 (1x MSAA)
 [RENDERER] ✓ HDR render target created
-[RENDERER] Creating HDR render target: 504x268 (1x MSAA)
+[RENDERER] Creating HDR render target: 792x430 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 2 descriptors
 [HEAP] ✓ RTV heap created
@@ -259,8 +269,8 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [HEAP] ✓ CBV/SRV/UAV heap created
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] ✓ Bloom resources created: 504x268 half-res ping-pong targets
-[RENDERER] Creating HDR render target: 504x268 (1x MSAA)
+[ENGINE] ✓ Bloom resources created: 792x430 half-res ping-pong targets
+[RENDERER] Creating HDR render target: 792x430 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -268,15 +278,15 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [HEAP] ✓ CBV/SRV/UAV heap created
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] ✓ Volumetric resources created: 504x268 half-res target
-[RENDERER] Creating HDR render target: 504x268 (1x MSAA)
+[ENGINE] ✓ Volumetric resources created: 792x430 half-res target
+[RENDERER] Creating HDR render target: 792x430 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
 [HEAP] Creating CBV/SRV/UAV heap with 1 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
-[ENGINE] ✓ SSAO resources created: 504x268 half-res target
-[RENDERER] Creating HDR render target: 504x268 (1x MSAA)
+[ENGINE] ✓ SSAO resources created: 792x430 half-res target
+[RENDERER] Creating HDR render target: 792x430 (1x MSAA)
 [RENDERER] ✓ HDR render target created
 [HEAP] Creating RTV heap with 1 descriptors
 [HEAP] ✓ RTV heap created
@@ -286,33 +296,50 @@ WASD — ходьба, стрелки — осмотреться, ESC — вых
 [BUFFER] Constant buffer created successfully
 [BUFFER] Creating constant buffer, size: 256 bytes
 [BUFFER] Constant buffer created successfully
-[ENGINE] ✓ SSAO blur resources created: 504x268 scratch target (устраняет зернистость 12-сэмпловой SSAO)
+[ENGINE] ✓ SSAO blur resources created: 792x430 scratch target (устраняет зернистость 12-сэмпловой SSAO)
 [ENGINE] ✓ Size-dependent resources recreated after resize (depth SRV + bloom + volumetric + SSAO)
 [ENGINE] ✓ Bloom SRV re-registered in new srv_uav_heap after resize
 [ENGINE] ✓ Initialization complete
-[ENGINE] './alkash3d_firstfires.dll' не найден, пробую запасной путь '.\deps\alkash3d_firstfires.dll' (Cargo не скопировал .dll из deps/)
-[ENGINE] Failed to load light plugin '.\deps\alkash3d_firstfires.dll': Plugin not found: .\deps\alkash3d_firstfires.dll
-[MAIN_TEST] FirstFires не загружен (./alkash3d_firstfires.dll): Error { code: HRESULT(0x00000001), message: "Неверная функция." } — свет из test.alfar (если он есть) пропущен
-[ENGINE] ✓ Мир загружен: test.alworld (0 чанков по 64м, дальность загрузки 200м/выгрузки 250м)
-[MAIN_TEST] ✓ test.alworld загружен
-[MAIN_TEST] ✓ Точка спавна прочитана: (10.00, 0.00, 5.00), yaw=45.0°
-[ENGINE] Mesh added, total meshes: 1
-[HEAP] Creating CBV/SRV/UAV heap with 20 descriptors
+✅ Loaded light_culling plugin: C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d-FirstFires\target\release\alkash3d_firstfires.dll
+[ENGINE] ✓ Light plugin loaded from 'C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d-FirstFires\target\release\alkash3d_firstfires.dll'
+[MAIN_TEST] ✓ FirstFires: C:\Users\user\Documents\GitHub\AlKAsH3D-Engine\alkash3d-FirstFires\target\release\alkash3d_firstfires.dll
+[ENGINE] ✓ .alfar загружен: 'C:\Users\user\Desktop\иршгн\lighting.alfar' — 0 из 0 источников добавлено в LightPlugin (0 под управлением день/ночь+мерцание)
+[MAIN_TEST] ✓ Загружено 0 источников света из C:\Users\user\Desktop\иршгн\lighting.alfar
+[ENGINE] ✓ .alfar загружен: 'C:\Users\user\Desktop\иршгн\lights\samara_lamps.alfar' — 57728 из 57728 источников добавлено в LightPlugin (57728 под управлением день/ночь+мерцание)
+[MAIN_TEST] ✓ Загружено 57728 источников света из C:\Users\user\Desktop\иршгн\lights\samara_lamps.alfar
+[ENGINE] ✓ Мир загружен: C:\Users\user\Desktop\иршгн\world.alworld (15725 чанков по 256м, дальность загрузки 768м/выгрузки 1024м)
+[MAIN_TEST] ✓ C:\Users\user\Desktop\иршгн\world.alworld загружен (чанки из C:\Users\user\Desktop\иршгн\chunks)
+[MAIN_TEST] ✓ Точка спавна прочитана: (0.00, 76.64, 0.00), yaw=0.0°
+[MAIN_TEST] Режим пешехода: гравитация + коллизия с картой (F — полёт)
+[ENGINE] World streaming: +32 чанков поставлено в очередь загрузки, +0 в очередь выгрузки
+[HEAP] Creating CBV/SRV/UAV heap with 21 descriptors
 [HEAP] ✓ CBV/SRV/UAV heap created
-[ENGINE] shadow_srv_heap перевыделен под материалы: 20 слотов всего (3 каскадов + 16 материалов, 0 текстур перерегистрировано)
-[BUFFER] Creating structured buffer, size: 4096 bytes
+[ENGINE] shadow_srv_heap перевыделен под материалы: 21 слотов всего (3 каскадов + 16 материалов, 0 текстур перерегистрировано)
+[BUFFER] Creating structured buffer, size: 32768 bytes
 [BUFFER] Structured buffer created successfully
-[ENGINE] Light buffer (re)allocated: 64 GPULight слотов (4096 байт)
-[BUFFER] Creating structured buffer, size: 8 bytes
+[ENGINE] Light buffer (re)allocated: 512 GPULight слотов (32768 байт)
+[BUFFER] Creating structured buffer, size: 563200 bytes
 [BUFFER] Structured buffer created successfully
-[ENGINE] Grid cells buffer (re)allocated: 0 ячеек (8 байт)
-[BUFFER] Creating structured buffer, size: 1024 bytes
+[ENGINE] Grid cells buffer (re)allocated: 70400 ячеек (563200 байт)
+[BUFFER] Creating structured buffer, size: 524288 bytes
 [BUFFER] Structured buffer created successfully
-[ENGINE] Grid entries buffer (re)allocated: 64 слотов (1024 байт)
-[MAIN_TEST] Первый кадр отрендерен. Camera pos=(10.00,1.60,5.00) target=(10.71,1.60,5.71)
+[ENGINE] Grid entries buffer (re)allocated: 32768 слотов (524288 байт)
+[MAIN_TEST] Первый кадр отрендерен. Camera pos=(0.00,78.24,0.00) target=(0.00,78.24,1.00)
+[HEAP] Creating CBV/SRV/UAV heap with 37 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] shadow_srv_heap перевыделен под материалы: 37 слотов всего (3 каскадов + 32 материалов, 16 текстур перерегистрировано)
+[HEAP] Creating CBV/SRV/UAV heap with 69 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] shadow_srv_heap перевыделен под материалы: 69 слотов всего (3 каскадов + 64 материалов, 32 текстур перерегистрировано)
+[HEAP] Creating CBV/SRV/UAV heap with 133 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] shadow_srv_heap перевыделен под материалы: 133 слотов всего (3 каскадов + 128 материалов, 64 текстур перерегистрировано)
+[HEAP] Creating CBV/SRV/UAV heap with 261 descriptors
+[HEAP] ✓ CBV/SRV/UAV heap created
+[ENGINE] shadow_srv_heap перевыделен под материалы: 261 слотов всего (3 каскадов + 256 материалов, 128 текстур перерегистрировано)
 [ENGINE] WM_CLOSE received - stopping engine loop
 [ENGINE] Shutting down...
-[ENGINE] Signaling fence (value=4848)...
+[ENGINE] Signaling fence (value=34)...
 [ENGINE] Waiting for GPU to finish...
 [ENGINE] GPU idle
 [ENGINE] Clearing meshes...

@@ -16,6 +16,7 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::DXGI_PRESENT;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 use crate::STATE;
 use crate::buffer::Buffer;
 use crate::plugin::{GPULight, LightGridCell, LightGridEntry};
@@ -29,6 +30,141 @@ use super::{
     OCCLUDER_MIN_WORLD_RADIUS, OCCLUDER_INSCRIBE_FACTOR,
     NEXT_FENCE_VALUE, wait_for_fence,
 };
+
+
+// ДОБАВЛЕНО (замер производительности по прямому запросу — 20 FPS на карте Самары):
+// ALKASH3D_PERF=1 — раз в секунду печатает FPS, время CPU на запись кадра, ожидание
+// GPU (fence + Present) и число draw-вызовов/треугольников по проходам. Если почти всё
+// время уходит в ожидание GPU — упираемся в видеокарту, если в запись — в процессор.
+// ИЗМЕНЕНО: по умолчанию Present без вертикальной синхронизации (FPS не упирается в
+// частоту монитора и не скачет ступеньками 60/30/20). ALKASH3D_VSYNC=1 — включить vsync.
+#[derive(Default)]
+struct PerfAcc {
+    since: Option<Instant>,
+    frames: u32,
+    wait_ms: f64,
+    record_ms: f64,
+    present_ms: f64,
+    main_draws: u64,
+    main_tris: u64,
+    csm_draws: u64,
+    local_shadow_draws: u64,
+}
+
+static PERF: std::sync::Mutex<Option<PerfAcc>> = std::sync::Mutex::new(None);
+
+// ДОБАВЛЕНО (производительность — тени фонарей): кэш плиток атласов локальных теней.
+// Фонари и город неподвижны, а тени для 8 point-фонарей × 6 граней (+ spot) перерисовывались
+// каждый кадр — десятки проходов по окрестной геометрии. Теперь у плитки есть отпечаток
+// (матрица view-proj + список попавших в неё мешей с их матрицами); совпал с прошлым кадром —
+// глубина в плитке уже верная, плитка не перерисовывается и не очищается. Въехала машина,
+// подгрузился чанк, сменился фонарь — отпечаток другой, перерисовывается только эта плитка.
+// Чтобы фонарь не скакал по плиткам при пересортировке по расстоянию, слоты стабильные
+// (`stable_slots`): оставшийся в выборке фонарь держит свой слот.
+#[derive(Default)]
+struct LocalShadowCache {
+    atlas_ids: (usize, usize),
+    spot_keys: Vec<(i64, i64, i64)>,
+    point_keys: Vec<(i64, i64, i64)>,
+    tile_hash: std::collections::HashMap<(usize, u32), u64>,
+}
+
+thread_local! {
+    static LOCAL_SHADOW_CACHE: std::cell::RefCell<LocalShadowCache> = std::cell::RefCell::new(LocalShadowCache::default());
+}
+
+fn light_key(lights: &[GPULight], index: usize) -> (i64, i64, i64) {
+    let p = lights.get(index).map(|l| l.position).unwrap_or([0.0; 4]);
+    ((p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64, (p[2] * 10.0).round() as i64)
+}
+
+/// Переставляет выбранные фонари так, чтобы оставшиеся с прошлого кадра сохранили позицию
+/// (= слот плитки атласа), а новые заняли освободившиеся. `prev` обновляется.
+fn stable_slots<T: Clone>(sel: Vec<(usize, T)>, lights: &[GPULight], prev: &mut Vec<(i64, i64, i64)>) -> Vec<(usize, T)> {
+    let keys: Vec<_> = sel.iter().map(|(i, _)| light_key(lights, *i)).collect();
+    let mut out: Vec<Option<(usize, T)>> = vec![None; sel.len()];
+    let mut placed = vec![false; sel.len()];
+    for (slot, k) in prev.iter().enumerate() {
+        if slot >= out.len() {
+            break;
+        }
+        if let Some(j) = keys.iter().position(|kk| kk == k) {
+            if !placed[j] {
+                out[slot] = Some(sel[j].clone());
+                placed[j] = true;
+            }
+        }
+    }
+    let mut rest = (0..sel.len()).filter(|j| !placed[*j]);
+    for slot in out.iter_mut() {
+        if slot.is_none() {
+            if let Some(j) = rest.next() {
+                *slot = Some(sel[j].clone());
+            }
+        }
+    }
+    let out: Vec<(usize, T)> = out.into_iter().flatten().collect();
+    *prev = out.iter().map(|(i, _)| light_key(lights, *i)).collect();
+    out
+}
+
+fn tile_fingerprint(vp: &Mat4, jobs: &[usize], shadow_jobs: &[(usize, Mat4)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for v in vp.to_cols_array() {
+        v.to_bits().hash(&mut h);
+    }
+    for &j in jobs {
+        let (mi, m) = &shadow_jobs[j];
+        mi.hash(&mut h);
+        for v in m.to_cols_array() {
+            v.to_bits().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).map(|v| v != "0" && !v.is_empty()).unwrap_or(false)
+}
+
+fn perf_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| env_flag("ALKASH3D_PERF"))
+}
+
+fn no_vsync() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !env_flag("ALKASH3D_VSYNC"))
+}
+
+fn perf_frame(wait_ms: f64, record_ms: f64, present_ms: f64, main_draws: usize, main_tris: u64, csm_draws: usize, local_draws: usize) {
+    let mut g = PERF.lock().unwrap();
+    let a = g.get_or_insert_with(PerfAcc::default);
+    let now = Instant::now();
+    let since = *a.since.get_or_insert(now);
+    a.frames += 1;
+    a.wait_ms += wait_ms;
+    a.record_ms += record_ms;
+    a.present_ms += present_ms;
+    a.main_draws += main_draws as u64;
+    a.main_tris += main_tris;
+    a.csm_draws += csm_draws as u64;
+    a.local_shadow_draws += local_draws as u64;
+    let el = (now - since).as_secs_f64();
+    if el >= 1.0 {
+        let n = a.frames as f64;
+        println!(
+            "[PERF] {:.1} FPS | кадр {:.1} мс: запись CPU {:.1}, ожидание GPU {:.1} (fence) + {:.1} (Present) | основной: {:.0} draw, {:.2} млн тр. | тени солнца: {:.0} draw | тени фонарей: {:.0} draw",
+            n / el, el * 1000.0 / n, a.record_ms / n, a.wait_ms / n, a.present_ms / n,
+            a.main_draws as f64 / n, a.main_tris as f64 / n / 1e6, a.csm_draws as f64 / n, a.local_shadow_draws as f64 / n
+        );
+        if let Some(gpu) = super::gpu_timer::report() {
+            println!("[PERF]   {}", gpu);
+        }
+        *a = PerfAcc { since: Some(now), ..Default::default() };
+    }
+}
 
 impl AlkashEngine {
 
@@ -93,7 +229,7 @@ impl AlkashEngine {
             self.wait_for_all_frames_idle_before_realloc();
         }
 
-        let new_capacity = needed_per_frame.max(64).next_power_of_two();
+        let new_capacity = needed_per_frame.max(1024).next_power_of_two();
         let total_slots = new_capacity * 2;
         let buffer = Buffer::create_constant_buffer_array(TransformConstants::aligned_size(), total_slots)?;
         println!(
@@ -133,7 +269,7 @@ impl AlkashEngine {
             self.wait_for_all_frames_idle_before_realloc();
         }
 
-        let new_capacity = needed_per_frame.max(64).next_power_of_two();
+        let new_capacity = needed_per_frame.max(1024).next_power_of_two();
         let total_slots = new_capacity * 2 * NUM_CASCADES;
         let buffer = Buffer::create_constant_buffer_array(crate::constant_buffer::ShadowConstants::aligned_size(), total_slots)?;
         println!(
@@ -158,7 +294,7 @@ impl AlkashEngine {
             self.wait_for_all_frames_idle_before_realloc();
         }
 
-        let new_capacity = needed_per_frame.max(256).next_power_of_two();
+        let new_capacity = needed_per_frame.max(4096).next_power_of_two();
         let total_slots = new_capacity * 2;
         let buffer = Buffer::create_constant_buffer_array(crate::constant_buffer::ShadowConstants::aligned_size(), total_slots)?;
         println!(
@@ -411,6 +547,18 @@ impl AlkashEngine {
         result
     }
 
+    /// ДОБАВЛЕНО: ближайшая точка сферы меша — не дальше его `max_draw_distance` от камеры.
+    fn within_draw_distance(&self, mesh_index: usize, model: &Mat4, camera_pos: Vec3) -> bool {
+        let mesh = &self.meshes[mesh_index];
+        if !mesh.max_draw_distance.is_finite() {
+            return true;
+        }
+        let (scale, _r, _t) = model.to_scale_rotation_translation();
+        let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+        let c = model.transform_point3(Vec3::new(mesh.bounding_center[0], mesh.bounding_center[1], mesh.bounding_center[2]));
+        (c - camera_pos).length() - mesh.bounding_radius * max_scale <= mesh.max_draw_distance
+    }
+
     pub fn render_frame(&mut self) -> Result<bool> {
         let renderer = self.renderer.as_ref().ok_or_else(|| {
             eprintln!("[ENGINE] ERROR: render_frame() called but renderer is not initialized");
@@ -434,6 +582,7 @@ impl AlkashEngine {
         // семантика, даже когда индекс численно совпадает.
         let frame_index = real_back_buffer_index;
 
+        let perf_t0 = Instant::now();
         if let Some(&target) = self.frame_fence_values.get(frame_index) {
             if target > 0 {
                 let fence = crate::get_fence()?;
@@ -446,6 +595,11 @@ impl AlkashEngine {
             }
         }
 
+        let perf_wait_ms = perf_t0.elapsed().as_secs_f64() * 1000.0;
+        let perf_t_record = Instant::now();
+        let mut perf_csm_draws = 0usize;
+        let mut perf_main_draws = 0usize;
+        let mut perf_main_tris = 0u64;
         let allocator = CommandList::get_allocator(frame_index)
             .ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
 
@@ -458,6 +612,11 @@ impl AlkashEngine {
         let mut cmd_list: ID3D12GraphicsCommandList = unsafe {
             device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
         };
+
+        if perf_enabled() {
+            super::gpu_timer::begin(frame_index);
+            super::gpu_timer::mark(&cmd_list, frame_index, 0);
+        }
 
         let rtv_handle = renderer.hdr_rtv;
         let ambient_rtv = renderer.ambient_rtv;
@@ -490,6 +649,8 @@ impl AlkashEngine {
                     }
                 }
             }
+            // ДОБАВЛЕНО: мелочь дальше своей дистанции отрисовки (Mesh::max_draw_distance) тень не даёт
+            v.retain(|(mesh_index, model)| self.within_draw_distance(*mesh_index, model, camera_pos_for_lod));
             v
         };
 
@@ -544,15 +705,39 @@ impl AlkashEngine {
                 };
                 cmd_list.RSSetScissorRects(&[shadow_scissor]);
 
+                // ДОБАВЛЕНО (20 FPS на карте Самары): раньше КАЖДЫЙ каскад рисовал ВСЕ
+                // загруженные меши — весь город вокруг трижды за кадр, без отсечения
+                // (основной проход отсекает, а теневой — нет). Теперь меш пропускается,
+                // если его сфера целиком вне ортопроекции каскада. Картинка та же:
+                // DepthClipEnable в shadow PSO = TRUE (pipeline_shadow.rs), так что
+                // отброшенное и раньше обрезалось растеризатором — просто после
+                // вершинного шейдера всего города.
+                let shadow_spheres: Vec<(Vec3, f32)> = shadow_jobs
+                    .iter()
+                    .map(|(mesh_index, model)| {
+                        let mesh = &self.meshes[*mesh_index];
+                        let (scale, _r, _t) = model.to_scale_rotation_translation();
+                        let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
+                        let c = Vec3::new(mesh.bounding_center[0], mesh.bounding_center[1], mesh.bounding_center[2]);
+                        (model.transform_point3(c), mesh.bounding_radius * max_scale)
+                    })
+                    .collect();
+
                 for cascade in 0..NUM_CASCADES {
                     let dsv = self.shadow_dsvs[cascade];
                     cmd_list.OMSetRenderTargets(0, None, false, Some(&dsv));
                     cmd_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
 
                     let light_view_proj = cascade_view_projs[cascade];
+                    let cascade_frustum = crate::math::Frustum::from_view_proj(&light_view_proj);
 
                     if let Some(shadow_cb) = &self.shadow_constant_buffer {
                         for (i, (mesh_index, model)) in shadow_jobs.iter().enumerate() {
+                            let (sc, sr) = shadow_spheres[i];
+                            if !cascade_frustum.test_sphere(sc, sr) {
+                                continue;
+                            }
+                            perf_csm_draws += 1;
                             let mesh = &self.meshes[*mesh_index];
                             let mlvp = light_view_proj * (*model);
                             let shadow_constants = crate::constant_buffer::ShadowConstants {
@@ -613,8 +798,20 @@ impl AlkashEngine {
         // переводятся в SRV КАЖДЫЙ кадр, даже без фонарей: они всегда
         // забинжены в таблице теней основного прохода и должны находиться в
         // корректном состоянии ресурса.
+        if perf_enabled() {
+            super::gpu_timer::mark(&cmd_list, frame_index, 1);
+        }
         let spot_shadow_lights: Vec<(usize, Mat4)> = self.select_spot_shadow_lights();
         let point_shadow_lights: Vec<(usize, [Mat4; 6])> = self.select_point_shadow_lights();
+        let (spot_shadow_lights, point_shadow_lights) = {
+            let lights = self.get_gpu_lights();
+            LOCAL_SHADOW_CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                let s = stable_slots(spot_shadow_lights, lights, &mut c.spot_keys);
+                let p = stable_slots(point_shadow_lights, lights, &mut c.point_keys);
+                (s, p)
+            })
+        };
 
         // (атлас: 0 = spot, 1 = point; x; y; размер плитки; view-proj)
         let mut shadow_tiles: Vec<(usize, u32, u32, u32, Mat4)> = Vec::new();
@@ -653,7 +850,34 @@ impl AlkashEngine {
                     .collect()
             })
             .collect();
-        let total_local_shadow_draws: usize = tile_jobs.iter().map(|j| j.len()).sum();
+        // кэш: атлас пересоздан (ресайз) — всё заново; иначе перерисовываются только плитки
+        // с изменившимся отпечатком
+        let tile_dirty: Vec<bool> = {
+            use windows::core::Interface;
+            let ids = (
+                self.spot_shadow_atlas.as_ref().map(|a| a.resource.as_raw() as usize).unwrap_or(0),
+                self.point_shadow_atlas.as_ref().map(|a| a.resource.as_raw() as usize).unwrap_or(0),
+            );
+            LOCAL_SHADOW_CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.atlas_ids != ids {
+                    c.atlas_ids = ids;
+                    c.tile_hash.clear();
+                }
+                shadow_tiles
+                    .iter()
+                    .zip(tile_jobs.iter())
+                    .map(|((kind, tx, ty, _r, vp), jobs)| {
+                        let key = (*kind, (tx << 16) | ty);
+                        let fp = tile_fingerprint(vp, jobs, &shadow_jobs);
+                        let dirty = c.tile_hash.get(&key) != Some(&fp);
+                        c.tile_hash.insert(key, fp);
+                        dirty
+                    })
+                    .collect()
+            })
+        };
+        let total_local_shadow_draws: usize = tile_jobs.iter().zip(tile_dirty.iter()).filter(|(_, d)| **d).map(|(j, _)| j.len()).sum();
         let can_draw_local_shadows = total_local_shadow_draws > 0
             && self.spot_shadow_pipeline_state.is_some()
             && self.shadow_root_signature.is_some()
@@ -677,7 +901,16 @@ impl AlkashEngine {
                     continue;
                 }
                 cmd_list.OMSetRenderTargets(0, None, false, Some(&dsv));
-                cmd_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+                // очищаем только перерисовываемые плитки — остальные хранят верную глубину
+                let rects: Vec<RECT> = shadow_tiles
+                    .iter()
+                    .zip(tile_dirty.iter())
+                    .filter(|((kind, ..), d)| *kind == atlas_kind && **d)
+                    .map(|((_, tx, ty, r, _), _)| RECT { left: *tx as i32, top: *ty as i32, right: (*tx + *r) as i32, bottom: (*ty + *r) as i32 })
+                    .collect();
+                if !rects.is_empty() {
+                    cmd_list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, Some(&rects));
+                }
 
                 if !can_draw_local_shadows {
                     continue;
@@ -687,8 +920,8 @@ impl AlkashEngine {
                 cmd_list.SetGraphicsRootSignature(Some(self.shadow_root_signature.as_ref().unwrap()));
                 cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-                for ((kind, tx, ty, tile_res, tile_vp), jobs) in shadow_tiles.iter().zip(tile_jobs.iter()) {
-                    if *kind != atlas_kind {
+                for (((kind, tx, ty, tile_res, tile_vp), jobs), dirty) in shadow_tiles.iter().zip(tile_jobs.iter()).zip(tile_dirty.iter()) {
+                    if *kind != atlas_kind || !*dirty {
                         continue;
                     }
                     cmd_list.RSSetViewports(&[D3D12_VIEWPORT {
@@ -759,6 +992,9 @@ impl AlkashEngine {
             // ИЗМЕНЕНО (честный SSAO): два RT — HDR-цвет и ambient
             // (renderer.ambient_rtv лежит в том же RTV-хипе сразу за
             // hdr_rtv, поэтому RTsSingleHandleToDescriptorRange = true).
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 2);
+            }
             cmd_list.OMSetRenderTargets(2, Some(&rtv_handle), true, Some(&dsv_handle));
             cmd_list.ClearRenderTargetView(rtv_handle, &self.clear_color, None);
             cmd_list.ClearRenderTargetView(ambient_rtv, &[0.0, 0.0, 0.0, 0.0], None);
@@ -1011,9 +1247,12 @@ impl AlkashEngine {
                     let world_center = model.transform_point3(local_center);
                     let world_radius = mesh.bounding_radius * max_scale;
                     frustum.test_sphere(world_center, world_radius)
+                        && (world_center - camera_pos_for_lod).length() - world_radius <= mesh.max_draw_distance
                 }
                 DrawTransform::RawIdentity => true,
             });
+            perf_main_draws = jobs.len();
+            perf_main_tris = jobs.iter().map(|j| self.meshes[j.mesh_index].index_count as u64 / 3).sum();
 
             self.poll_occluder_readback();
             let mut occluder_instance_data: Vec<f32> = Vec::new();
@@ -1264,6 +1503,9 @@ impl AlkashEngine {
             // читает tonemap composite, указывала бы на уже уничтоженный
             // ресурс. Ресурс остаётся живым, пропускается только сам
             // проход (реальная экономия GPU-времени всё равно есть).
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 3);
+            }
             if self.graphics_settings.volumetric { if let (Some(volumetric_texture), Some(volumetric_srv_heap), Some(volumetric_cb)) = (
                 &self.volumetric_texture,
                 &self.volumetric_srv_heap,
@@ -1449,6 +1691,9 @@ impl AlkashEngine {
             // предназначенный для разовой ручной диагностики, а не для
             // штатного переключения) — иначе SRV этой текстуры в t3
             // tonemap-composite указывала бы на уничтоженный ресурс.
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 4);
+            }
             if self.graphics_settings.ssao { if let (Some(ssao_texture), Some(ssao_depth_srv_heap), Some(ssao_cb)) = (
                 &self.ssao_texture,
                 &self.ssao_depth_srv_heap,
@@ -1733,6 +1978,9 @@ impl AlkashEngine {
             // диагностики) — иначе SRV `bloom_texture_a`, которую
             // БЕЗУСЛОВНО каждый кадр читает tonemap composite (t1),
             // указывала бы на уничтоженный ресурс.
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 5);
+            }
             if self.graphics_settings.bloom { if let (Some(bloom_a), Some(bloom_b), Some(bloom_srv_heap)) =
                 (&self.bloom_texture_a, &self.bloom_texture_b, &self.bloom_srv_heap)
             {
@@ -1921,6 +2169,9 @@ impl AlkashEngine {
             // (`renderer.hdr_srv_gpu`), которая уже в PIXEL_SHADER_RESOURCE
             // после resolve-шага в начале кадра, независимо от того, бежал
             // ли bloom.
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 6);
+            }
             let back_buffer_resource = &renderer.back_buffers[real_back_buffer_index].resource;
 
             let barriers_before = [Self::transition_barrier(
@@ -2024,6 +2275,10 @@ impl AlkashEngine {
                 }
             }
             cmd_list.ResourceBarrier(&barriers_after);
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 7);
+                super::gpu_timer::end(&cmd_list, frame_index);
+            }
             for b in barriers_after {
                 Self::drop_transition_barrier(b);
             }
@@ -2041,11 +2296,19 @@ impl AlkashEngine {
         unsafe {
             queue.ExecuteCommandLists(cmd_lists);
         }
+        let perf_record_ms = perf_t_record.elapsed().as_secs_f64() * 1000.0;
 
         let swap_chain = crate::get_swap_chain()?;
 
+        let perf_t_present = Instant::now();
         unsafe {
-            let hr = swap_chain.Present(1, DXGI_PRESENT(0));
+            // без vsync и с поддержкой tearing — Present не ждёт монитор (см. swap_chain.rs)
+            let hr = if no_vsync() {
+                let flags = if crate::swap_chain::tearing_supported() { windows::Win32::Graphics::Dxgi::DXGI_PRESENT_ALLOW_TEARING } else { DXGI_PRESENT(0) };
+                swap_chain.Present(0, flags)
+            } else {
+                swap_chain.Present(1, DXGI_PRESENT(0))
+            };
             if hr.is_err() {
                 eprintln!("[ENGINE] Present failed: {:?}", hr);
                 if let Some(reason) = crate::device_removed_reason() {
@@ -2093,6 +2356,44 @@ impl AlkashEngine {
             }
         }
 
+        if perf_enabled() {
+            perf_frame(perf_wait_ms, perf_record_ms, perf_t_present.elapsed().as_secs_f64() * 1000.0,
+                       perf_main_draws, perf_main_tris, perf_csm_draws, total_local_shadow_draws);
+        }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod local_shadow_cache_tests {
+    use super::*;
+
+    fn light(x: f32) -> GPULight {
+        GPULight { position: [x, 5.0, 0.0, 0.0], color: [1.0; 4], direction: [0.0, -1.0, 0.0, 20.0], params: [0.0; 4] }
+    }
+
+    #[test]
+    fn stable_slots_keep_lights_in_place() {
+        // кадр 1: фонари A(10) B(20) C(30) — слоты 0,1,2
+        let mut prev = Vec::new();
+        let l1 = vec![light(10.0), light(20.0), light(30.0)];
+        let s1 = stable_slots(vec![(0, ()), (1, ()), (2, ())], &l1, &mut prev);
+        assert_eq!(s1.iter().map(|x| x.0).collect::<Vec<_>>(), vec![0, 1, 2]);
+        // кадр 2: другой порядок в списке видимых и B выпал, пришёл D(40): A и C держат слоты 0 и 2, D — в слот 1
+        let l2 = vec![light(40.0), light(30.0), light(10.0)];
+        let s2 = stable_slots(vec![(1, ()), (2, ()), (0, ())], &l2, &mut prev);
+        let xs: Vec<f32> = s2.iter().map(|(i, _)| l2[*i].position[0]).collect();
+        assert_eq!(xs, vec![10.0, 40.0, 30.0]);
+    }
+
+    #[test]
+    fn fingerprint_changes_only_when_content_changes() {
+        let vp = Mat4::IDENTITY;
+        let jobs = vec![(3usize, Mat4::IDENTITY), (5usize, Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)))];
+        let a = tile_fingerprint(&vp, &[0, 1], &jobs);
+        assert_eq!(a, tile_fingerprint(&vp, &[0, 1], &jobs));
+        let moved = vec![(3usize, Mat4::IDENTITY), (5usize, Mat4::from_translation(Vec3::new(1.5, 0.0, 0.0)))];
+        assert_ne!(a, tile_fingerprint(&vp, &[0, 1], &moved));
+        assert_ne!(a, tile_fingerprint(&vp, &[0], &jobs));
     }
 }

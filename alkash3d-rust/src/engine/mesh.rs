@@ -176,6 +176,12 @@ pub struct Mesh {
     /// с фрустумом камеры.
     pub bounding_center: [f32; 3],
     pub bounding_radius: f32,
+    /// ДОБАВЛЕНО (производительность карты города): дальше этой дистанции от камеры
+    /// (до ближайшей точки ограничивающей сферы) меш не рисуется ни в основном проходе,
+    /// ни в тенях. Для мелочи города (знаки, таблички, провода, фонари…) выставляется при
+    /// загрузке .altex по имени материала (`asset_loading::detail_draw_distance`): с 1 км
+    /// знак меньше пикселя, а треугольники и draw-вызовы стоят как вблизи. По умолчанию — ∞.
+    pub max_draw_distance: f32,
 }
 
 impl Mesh {
@@ -249,6 +255,7 @@ impl Mesh {
             light_emitter_area: 0.0,
             bounding_center,
             bounding_radius,
+            max_draw_distance: f32::INFINITY,
         })
     }
 

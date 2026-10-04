@@ -80,6 +80,8 @@ mod pipeline_ssao;
 // кадра (`render_frame`) + рост GPU-буферов по требованию — см.
 // engine/render_frame.rs.
 mod render_frame;
+// ДОБАВЛЕНО (замер производительности): время проходов на GPU, см. gpu_timer.rs
+mod gpu_timer;
 
 // ВЫНЕСЕНО (Фаза 1 архитектурного рефакторинга, финальный шаг): жизненный
 // цикл движка (new/init/update/shutdown/Drop) — см. engine/lifecycle.rs.

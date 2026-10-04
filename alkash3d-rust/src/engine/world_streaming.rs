@@ -488,6 +488,7 @@ impl AlkashEngine {
     /// `integrate_loaded_chunk`). Тело функции НЕ менялось, только имя и
     /// единственный внутренний вызов `load_object_mesh` ->
     /// `load_object_mesh_sync` (переименован туда же, см. его комментарий).
+    #[allow(dead_code)] // request_chunk_load больше не грузит синхронно (пул занят -> повтор на следующем кадре)
     fn load_chunk_sync_fallback(&mut self, chunk_idx: usize) {
         let (chunk_path, chunk_desc) = {
             let world = match &self.world {
@@ -572,9 +573,9 @@ impl AlkashEngine {
     /// исчерпан (все ядра заняты другими задачами планировщика прямо
     /// сейчас) — в этом случае, как и раньше при недоступном канале,
     /// честный синхронный fallback на главном потоке вместо потери чанка.
-    fn request_chunk_load(&mut self, chunk_idx: usize) {
+    fn request_chunk_load(&mut self, chunk_idx: usize) -> bool {
         let chunk_path = {
-            let Some(world) = &self.world else { return };
+            let Some(world) = &self.world else { return true };
             let chunk = &world.world_file.chunks[chunk_idx];
             Self::chunk_file_path(&world.chunks_dir, chunk)
         };
@@ -590,18 +591,15 @@ impl AlkashEngine {
             },
         );
 
+        // ИЗМЕНЕНО: пул занят — чанк возвращается в очередь и уходит в фон на следующем
+        // кадре, а не грузится синхронно (диск + парсинг на главном потоке давали фриз кадра).
+        // `queued` остаётся true, так что update_world_streaming не поставит его повторно.
         if !dispatched {
-            eprintln!(
-                "[ENGINE] WARNING: пул фоновой загрузки занят (CPU-бюджет исчерпан) — чанк {} загружается синхронно",
-                chunk_idx
-            );
-            self.load_chunk_sync_fallback(chunk_idx);
             if let Some(world) = &mut self.world {
-                if chunk_idx < world.chunk_states.len() {
-                    world.chunk_states[chunk_idx].queued = false;
-                }
+                world.pending_load.push(chunk_idx);
             }
         }
+        dispatched
     }
 
     /// ДОБАВЛЕНО (фоновая загрузка чанков): забирает результат, уже
@@ -809,7 +807,9 @@ impl AlkashEngine {
                 None => None,
             };
             let Some(chunk_idx) = next else { break };
-            self.request_chunk_load(chunk_idx);
+            if !self.request_chunk_load(chunk_idx) {
+                break;
+            }
         }
 
         let mut unload_budget = CHUNK_LOAD_BUDGET_PER_FRAME;

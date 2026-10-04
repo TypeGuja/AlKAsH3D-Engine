@@ -8,6 +8,20 @@ use crate::STATE;
 
 pub struct SwapChain;
 
+// ДОБАВЛЕНО (FPS упирался в 60 при выключенном vsync): с двумя буферами flip-model
+// без ALLOW_TEARING `Present(0)` всё равно ждёт освобождения буфера у DWM, то есть
+// обновления монитора. С флагом tearing `Present(0, ALLOW_TEARING)` не блокируется.
+// Флаг swap chain обязан совпадать при `ResizeBuffers` — см. `swap_chain_flags()`.
+static TEARING_SUPPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn tearing_supported() -> bool {
+    TEARING_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn swap_chain_flags() -> DXGI_SWAP_CHAIN_FLAG {
+    if tearing_supported() { DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING } else { DXGI_SWAP_CHAIN_FLAG(0) }
+}
+
 impl SwapChain {
     pub fn create(hwnd: isize, width: u32, height: u32, buffer_count: u32) -> Result<()> {
         println!("[SWAPCHAIN] ========== CREATING SWAP CHAIN ==========");
@@ -32,6 +46,17 @@ impl SwapChain {
             let dxgi_factory = CreateDXGIFactory1::<IDXGIFactory4>()?;
             println!("[SWAPCHAIN] DXGI factory created");
 
+            let mut allow_tearing: i32 = 0; // BOOL
+            let tearing = dxgi_factory.cast::<IDXGIFactory5>().map_or(false, |f5| {
+                f5.CheckFeatureSupport(
+                    DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                    &mut allow_tearing as *mut _ as *mut std::ffi::c_void,
+                    std::mem::size_of::<i32>() as u32,
+                ).is_ok() && allow_tearing != 0
+            });
+            TEARING_SUPPORTED.store(tearing, std::sync::atomic::Ordering::Relaxed);
+            println!("[SWAPCHAIN] Tearing (Present без ожидания монитора): {}", if tearing { "поддерживается" } else { "НЕ поддерживается" });
+
             let desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: width,
                 Height: height,
@@ -43,7 +68,7 @@ impl SwapChain {
                 Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 AlphaMode: DXGI_ALPHA_MODE_UNSPECIFIED,
-                Flags: 0,
+                Flags: swap_chain_flags().0 as u32,
             };
             println!("[SWAPCHAIN] Swap chain description created");
 
@@ -76,7 +101,7 @@ impl SwapChain {
         println!("[SWAPCHAIN] Resizing: {}x{}", width, height);
         let mut state = STATE.lock().unwrap();
         if let Some(swap_chain) = &state.swap_chain {
-            swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
+            swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swap_chain_flags())?;
             state.frame_index = swap_chain.GetCurrentBackBufferIndex();
             println!("[SWAPCHAIN] Resize completed, new frame index: {}", state.frame_index);
         }
