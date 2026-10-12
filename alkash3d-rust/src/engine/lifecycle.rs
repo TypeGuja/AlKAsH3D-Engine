@@ -56,6 +56,7 @@ impl AlkashEngine {
             lod_groups: std::collections::HashMap::new(),
             root_signature: None,
             pipeline_state: None,
+            transparent_pipeline_state: None,
             vs: None,
             ps: None,
             camera: Camera::new(width, height),
@@ -87,6 +88,7 @@ impl AlkashEngine {
             input: InputState::new(),
             light_ambient: None,
             light_global_settings: None,
+            shadow_far: None,
             light_buffer: None,
             light_buffer_capacity: 0,
             grid_cells_buffer: None,
@@ -101,6 +103,7 @@ impl AlkashEngine {
             bloom_extract_ps: None,
             bloom_blur_ps: None,
             bloom_root_signature: None,
+            bloom_extract_root_signature: None,
             bloom_extract_pipeline_state: None,
             bloom_blur_pipeline_state: None,
             bloom_params_buffer: None,
@@ -121,6 +124,9 @@ impl AlkashEngine {
             shadow_srv_heap: None,
             shadow_srv_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
             shadow_vs: None,
+            shadow_ps: None,
+            shadow_cutout_pipeline_state: None,
+            spot_shadow_cutout_pipeline_state: None,
             shadow_root_signature: None,
             shadow_pipeline_state: None,
             occluder_vs: None,
@@ -504,6 +510,7 @@ impl AlkashEngine {
         self.bloom_extract_ps = None;
         self.bloom_blur_ps = None;
         self.bloom_root_signature = None;
+        self.bloom_extract_root_signature = None;
         self.bloom_extract_pipeline_state = None;
         self.bloom_blur_pipeline_state = None;
         self.bloom_params_buffer = None;
@@ -525,6 +532,9 @@ impl AlkashEngine {
         self.shadow_dsv_heap = None;
         self.shadow_srv_heap = None;
         self.shadow_vs = None;
+        self.shadow_ps = None;
+        self.shadow_cutout_pipeline_state = None;
+        self.spot_shadow_cutout_pipeline_state = None;
         self.shadow_root_signature = None;
         self.shadow_pipeline_state = None;
 

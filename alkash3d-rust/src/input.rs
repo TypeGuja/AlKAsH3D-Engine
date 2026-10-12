@@ -23,6 +23,13 @@ pub struct InputState {
     down: HashSet<u32>,
     pressed_this_frame: HashSet<u32>,
     released_this_frame: HashSet<u32>,
+    /// ДОБАВЛЕНО (мышь, порт Buckshot Roulette): курсор в координатах NDC
+    /// клиентской области — x вправо, y вверх, оба в [-1, 1]. Кнопки мыши
+    /// попадают в те же `is_down`/`just_pressed`, что и клавиши, под
+    /// виртуальными кодами Windows (`keys::MOUSE_LEFT` = VK_LBUTTON и т.д.).
+    pub mouse_ndc: [f32; 2],
+    /// ДОБАВЛЕНО (колесо мыши): щелчки колеса за этот кадр (вперёд > 0).
+    pub wheel: f32,
 }
 
 impl InputState {
@@ -51,9 +58,18 @@ impl InputState {
     /// `process_messages()`) — очищает "мгновенные" флаги
     /// (just_pressed/just_released) с ПРЕДЫДУЩЕГО кадра, оставляя
     /// `is_down` нетронутым. Игровому коду вызывать это не нужно.
+    /// ДОБАВЛЕНО: окно потеряло фокус — отпустить всё (иначе кнопка,
+    /// отпущенная вне окна, "залипает" в `down`).
+    pub fn release_all(&mut self) {
+        for k in self.down.drain() {
+            self.released_this_frame.insert(k);
+        }
+    }
+
     pub fn end_frame(&mut self) {
         self.pressed_this_frame.clear();
         self.released_this_frame.clear();
+        self.wheel = 0.0;
     }
 
     /// Зажата ли клавиша прямо сейчас (можно опрашивать каждый кадр для
@@ -77,6 +93,8 @@ impl InputState {
 /// Именованные виртуальные коды клавиш (Win32 VK_*), чтобы не
 /// разбрасывать магические числа `0x57`/`0x41`/... по игровому коду.
 pub mod keys {
+    pub const MOUSE_LEFT: u32 = 0x01;
+    pub const MOUSE_RIGHT: u32 = 0x02;
     pub const W: u32 = 0x57;
     pub const A: u32 = 0x41;
     pub const S: u32 = 0x53;

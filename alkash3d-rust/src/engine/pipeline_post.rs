@@ -309,11 +309,21 @@ impl AlkashEngine {
     /// будущих правках (например если один из двух проходов расширят
     /// дополнительными параметрами).
     pub(super) fn create_bloom_root_signature(&mut self) -> Result<()> {
+        self.bloom_root_signature = Some(Self::bloom_root_signature_with(1)?);
+        // Extract читает ещё метку unlit из ambient-таргета (t4): таблица —
+        // с hdr_srv_gpu, как у tonemap, до AMBIENT_SRV_SLOT включительно.
+        // Blur привязывает свою маленькую кучу, ему остаётся один SRV.
+        self.bloom_extract_root_signature = Some(Self::bloom_root_signature_with(crate::render::AMBIENT_SRV_SLOT + 1)?);
+        println!("[ENGINE] ✓ Bloom root signatures created (SRV table + static sampler s0 + CBV b0)");
+        Ok(())
+    }
+
+    fn bloom_root_signature_with(num_srv: u32) -> Result<windows::Win32::Graphics::Direct3D12::ID3D12RootSignature> {
         use windows::Win32::Graphics::Direct3D12::*;
 
         let srv_range = D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-            NumDescriptors: 1,
+            NumDescriptors: num_srv,
             BaseShaderRegister: 0,
             RegisterSpace: 0,
             OffsetInDescriptorsFromTableStart: 0,
@@ -395,12 +405,8 @@ impl AlkashEngine {
                 blob.GetBufferSize(),
             );
 
-            let root_sig = device.CreateRootSignature(0, blob_data)?;
-            self.bloom_root_signature = Some(root_sig);
+            Ok(device.CreateRootSignature(0, blob_data)?)
         }
-
-        println!("[ENGINE] ✓ Bloom root signature created (SRV table t0 + static sampler s0 + CBV b0)");
-        Ok(())
     }
 
     /// ДОБАВЛЕНО (Фаза 5 плана по реализму/фонарям, bloom): создаёт ОБА
@@ -470,8 +476,9 @@ impl AlkashEngine {
         };
 
         for (target_ps, target_field_is_extract) in [(self.bloom_extract_ps.as_ref().unwrap(), true), (self.bloom_blur_ps.as_ref().unwrap(), false)] {
+            let sig = if target_field_is_extract { self.bloom_extract_root_signature.as_ref().unwrap() } else { root_sig };
             let mut pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-                pRootSignature: std::mem::ManuallyDrop::new(Some(root_sig.clone())),
+                pRootSignature: std::mem::ManuallyDrop::new(Some(sig.clone())),
                 VS: D3D12_SHADER_BYTECODE {
                     pShaderBytecode: vs.as_ptr(),
                     BytecodeLength: vs.size(),

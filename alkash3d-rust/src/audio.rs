@@ -987,6 +987,17 @@ impl AudioEngine {
         }
     }
 
+    /// ДОБАВЛЕНО (порт My Summer Car — звук мотора по оборотам): высота тона
+    /// уже играющего звука (XAudio2 SetFrequencyRatio). Голоса создаются с
+    /// `XAUDIO2_DEFAULT_FREQ_RATIO` (2.0), поэтому ratio ограничен 0.05..2.0.
+    pub fn set_sound_pitch(&mut self, handle: SoundHandle, ratio: f32) {
+        if let Some(active) = self.active.get(&handle.0) {
+            unsafe {
+                let _ = active.voice.SetFrequencyRatio(ratio.clamp(0.05, 2.0), 0);
+            }
+        }
+    }
+
     /// Обновляет мировую позицию уже проигрываемого 3D-звука (например,
     /// звук двигателя движущейся машины) — без этого вызова источник
     /// звука навсегда остаётся там, где был при `play_sound_3d`, даже если
@@ -1064,6 +1075,13 @@ impl AudioEngine {
     /// звуковых движках, предотвращающая "проседание" громкости в центре).
     fn apply_spatial(&self, active: &mut ActiveVoice) {
         let Some(spatial) = &active.spatial else {
+            // ИСПРАВЛЕНО: у 2D-голоса громкость не зависит от позиции, но
+            // set_sound_volume обязан её применить — раньше здесь был голый
+            // return, и звук, запущенный с громкостью 0 (музыка с fade-in),
+            // так и оставался беззвучным.
+            unsafe {
+                let _ = active.voice.SetVolume(active.base_volume, 0);
+            }
             return;
         };
 

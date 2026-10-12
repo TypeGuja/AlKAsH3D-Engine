@@ -182,6 +182,36 @@ pub struct Mesh {
     /// загрузке .altex по имени материала (`asset_loading::detail_draw_distance`): с 1 км
     /// знак меньше пикселя, а треугольники и draw-вызовы стоят как вблизи. По умолчанию — ∞.
     pub max_draw_distance: f32,
+    /// ДОБАВЛЕНО (alpha cutout, порт Buckshot Roulette — символы на счётчике
+    /// здоровья, в Godot это alpha-материал): > 0 — пиксели, у которых альфа
+    /// albedo-текстуры меньше порога, отбрасываются (clip). 0 — как было,
+    /// альфа не читается. Это отсечение, а не смешивание: полупрозрачное
+    /// (стекло, дым) по-прежнему не рисуется, а тень такого меша — весь квад
+    /// (shadow pass без пиксельного шейдера).
+    pub alpha_cutoff: f32,
+    /// ДОБАВЛЕНО (прозрачность): меш всегда рисуется в прозрачном проходе
+    /// (альфа-смешивание SrcAlpha/InvSrcAlpha, без записи глубины, от дальних
+    /// к ближним) — стекло, дым, частицы. Альфа = albedo.a * vertex.a * tint.a.
+    pub blend: bool,
+    /// ДОБАВЛЕНО (стёкла, порт My Summer Car): тонкое стекло — вместе с
+    /// `blend`. Альфа текстуры/цвета — доля НЕпрозрачного слоя (грязь,
+    /// тонировка), а отражение по Френелю (блик солнца, отражённое небо)
+    /// от неё не зависит: чистое стекло почти невидимо в лоб и зеркалит
+    /// под скользящим углом. Как Unity Standard в режиме Transparent.
+    pub glass: bool,
+    /// ДОБАВЛЕНО (небо и интерфейс, порт My Summer Car): цвет вершин *
+    /// текстура * tint — это уже готовая яркость (не освещается), меш не
+    /// отбрасывает тень, не участвует в occlusion culling как заслоняющий и
+    /// не получает воздушную перспективу. Купол неба, экранный текст.
+    pub unlit: bool,
+    /// ДОБАВЛЕНО (детальная текстура, порт My Summer Car): мелкая
+    /// повторяющаяся текстура поверх основной, как Detail в Unity: цвет =
+    /// основной * детальный * 2 (в гамма-пространстве — так их задумывал
+    /// художник). Земля MSC — цветная карта всей местности, умноженная на
+    /// траву/почву, повторённую сотни раз. `detail_uv_scale` — во сколько
+    /// раз детальная мельче UV вершин.
+    pub detail_srv_index: Option<u32>,
+    pub detail_uv_scale: [f32; 2],
 }
 
 impl Mesh {
@@ -256,7 +286,33 @@ impl Mesh {
             bounding_center,
             bounding_radius,
             max_draw_distance: f32::INFINITY,
+            alpha_cutoff: 0.0,
+            blend: false,
+            glass: false,
+            unlit: false,
+            detail_srv_index: None,
+            detail_uv_scale: [1.0, 1.0],
         })
+    }
+
+    /// ДОБАВЛЕНО (скиннинг на CPU): перезаписать вершины уже созданного меша
+    /// (тот же размер). Буфер лежит в upload-куче, поэтому вызывающий код
+    /// сам не должен писать в меш, который GPU ещё рисует (держите кольцо
+    /// из нескольких мешей по числу кадров в полёте).
+    pub fn update_vertices(&self, vertices: &[Vertex]) -> Result<()> {
+        let bytes = std::mem::size_of_val(vertices);
+        if vertices.len() as u32 != self.vertex_count || bytes as u64 > self.vertex_buffer.size {
+            return Err(Error::from_hresult(HRESULT(1)));
+        }
+        unsafe {
+            let mut mapped = std::ptr::null_mut();
+            self.vertex_buffer.resource.Map(0, None, Some(&mut mapped))?;
+            if !mapped.is_null() {
+                std::ptr::copy_nonoverlapping(vertices.as_ptr() as *const u8, mapped as *mut u8, bytes);
+            }
+            self.vertex_buffer.resource.Unmap(0, None);
+        }
+        Ok(())
     }
 
     pub fn from_vertices_and_indices(vertices: &[Vertex], indices: &[u32]) -> Result<Self> {
@@ -589,6 +645,10 @@ pub struct MeshInstance {
     pub position: [f32; 3],
     pub rotation: [f32; 3],
     pub scale: [f32; 3],
+    /// ДОБАВЛЕНО (анимация материалов/прозрачность): множитель цвета
+    /// инстанса (rgb умножает альбедо, a — непрозрачность). a < 1 —
+    /// инстанс рисуется в прозрачном проходе. По умолчанию [1, 1, 1, 1].
+    pub tint: [f32; 4],
 }
 
 impl MeshInstance {
@@ -598,7 +658,13 @@ impl MeshInstance {
             position: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0, 1.0],
         }
+    }
+
+    pub fn tinted(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.tint = [r, g, b, a];
+        self
     }
 
     pub fn at(mut self, x: f32, y: f32, z: f32) -> Self {

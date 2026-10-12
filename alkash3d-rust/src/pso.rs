@@ -19,10 +19,38 @@ impl PipelineState {
         vs: &ShaderBlob,
         ps: &ShaderBlob,
         root_signature: &ID3D12RootSignature,
+        vertex_stride: u32,
+        render_target_formats: &[DXGI_FORMAT],
+        depth_format: DXGI_FORMAT,
+        sample_count: u32,
+    ) -> Result<ID3D12PipelineState> {
+        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, false)
+    }
+
+    /// ДОБАВЛЕНО (прозрачность): тот же конвейер, но target 0 смешивается
+    /// SrcAlpha/InvSrcAlpha, остальные targets не пишутся, глубина только
+    /// проверяется (без записи) — для прозрачного прохода после непрозрачного.
+    pub fn create_graphics_transparent(
+        vs: &ShaderBlob,
+        ps: &ShaderBlob,
+        root_signature: &ID3D12RootSignature,
+        vertex_stride: u32,
+        render_target_formats: &[DXGI_FORMAT],
+        depth_format: DXGI_FORMAT,
+        sample_count: u32,
+    ) -> Result<ID3D12PipelineState> {
+        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, true)
+    }
+
+    fn create_graphics_impl(
+        vs: &ShaderBlob,
+        ps: &ShaderBlob,
+        root_signature: &ID3D12RootSignature,
         _vertex_stride: u32,
         render_target_formats: &[DXGI_FORMAT],
         depth_format: DXGI_FORMAT,
         sample_count: u32,
+        transparent: bool,
     ) -> Result<ID3D12PipelineState> {
         println!("[PSO] ========== CREATING GRAPHICS PIPELINE STATE ==========");
         println!("[PSO] VS size: {} bytes", vs.size());
@@ -142,28 +170,54 @@ impl PipelineState {
         println!("[PSO] Rasterizer: FillMode=Solid, CullMode=None");
 
         println!("[PSO] Creating blend state...");
+        let opaque_rt = D3D12_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: FALSE,
+            LogicOpEnable: FALSE,
+            SrcBlend: D3D12_BLEND_ONE,
+            DestBlend: D3D12_BLEND_ZERO,
+            BlendOp: D3D12_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D12_BLEND_ONE,
+            DestBlendAlpha: D3D12_BLEND_ZERO,
+            BlendOpAlpha: D3D12_BLEND_OP_ADD,
+            LogicOp: D3D12_LOGIC_OP_NOOP,
+            RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
+        };
+        let mut render_targets = [opaque_rt; 8];
+        if transparent {
+            render_targets[0] = D3D12_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: TRUE,
+                SrcBlend: D3D12_BLEND_SRC_ALPHA,
+                DestBlend: D3D12_BLEND_INV_SRC_ALPHA,
+                SrcBlendAlpha: D3D12_BLEND_ZERO,
+                DestBlendAlpha: D3D12_BLEND_ONE,
+                ..opaque_rt
+            };
+            for rt in render_targets.iter_mut().skip(1) {
+                rt.RenderTargetWriteMask = 0;
+            }
+            // Ambient-таргет: из прозрачного прохода — только альфа (метка
+            // "unlit" для bloom, см. main_ps), MAX — чтобы прозрачное поверх
+            // не стирало метку, а цвет ambient не трогался.
+            render_targets[1] = D3D12_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: TRUE,
+                SrcBlendAlpha: D3D12_BLEND_ONE,
+                DestBlendAlpha: D3D12_BLEND_ONE,
+                BlendOpAlpha: D3D12_BLEND_OP_MAX,
+                RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALPHA.0 as u8,
+                ..opaque_rt
+            };
+        }
         let blend_desc = D3D12_BLEND_DESC {
             AlphaToCoverageEnable: FALSE,
-            IndependentBlendEnable: FALSE,
-            RenderTarget: [D3D12_RENDER_TARGET_BLEND_DESC {
-                BlendEnable: FALSE,
-                LogicOpEnable: FALSE,
-                SrcBlend: D3D12_BLEND_ONE,
-                DestBlend: D3D12_BLEND_ZERO,
-                BlendOp: D3D12_BLEND_OP_ADD,
-                SrcBlendAlpha: D3D12_BLEND_ONE,
-                DestBlendAlpha: D3D12_BLEND_ZERO,
-                BlendOpAlpha: D3D12_BLEND_OP_ADD,
-                LogicOp: D3D12_LOGIC_OP_NOOP,
-                RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
-            }; 8],
+            IndependentBlendEnable: if transparent { TRUE } else { FALSE },
+            RenderTarget: render_targets,
         };
         println!("[PSO] Blend state created");
 
         println!("[PSO] Creating depth stencil state (ENABLED)...");
         let depth_stencil = D3D12_DEPTH_STENCIL_DESC {
             DepthEnable: TRUE,
-            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
+            DepthWriteMask: if transparent { D3D12_DEPTH_WRITE_MASK_ZERO } else { D3D12_DEPTH_WRITE_MASK_ALL },
             DepthFunc: D3D12_COMPARISON_FUNC_LESS,
             StencilEnable: FALSE,
             StencilReadMask: D3D12_DEFAULT_STENCIL_READ_MASK as u8,

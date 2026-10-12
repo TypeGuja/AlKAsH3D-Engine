@@ -25,6 +25,11 @@ pub struct AltexHeader {
     // байт заголовка) для этого условия не подходят и получают пустые
     // materials/textures/texture_data — так же, как получали раньше.
     pub materials_offset: u64,
+    /// Блок сцены (дерево узлов, скелеты, анимации — `altex_scene.rs`).
+    /// Добавлен в конец заголовка по той же схеме, что `materials_offset`:
+    /// читается только при `version >= 3 && scene_graph_offset != 0`, у
+    /// файлов версий 1–2 на этом месте лежат первые байты таблицы строк.
+    pub scene_graph_offset: u64,
 }
 
 #[repr(C)]
@@ -128,6 +133,8 @@ pub struct AltexFile {
     pub materials: Vec<Material>,
     pub textures: Vec<Texture>,
     pub texture_data: Vec<u8>,
+    /// Блок сцены (версия 3); `None` — обычная статическая геометрия.
+    pub scene: Option<crate::altex_scene::AltexScene>,
 }
 
 impl AltexFile {
@@ -145,6 +152,7 @@ impl AltexFile {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap().as_secs(),
                 materials_offset: 0,
+                scene_graph_offset: 0,
             },
             strings: Vec::new(),
             objects: Vec::new(),
@@ -155,6 +163,7 @@ impl AltexFile {
             materials: Vec::new(),
             textures: Vec::new(),
             texture_data: Vec::new(),
+            scene: None,
         }
     }
 
@@ -392,7 +401,9 @@ impl AltexFile {
         // офсет как раз ЗАРЕЗЕРВИРОВАН как признак "файл версии 1, блока
         // вообще нет на диске" (см. `load()`).
         let materials_offset = geom_offset + geom_data.len() as u64;
-        let total_size = materials_offset + materials_data.len() as u64;
+        let scene_graph_data = self.scene.as_ref().map(|s| s.to_bytes()).unwrap_or_default();
+        let scene_graph_offset = if self.scene.is_some() { materials_offset + materials_data.len() as u64 } else { 0 };
+        let total_size = materials_offset + materials_data.len() as u64 + scene_graph_data.len() as u64;
 
         // ДОБАВЛЕНО (Задача #15): version=2 — сигнализирует load(), что
         // materials_offset действительно указывает на реальный блок (а не
@@ -400,7 +411,7 @@ impl AltexFile {
         // физически не было). См. подробный комментарий у AltexHeader.
         let header = AltexHeader {
             magic: self.header.magic,
-            version: 2,
+            version: 3,
             flags: self.header.flags,
             string_table_offset: string_offset,
             scene_offset: scene_offset,
@@ -408,6 +419,7 @@ impl AltexFile {
             total_size,
             created_at: self.header.created_at,
             materials_offset,
+            scene_graph_offset,
         };
 
         file.write_all(unsafe {
@@ -417,6 +429,7 @@ impl AltexFile {
         file.write_all(&scene_data)?;
         file.write_all(&geom_data)?;
         file.write_all(&materials_data)?;
+        file.write_all(&scene_graph_data)?;
 
         Ok(())
     }
@@ -542,6 +555,19 @@ impl AltexFile {
             let mut texture_data = vec![0u8; texture_data_len];
             file.read_exact(&mut texture_data)?;
             altex.texture_data = texture_data;
+        }
+
+        // Блок сцены — только version>=3 (см. `AltexHeader::scene_graph_offset`),
+        // занимает всё от своего офсета до `total_size`.
+        if altex.header.version >= 3 && altex.header.scene_graph_offset != 0 {
+            let start = altex.header.scene_graph_offset;
+            if altex.header.total_size < start {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid .altex scene block"));
+            }
+            file.seek(SeekFrom::Start(start))?;
+            let mut data = vec![0u8; (altex.header.total_size - start) as usize];
+            file.read_exact(&mut data)?;
+            altex.scene = Some(crate::altex_scene::AltexScene::from_bytes(&data)?);
         }
 
         Ok(altex)

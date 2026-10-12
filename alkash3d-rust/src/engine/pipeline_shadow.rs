@@ -115,7 +115,9 @@ impl AlkashEngine {
         let vs_source = include_str!("shaders/shadow_vs.hlsl");
 
         self.shadow_vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
-        println!("[ENGINE] ✓ Shadow shaders compiled (depth-only, без PS)");
+        // ДОБАВЛЕНО (тени листвы): PS альфа-выреза — только для мешей с alpha_cutoff.
+        self.shadow_ps = Some(ShaderBlob::compile(include_str!("shaders/shadow_ps.hlsl"), "ps_5_0", "main")?);
+        println!("[ENGINE] ✓ Shadow shaders compiled (depth-only + альфа-вырез)");
         Ok(())
     }
 
@@ -123,6 +125,13 @@ impl AlkashEngine {
     /// model*light_view_proj, ничего больше (нет SRV фонарей/сетки, нет
     /// сэмплеров — этому проходу они не нужны).
     pub(super) fn create_shadow_root_signature(&mut self) -> Result<()> {
+        let albedo_range = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 1,
+            BaseShaderRegister: 0,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: 0,
+        };
         let root_params = [
             D3D12_ROOT_PARAMETER {
                 ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
@@ -134,13 +143,47 @@ impl AlkashEngine {
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
             },
+            // ДОБАВЛЕНО (тени листвы): albedo-текстура меша (t0) и порог
+            // выреза (b1) — читает только shadow_ps.hlsl.
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: &albedo_range,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Constants: D3D12_ROOT_CONSTANTS { ShaderRegister: 1, RegisterSpace: 0, Num32BitValues: 1 },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
         ];
+        let sampler = D3D12_STATIC_SAMPLER_DESC {
+            Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            AddressU: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+            AddressV: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+            AddressW: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+            MipLODBias: 0.0,
+            MaxAnisotropy: 0,
+            ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
+            BorderColor: D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
+            MinLOD: 0.0,
+            MaxLOD: D3D12_FLOAT32_MAX,
+            ShaderRegister: 0,
+            RegisterSpace: 0,
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        };
 
         let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
             NumParameters: root_params.len() as u32,
             pParameters: root_params.as_ptr(),
-            NumStaticSamplers: 0,
-            pStaticSamplers: std::ptr::null(),
+            NumStaticSamplers: 1,
+            pStaticSamplers: &sampler,
             Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
         };
 
@@ -209,13 +252,24 @@ impl AlkashEngine {
     pub fn disable_shadows_for_diagnostics(&mut self) {
         println!("[DIAG] Shadow mapping принудительно отключён для диагностики зависания");
         self.shadow_pipeline_state = None;
+        self.shadow_cutout_pipeline_state = None;
+        self.spot_shadow_cutout_pipeline_state = None;
         // ИСПРАВЛЕНО: тени фонарей тоже выключаются — без этого select_spot/point_shadow_lights
         // продолжали выбирать фонари и рендерить атласы (тысячи draw за кадр) при shadows=false.
         self.spot_shadow_pipeline_state = None;
     }
 
     pub(super) fn create_shadow_pipeline_state(&mut self) -> Result<()> {
-        match self.build_shadow_pso(5000, 2.0) {
+        // ДОБАВЛЕНО (тени листвы): варианты с PS альфа-выреза. Не фатально —
+        // без них листва просто отбрасывает тень целыми квадами, как раньше.
+        match (self.build_shadow_pso(5000, 2.0, true), self.build_shadow_pso(64, 1.5, true)) {
+            (Ok(sun), Ok(spot)) => {
+                self.shadow_cutout_pipeline_state = Some(sun);
+                self.spot_shadow_cutout_pipeline_state = Some(spot);
+            }
+            (a, b) => eprintln!("[ENGINE] WARNING: PSO теней с альфа-вырезом не создан: {:?} {:?}", a.err(), b.err()),
+        }
+        match self.build_shadow_pso(5000, 2.0, false) {
             Ok(pso) => {
                 self.shadow_pipeline_state = Some(pso);
                 println!("[ENGINE] ✓ Shadow pipeline state created (depth-only, DSVFormat=D32_FLOAT)");
@@ -231,7 +285,7 @@ impl AlkashEngine {
         // ортографического солнца дал бы сдвиг в десятки сантиметров —
         // тень "отрывалась" бы от ножки фонарного столба (peter-panning).
         // Основную защиту от acne у фонарей даёт normal-offset в PS.
-        match self.build_shadow_pso(64, 1.5) {
+        match self.build_shadow_pso(64, 1.5, false) {
             Ok(pso) => {
                 self.spot_shadow_pipeline_state = Some(pso);
                 println!("[ENGINE] ✓ Spot shadow pipeline state created");
@@ -244,7 +298,7 @@ impl AlkashEngine {
         Ok(())
     }
 
-    fn build_shadow_pso(&self, depth_bias: i32, slope_scaled_depth_bias: f32) -> Result<ID3D12PipelineState> {
+    fn build_shadow_pso(&self, depth_bias: i32, slope_scaled_depth_bias: f32, cutout: bool) -> Result<ID3D12PipelineState> {
         use windows::Win32::Foundation::{FALSE, TRUE};
         use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
@@ -277,6 +331,16 @@ impl AlkashEngine {
                 Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
                 InputSlot: 0,
                 AlignedByteOffset: 28,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+            // ДОБАВЛЕНО (тени листвы): UV (Vertex::uv, офсет 44).
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: s!("TEXCOORD"),
+                SemanticIndex: 0,
+                Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32G32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 44,
                 InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
                 InstanceDataStepRate: 0,
             },
@@ -344,7 +408,10 @@ impl AlkashEngine {
                 pShaderBytecode: vs.as_ptr(),
                 BytecodeLength: vs.size(),
             },
-            PS: D3D12_SHADER_BYTECODE::default(),
+            PS: match (cutout, self.shadow_ps.as_ref()) {
+                (true, Some(ps)) => D3D12_SHADER_BYTECODE { pShaderBytecode: ps.as_ptr(), BytecodeLength: ps.size() },
+                _ => D3D12_SHADER_BYTECODE::default(),
+            },
             DS: D3D12_SHADER_BYTECODE::default(),
             HS: D3D12_SHADER_BYTECODE::default(),
             GS: D3D12_SHADER_BYTECODE::default(),

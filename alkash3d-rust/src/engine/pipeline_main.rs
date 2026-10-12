@@ -77,6 +77,14 @@ impl AlkashEngine {
             RegisterSpace: 0,
             OffsetInDescriptorsFromTableStart: 0,
         };
+        // ДОБАВЛЕНО (детальная текстура): t11, root-параметр 10.
+        let detail_srv_range = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 1,
+            BaseShaderRegister: 11,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: 0,
+        };
         let mr_srv_range = D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
             NumDescriptors: 1,
@@ -216,9 +224,11 @@ impl AlkashEngine {
                     Constants: D3D12_ROOT_CONSTANTS {
                         ShaderRegister: 1,
                         RegisterSpace: 0,
-                        // 8: metallic/roughness/hasMrMap/lightEmitterArea +
-                        // emissive.rgb/padding (светящиеся плафоны).
-                        Num32BitValues: 8,
+                        // 20: metallic/roughness/hasMrMap/lightEmitterArea +
+                        // emissive.rgb/alphaCutoff + tint инстанса (rgba) +
+                        // isBlend/glass/unlit/резерв + детальная текстура
+                        // (масштаб UV xy, есть ли, резерв).
+                        Num32BitValues: 20,
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
@@ -231,6 +241,17 @@ impl AlkashEngine {
                     Descriptor: D3D12_ROOT_DESCRIPTOR {
                         ShaderRegister: 2,
                         RegisterSpace: 0,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+            // ДОБАВЛЕНО (детальная текстура): root-параметр 10 — DetailMap (t11).
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: &detail_srv_range,
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
@@ -301,6 +322,21 @@ impl AlkashEngine {
         )?;
 
         self.pipeline_state = Some(pso);
+
+        // ДОБАВЛЕНО (прозрачность): тот же шейдер, но с альфа-смешиванием в
+        // HDR-цвет, без записи во второй target (ambient — прозрачным он
+        // добавляется прямо в цвет) и без записи глубины.
+        let transparent = PipelineState::create_graphics_transparent(
+            vs, ps, root_sig,
+            Vertex::STRIDE,
+            &[
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+            ],
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
+            self.msaa_samples,
+        )?;
+        self.transparent_pipeline_state = Some(transparent);
         println!("[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, {}x MSAA)", self.msaa_samples);
         Ok(())
     }

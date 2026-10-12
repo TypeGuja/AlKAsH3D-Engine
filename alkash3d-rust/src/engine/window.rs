@@ -62,6 +62,19 @@ impl AlkashEngine {
         Ok(())
     }
 
+    /// Заголовок окна игры (и консоли, если она есть) — чтобы в панели
+    /// задач и диспетчере задач была видна сама игра, а не движок.
+    /// Вызывать после `init()`.
+    pub fn set_window_title(&self, title: &str) {
+        let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            if let Some(hwnd) = self.hwnd {
+                let _ = SetWindowTextW(hwnd, PCWSTR(wide.as_ptr()));
+            }
+            let _ = windows::Win32::System::Console::SetConsoleTitleW(PCWSTR(wide.as_ptr()));
+        }
+    }
+
     extern "system" fn wndproc_static(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe {
             if msg == WM_NCCREATE {
@@ -101,6 +114,47 @@ impl AlkashEngine {
                 }
                 WM_KEYUP => {
                     self.input.on_key_up(wparam.0 as u32);
+                    LRESULT(0)
+                }
+                // ДОБАВЛЕНО (мышь): позиция курсора в NDC и кнопки как VK_LBUTTON/VK_RBUTTON.
+                WM_MOUSEMOVE => {
+                    let x = (lparam.0 & 0xFFFF) as i16 as f32;
+                    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+                    let mut rect = RECT::default();
+                    if GetClientRect(hwnd, &mut rect).is_ok() {
+                        let w = (rect.right - rect.left).max(1) as f32;
+                        let h = (rect.bottom - rect.top).max(1) as f32;
+                        self.input.mouse_ndc = [x / w * 2.0 - 1.0, 1.0 - y / h * 2.0];
+                    }
+                    LRESULT(0)
+                }
+                WM_LBUTTONDOWN => {
+                    windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
+                    self.input.on_key_down(crate::input::keys::MOUSE_LEFT);
+                    LRESULT(0)
+                }
+                WM_LBUTTONUP => {
+                    let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
+                    self.input.on_key_up(crate::input::keys::MOUSE_LEFT);
+                    LRESULT(0)
+                }
+                WM_KILLFOCUS => {
+                    self.input.release_all();
+                    LRESULT(0)
+                }
+                WM_RBUTTONDOWN => {
+                    self.input.on_key_down(crate::input::keys::MOUSE_RIGHT);
+                    LRESULT(0)
+                }
+                WM_RBUTTONUP => {
+                    self.input.on_key_up(crate::input::keys::MOUSE_RIGHT);
+                    LRESULT(0)
+                }
+                // ДОБАВЛЕНО (колесо мыши, порт My Summer Car — затяжка болтов):
+                // щелчки колеса за кадр, вперёд — положительные.
+                WM_MOUSEWHEEL => {
+                    let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
+                    self.input.wheel += delta / 120.0;
                     LRESULT(0)
                 }
                 WM_SYSKEYDOWN => {
@@ -391,6 +445,15 @@ impl AlkashEngine {
         self.input.end_frame();
 
         unsafe {
+            // ИСПРАВЛЕНО (мышь/клавиатура "не работали" в порте Buckshot): окно
+            // хранит указатель на движок, записанный при создании окна. Если
+            // после init() AlkashEngine переместили (например, положили внутрь
+            // другой структуры), wndproc писал ввод в старую, уже недействительную
+            // копию. Обновляем указатель на текущий адрес перед разбором сообщений.
+            if let Some(hwnd) = self.hwnd {
+                SetWindowLongPtrA(hwnd, GWLP_USERDATA, self as *mut AlkashEngine as isize);
+            }
+
             let mut msg = MSG::default();
             while PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {

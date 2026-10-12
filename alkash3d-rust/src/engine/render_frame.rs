@@ -308,6 +308,37 @@ impl AlkashEngine {
 
     /// ДОБАВЛЕНО (тени фонарей): записывает в cmd_list depth-only отрисовку
     /// одного меша (VB/IB + Draw) — общая часть для плиток spot-атласа.
+    /// ДОБАВЛЕНО (тени листвы): нужен ли мешу теневой PSO с альфа-вырезом.
+    fn shadow_needs_cutout(&self, mesh: &super::Mesh) -> bool {
+        mesh.alpha_cutoff > 0.0 && mesh.albedo_srv_index.is_some() && self.shadow_srv_heap.is_some()
+    }
+
+    /// ДОБАВЛЕНО (тени листвы): переключает теневой PSO под меш — с альфа-вырезом
+    /// (PS отбрасывает прозрачные пиксели текстуры) или прежний depth-only.
+    unsafe fn shadow_bind_material(
+        &self,
+        cmd_list: &ID3D12GraphicsCommandList,
+        mesh: &super::Mesh,
+        base: &ID3D12PipelineState,
+        cutout: Option<&ID3D12PipelineState>,
+        cutout_on: &mut bool,
+        srv_descriptor_size: u32,
+    ) {
+        let want = cutout.is_some() && self.shadow_needs_cutout(mesh);
+        unsafe {
+            if want != *cutout_on {
+                cmd_list.SetPipelineState(if want { cutout } else { Some(base) });
+                *cutout_on = want;
+            }
+            if want {
+                let heap = self.shadow_srv_heap.as_ref().unwrap();
+                let handle = crate::heap::DescriptorHeap::get_gpu_handle(heap, mesh.albedo_srv_index.unwrap(), srv_descriptor_size);
+                cmd_list.SetGraphicsRootDescriptorTable(1, handle);
+                cmd_list.SetGraphicsRoot32BitConstants(2, 1, &mesh.alpha_cutoff as *const f32 as *const _, 0);
+            }
+        }
+    }
+
     unsafe fn record_depth_only_draw(cmd_list: &ID3D12GraphicsCommandList, mesh: &super::Mesh) {
         unsafe {
             let vertex_buffer_view = D3D12_VERTEX_BUFFER_VIEW {
@@ -448,9 +479,19 @@ impl AlkashEngine {
 
     /// Освобождает лишнюю ссылку на ресурс внутри барьера, добавленную
     /// клонированием в `transition_barrier` — см. объяснение там же.
+    ///
+    /// ИСПРАВЛЕНО (ResizeBuffers -> DXGI_ERROR_INVALID_CALL после первого
+    /// же кадра, окно не переживало разворачивание): раньше здесь
+    /// дропался только внешний `ManuallyDrop<D3D12_RESOURCE_TRANSITION_BARRIER>`
+    /// — но поле `pResource` внутри САМО обёрнуто в `ManuallyDrop`, и
+    /// drop структуры его не трогает. Ссылка от `resource.clone()` не
+    /// освобождалась никогда: каждый кадр back buffer'ы копили +1 к
+    /// refcount, и swap chain отказывался ресайзиться, пока на буферы
+    /// есть ссылки. Дропаем именно `pResource`.
     unsafe fn drop_transition_barrier(mut barrier: D3D12_RESOURCE_BARRIER) {
         unsafe {
-            std::mem::ManuallyDrop::drop(&mut barrier.Anonymous.Transition);
+            let transition = &mut *barrier.Anonymous.Transition;
+            std::mem::ManuallyDrop::drop(&mut transition.pResource);
         }
     }
 
@@ -630,11 +671,17 @@ impl AlkashEngine {
         // жила своей отдельной жизнью.
         let camera_pos_for_lod = self.camera.position;
 
-        let shadow_jobs: Vec<(usize, Mat4)> = {
+        let mut shadow_jobs: Vec<(usize, Mat4)> = {
             let mut v: Vec<(usize, Mat4)> = Vec::new();
             if !self.mesh_instances.is_empty() {
                 for instance in &self.mesh_instances {
                     if instance.mesh_index < self.meshes.len() {
+                        // ДОБАВЛЕНО (прозрачность): полупрозрачное (стекло, дым,
+                        // затухающие объекты) тень не отбрасывает.
+                        let m = &self.meshes[instance.mesh_index];
+                        if instance.tint[3] < 0.999 || m.blend || m.unlit {
+                            continue;
+                        }
                         let world = instance.transform_matrix();
                         if let Some(idx) = self.resolve_lod_mesh_index(instance.mesh_index, world, camera_pos_for_lod) {
                             v.push((idx, world));
@@ -663,7 +710,7 @@ impl AlkashEngine {
         let cascade_far_distances: [f32; NUM_CASCADES] = {
             let mut arr = [0.0f32; NUM_CASCADES];
             for i in 0..NUM_CASCADES {
-                arr[i] = self.camera.far * CASCADE_SPLITS[i];
+                arr[i] = self.shadow_far.unwrap_or(self.camera.far).min(self.camera.far) * CASCADE_SPLITS[i];
             }
             arr
         };
@@ -678,6 +725,11 @@ impl AlkashEngine {
             arr
         };
 
+        // ДОБАВЛЕНО (тени листвы): меши с альфа-вырезом — в конец (стабильно),
+        // чтобы PSO переключался на них один раз за проход.
+        shadow_jobs.sort_by_key(|(m, _)| self.shadow_needs_cutout(&self.meshes[*m]));
+        let srv_descriptor_size = STATE.lock().unwrap().cbv_srv_uav_descriptor_size;
+
         if self.shadow_pipeline_state.is_some() && self.shadow_root_signature.is_some() {
             if let Err(e) = self.ensure_shadow_constant_buffer_capacity(shadow_jobs.len() * NUM_CASCADES) {
                 eprintln!("[ENGINE] WARNING: не удалось выделить shadow_constant_buffer: {:?}", e);
@@ -687,6 +739,9 @@ impl AlkashEngine {
                 cmd_list.SetPipelineState(Some(self.shadow_pipeline_state.as_ref().unwrap()));
                 cmd_list.SetGraphicsRootSignature(Some(self.shadow_root_signature.as_ref().unwrap()));
                 cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                if let Some(heap) = &self.shadow_srv_heap {
+                    cmd_list.SetDescriptorHeaps(&[Some(heap.clone())]);
+                }
 
                 let shadow_viewport = D3D12_VIEWPORT {
                     TopLeftX: 0.0,
@@ -731,7 +786,12 @@ impl AlkashEngine {
                     let light_view_proj = cascade_view_projs[cascade];
                     let cascade_frustum = crate::math::Frustum::from_view_proj(&light_view_proj);
 
-                    if let Some(shadow_cb) = &self.shadow_constant_buffer {
+                    // ДОБАВЛЕНО (FPS бакшота): солнце с нулевой яркостью ничего не
+                    // освещает, а его каскады всё равно рисовали ~500 draw за кадр.
+                    // Карта только очищается (тень = 1) — вклад солнца и так 0.
+                    let sun_on = self.transform_constants.light_color[3] > 0.0;
+                    let mut cutout_on = false;
+                    if let Some(shadow_cb) = self.shadow_constant_buffer.as_ref().filter(|_| sun_on) {
                         for (i, (mesh_index, model)) in shadow_jobs.iter().enumerate() {
                             let (sc, sr) = shadow_spheres[i];
                             if !cascade_frustum.test_sphere(sc, sr) {
@@ -739,6 +799,7 @@ impl AlkashEngine {
                             }
                             perf_csm_draws += 1;
                             let mesh = &self.meshes[*mesh_index];
+                            self.shadow_bind_material(&cmd_list, mesh, self.shadow_pipeline_state.as_ref().unwrap(), self.shadow_cutout_pipeline_state.as_ref(), &mut cutout_on, srv_descriptor_size);
                             let mlvp = light_view_proj * (*model);
                             let shadow_constants = crate::constant_buffer::ShadowConstants {
                                 model_light_view_proj: mlvp.to_cols_array_2d(),
@@ -771,7 +832,9 @@ impl AlkashEngine {
                             }
                         }
                     }
-
+                    if cutout_on {
+                        cmd_list.SetPipelineState(Some(self.shadow_pipeline_state.as_ref().unwrap()));
+                    }
                     if let Some(shadow_map) = &self.shadow_maps[cascade] {
                         if !self.shadow_maps_are_srv[cascade] {
                             let barrier = Self::transition_barrier(
@@ -919,6 +982,10 @@ impl AlkashEngine {
                 cmd_list.SetPipelineState(Some(self.spot_shadow_pipeline_state.as_ref().unwrap()));
                 cmd_list.SetGraphicsRootSignature(Some(self.shadow_root_signature.as_ref().unwrap()));
                 cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                if let Some(heap) = &self.shadow_srv_heap {
+                    cmd_list.SetDescriptorHeaps(&[Some(heap.clone())]);
+                }
+                let mut cutout_on = false;
 
                 for (((kind, tx, ty, tile_res, tile_vp), jobs), dirty) in shadow_tiles.iter().zip(tile_jobs.iter()).zip(tile_dirty.iter()) {
                     if *kind != atlas_kind || !*dirty {
@@ -952,6 +1019,7 @@ impl AlkashEngine {
                         }
                         let gpu_addr = crate::constant_buffer::ShadowConstants::gpu_address_for_slot(local_cb, slot);
                         cmd_list.SetGraphicsRootConstantBufferView(0, gpu_addr);
+                        self.shadow_bind_material(&cmd_list, &self.meshes[*mesh_index], self.spot_shadow_pipeline_state.as_ref().unwrap(), self.spot_shadow_cutout_pipeline_state.as_ref(), &mut cutout_on, srv_descriptor_size);
                         Self::record_depth_only_draw(&cmd_list, &self.meshes[*mesh_index]);
                     }
                 }
@@ -1199,6 +1267,8 @@ impl AlkashEngine {
             struct DrawJob {
                 mesh_index: usize,
                 transform: DrawTransform,
+                /// ДОБАВЛЕНО (прозрачность): множитель цвета инстанса, см. MeshInstance::tint.
+                tint: [f32; 4],
             }
 
             let mut jobs: Vec<DrawJob> = Vec::new();
@@ -1211,20 +1281,21 @@ impl AlkashEngine {
                             jobs.push(DrawJob {
                                 mesh_index: idx,
                                 transform: DrawTransform::Camera(world),
+                                tint: instance.tint,
                             });
                         }
                     }
                 }
             } else if self.scene.is_empty() {
                 for i in 0..self.meshes.len() {
-                    jobs.push(DrawJob { mesh_index: i, transform: DrawTransform::RawIdentity });
+                    jobs.push(DrawJob { mesh_index: i, transform: DrawTransform::RawIdentity, tint: [1.0; 4] });
                 }
             }
 
             for (mesh_index, world) in self.scene.collect_renderables() {
                 if mesh_index < self.meshes.len() {
                     if let Some(idx) = self.resolve_lod_mesh_index(mesh_index, world, camera_pos_for_lod) {
-                        jobs.push(DrawJob { mesh_index: idx, transform: DrawTransform::Camera(world) });
+                        jobs.push(DrawJob { mesh_index: idx, transform: DrawTransform::Camera(world), tint: [1.0; 4] });
                     }
                 }
             }
@@ -1251,15 +1322,35 @@ impl AlkashEngine {
                 }
                 DrawTransform::RawIdentity => true,
             });
+            // ДОБАВЛЕНО (прозрачность): сначала непрозрачное, затем
+            // полупрозрачное от дальнего к ближнему (смешивание без записи
+            // глубины корректно только в таком порядке).
+            let is_transparent = |job: &DrawJob, meshes: &Vec<crate::engine::Mesh>| job.tint[3] < 0.999 || meshes[job.mesh_index].blend;
+            let (mut opaque_jobs, mut transparent_jobs): (Vec<DrawJob>, Vec<DrawJob>) =
+                jobs.into_iter().partition(|j| !is_transparent(j, &self.meshes));
+            let depth_of = |job: &DrawJob, meshes: &Vec<crate::engine::Mesh>| match &job.transform {
+                DrawTransform::Camera(model) => {
+                    let m = &meshes[job.mesh_index];
+                    let c = model.transform_point3(Vec3::new(m.bounding_center[0], m.bounding_center[1], m.bounding_center[2]));
+                    (c - camera_pos_for_lod).length_squared()
+                }
+                DrawTransform::RawIdentity => 0.0,
+            };
+            transparent_jobs.sort_by(|a, b| depth_of(b, &self.meshes).partial_cmp(&depth_of(a, &self.meshes)).unwrap_or(std::cmp::Ordering::Equal));
+            let first_transparent = opaque_jobs.len();
+            opaque_jobs.append(&mut transparent_jobs);
+            let jobs = opaque_jobs;
             perf_main_draws = jobs.len();
             perf_main_tris = jobs.iter().map(|j| self.meshes[j.mesh_index].index_count as u64 / 3).sum();
 
             self.poll_occluder_readback();
             let mut occluder_instance_data: Vec<f32> = Vec::new();
-            for job in &jobs {
+            for job in jobs.iter().take(first_transparent) {
                 let DrawTransform::Camera(model) = &job.transform else { continue };
                 if job.mesh_index >= self.meshes.len() { continue; }
                 let mesh = &self.meshes[job.mesh_index];
+                // Купол неба окружает камеру — как заслоняющий он "закрыл" бы всё.
+                if mesh.unlit { continue; }
                 let (scale, _rotation, _translation) = model.to_scale_rotation_translation();
                 let max_scale = scale.x.abs().max(scale.y.abs()).max(scale.z.abs());
                 let world_radius = mesh.bounding_radius * max_scale;
@@ -1280,6 +1371,11 @@ impl AlkashEngine {
 
             for (i, job) in jobs.iter().enumerate() {
                 let mesh = &self.meshes[job.mesh_index];
+                if i == first_transparent {
+                    if let Some(pso) = self.transparent_pipeline_state.as_ref() {
+                        cmd_list.SetPipelineState(Some(pso));
+                    }
+                }
 
                 if let Some(shadow_srv_heap) = self.shadow_srv_heap.as_ref() {
                     let albedo_slot = mesh.albedo_srv_index.or(white_texture_srv_fallback);
@@ -1299,18 +1395,30 @@ impl AlkashEngine {
                         let gpu_handle = crate::heap::DescriptorHeap::get_gpu_handle(shadow_srv_heap, mr_slot, cbv_srv_uav_size_materials);
                         cmd_list.SetGraphicsRootDescriptorTable(7, gpu_handle);
                     }
+
+                    // ДОБАВЛЕНО (детальная текстура): без неё — белая заглушка, шейдер её не читает.
+                    if let Some(slot) = mesh.detail_srv_index.or(white_texture_srv_fallback) {
+                        let gpu_handle = crate::heap::DescriptorHeap::get_gpu_handle(shadow_srv_heap, slot, cbv_srv_uav_size_materials);
+                        cmd_list.SetGraphicsRootDescriptorTable(10, gpu_handle);
+                    }
                 }
 
                 let has_mr_map = if mesh.mr_srv_index.is_some() { 1.0f32 } else { 0.0f32 };
                 // Раскладка ОБЯЗАНА совпадать с cbuffer MaterialConstants
                 // (b1) в main_ps.hlsl: metallic, roughness, hasMrMap,
-                // lightEmitterArea, emissive.rgb, padding.
+                // lightEmitterArea, emissive.rgb, alphaCutoff, tint.rgba, isBlend, glass, unlit + резерв.
                 let e = mesh.material_emissive;
-                let material_constants: [f32; 8] = [
+                let t = job.tint;
+                let blended = if i >= first_transparent { 1.0f32 } else { 0.0 };
+                let flag = |b: bool| if b { 1.0f32 } else { 0.0 };
+                let material_constants: [f32; 20] = [
                     mesh.material_metallic, mesh.material_roughness, has_mr_map, mesh.light_emitter_area,
-                    e[0], e[1], e[2], 0.0,
+                    e[0], e[1], e[2], mesh.alpha_cutoff,
+                    t[0], t[1], t[2], t[3],
+                    blended, flag(mesh.glass && blended > 0.5), flag(mesh.unlit), 0.0,
+                    mesh.detail_uv_scale[0], mesh.detail_uv_scale[1], flag(mesh.detail_srv_index.is_some()), 0.0,
                 ];
-                cmd_list.SetGraphicsRoot32BitConstants(8, 8, material_constants.as_ptr() as *const _, 0);
+                cmd_list.SetGraphicsRoot32BitConstants(8, 20, material_constants.as_ptr() as *const _, 0);
 
                 match &job.transform {
                     DrawTransform::Camera(model) => {
@@ -2037,6 +2145,7 @@ impl AlkashEngine {
                 self.bloom_a_is_srv = false;
 
                 cmd_list.OMSetRenderTargets(1, Some(&self.bloom_rtv_a), false, None);
+                cmd_list.SetGraphicsRootSignature(Some(self.bloom_extract_root_signature.as_ref().unwrap()));
                 cmd_list.SetPipelineState(Some(self.bloom_extract_pipeline_state.as_ref().unwrap()));
                 let hdr_heap = [Some(renderer.srv_uav_heap.clone())];
                 cmd_list.SetDescriptorHeaps(&hdr_heap);
@@ -2048,6 +2157,8 @@ impl AlkashEngine {
                     cmd_list.SetGraphicsRootConstantBufferView(1, params_cb.resource.GetGPUVirtualAddress());
                 }
                 cmd_list.DrawInstanced(3, 1, 0, 0);
+                // Blur — со своей (одно-SRV) root signature.
+                cmd_list.SetGraphicsRootSignature(Some(self.bloom_root_signature.as_ref().unwrap()));
 
                 let bloom_heap_rebind = [Some(bloom_srv_heap.clone())];
                 cmd_list.SetDescriptorHeaps(&bloom_heap_rebind);

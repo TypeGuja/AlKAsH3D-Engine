@@ -30,6 +30,7 @@ mod pso;
 // трогая существующий `pub use altex_format::*` ниже (тот остаётся для
 // кода ВНУТРИ этого крейта и для случаев, где имя не конфликтует).
 pub mod altex_format;
+pub mod altex_scene;
 mod alfar_format;
 mod alcar_format;
 // ДОБАВЛЕНО (разборка машины/двигателя/коробки на детали): граф физически

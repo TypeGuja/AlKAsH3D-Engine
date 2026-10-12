@@ -255,6 +255,8 @@ pub struct AlkashEngine {
     pub(super) lod_groups: std::collections::HashMap<usize, LodGroup>,
     pub root_signature: Option<ID3D12RootSignature>,
     pub pipeline_state: Option<ID3D12PipelineState>,
+    /// ДОБАВЛЕНО (прозрачность): PSO прозрачного прохода, см. `create_pipeline_state`.
+    pub transparent_pipeline_state: Option<ID3D12PipelineState>,
     pub vs: Option<ShaderBlob>,
     pub ps: Option<ShaderBlob>,
 
@@ -430,6 +432,11 @@ pub struct AlkashEngine {
     /// каждой следующей фазы.
     pub light_ambient: Option<crate::alfar_format::AmbientLight>,
     pub light_global_settings: Option<crate::alfar_format::GlobalLightSettings>,
+    /// ДОБАВЛЕНО (порт My Summer Car): дальность солнечных теней (метры).
+    /// None — каскады делят всю дальность камеры, как раньше. Нужна, когда
+    /// camera.far большой (купол неба): иначе дальний каскад тянется на
+    /// километры — тени мыльные и дорогие.
+    pub shadow_far: Option<f32>,
 
     /// ДОБАВЛЕНО (Фаза 2 плана по реализму/фонарям): GPU-буфер
     /// (StructuredBuffer<GPULight>, register t0), в который каждый кадр
@@ -477,6 +484,8 @@ pub struct AlkashEngine {
     /// для blur — оба варианта используют одну и ту же по форме структуру
     /// параметров, чтобы не плодить лишние root signatures).
     bloom_root_signature: Option<ID3D12RootSignature>,
+    /// Extract: тот же вид, но таблица из AMBIENT_SRV_SLOT+1 SRV (метка unlit в t4).
+    bloom_extract_root_signature: Option<ID3D12RootSignature>,
     bloom_extract_pipeline_state: Option<ID3D12PipelineState>,
     bloom_blur_pipeline_state: Option<ID3D12PipelineState>,
     bloom_params_buffer: Option<Buffer>,
@@ -549,6 +558,11 @@ pub struct AlkashEngine {
     shadow_vs: Option<ShaderBlob>,
     shadow_root_signature: Option<ID3D12RootSignature>,
     shadow_pipeline_state: Option<ID3D12PipelineState>,
+    /// ДОБАВЛЕНО (тени листвы): PS альфа-выреза и PSO с ним для мешей с
+    /// `alpha_cutoff` > 0 — солнце и фонари (см. `shadow_bind_material`).
+    shadow_ps: Option<ShaderBlob>,
+    shadow_cutout_pipeline_state: Option<ID3D12PipelineState>,
+    spot_shadow_cutout_pipeline_state: Option<ID3D12PipelineState>,
 
     /// VS occluder-прохода — см. `compile_occluder_shaders`.
     occluder_vs: Option<ShaderBlob>,
