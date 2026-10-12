@@ -1,4 +1,7 @@
 Texture2D HDRSource : register(t0);
+// Ambient-таргет главного прохода (слот AMBIENT_SRV_SLOT в той же таблице,
+// что и у tonemap): альфа = 1 у unlit-пикселей — они в bloom не идут.
+Texture2D AmbientSource : register(t4);
 SamplerState PointSampler : register(s0);
 
 cbuffer BloomParams : register(b0) {
@@ -20,5 +23,6 @@ float4 main(PS_INPUT input) : SV_TARGET {
     // в 0, а плавно затухают, что убирает "рваный" край вокруг
     // светящихся объектов после последующего блюра.
     float contribution = smoothstep(threshold, threshold * 2.0, brightness);
+    contribution *= 1.0 - saturate(AmbientSource.Sample(PointSampler, input.uv).a);
     return float4(color * contribution, 1.0);
 }

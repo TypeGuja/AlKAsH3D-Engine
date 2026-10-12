@@ -83,6 +83,8 @@ SamplerState MaterialSampler : register(s1);
 // что и у AlbedoMap выше.
 Texture2D NormalMap : register(t7);
 Texture2D MetallicRoughnessMap : register(t8);
+// ДОБАВЛЕНО (детальная текстура, порт My Summer Car): см. Mesh::detail_srv_index.
+Texture2D DetailMap : register(t11);
 
 // ДОБАВЛЕНО (Задача #15, normal mapping): root constants (root-
 // параметр 8, register b1). `rootMetallic`/`rootRoughness` —
@@ -105,7 +107,15 @@ cbuffer MaterialConstants : register(b1) {
     float hasMrMap;
     float lightEmitterArea;
     float3 materialEmissive;
-    float _materialConstantsPadding;
+    // ДОБАВЛЕНО: бывший padding — порог alpha cutout (`Mesh::alpha_cutoff`), 0 = выключено.
+    float alphaCutoff;
+    // ДОБАВЛЕНО (прозрачность): множитель цвета инстанса (MeshInstance::tint)
+    // и x = 1 в прозрачном проходе (ambient тогда идёт прямо в цвет — второй
+    // target в этом проходе не пишется).
+    float4 instanceTint;
+    float4 blendParams;
+    // ДОБАВЛЕНО (детальная текстура): xy — масштаб UV, z — 1 есть / 0 нет.
+    float4 detailParams;
 };
 
 cbuffer TransformConstants : register(b0) {
@@ -131,6 +141,10 @@ cbuffer TransformConstants : register(b0) {
     float shadowMapSize;
     uint shadowsEnabled;
     uint _shadowPadding;
+    // ДОБАВЛЕНО (воздушная перспектива): см. TransformConstants::fog_* и
+    // ApplyAerialPerspective ниже.
+    float4 fogScattering; // rgb — Рэлей (1/м), w — Ми (1/м) у земли
+    float4 fogParams;     // x — шкала высоты (м), y — высота опорного уровня, z — g (Ми), w — включено
 };
 
 struct PS_INPUT {
@@ -545,6 +559,47 @@ float3 SRGBToLinear(float3 c) {
     return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
 }
 
+// ДОБАВЛЕНО (воздушная перспектива, порт My Summer Car): однократное
+// рассеяние в воздухе между камерой и точкой. Плотность воздуха падает с
+// высотой экспонентой (шкала fogParams.x), оптическая толщина вдоль луча
+// интегрируется аналитически. Источник рассеяния вдоль луча считается
+// постоянным: солнце (фазовые функции Рэлея и Хеньи–Гринстейна для Ми,
+// lightColor — уже ослабленное атмосферой солнце, его освещённость E = PI*I)
+// плюс рассеянный свет неба (ambientColor — средняя яркость неба; снизу
+// тёмная земля, отсюда множитель 0.6). Тогда L = S * (1 - T) — точное
+// решение при постоянном S; приближение только в постоянстве S и в том,
+// что тень на воздух (god rays) здесь не учитывается.
+void ApplyAerialPerspective(float3 worldPos, out float3 transmittance, out float3 inscatter) {
+    transmittance = float3(1.0, 1.0, 1.0);
+    inscatter = float3(0.0, 0.0, 0.0);
+    if (fogParams.w < 0.5) {
+        return;
+    }
+    float3 d = worldPos - cameraPos.xyz;
+    float dist = length(d);
+    if (dist < 0.001) {
+        return;
+    }
+    float H = max(fogParams.x, 1.0);
+    float h0 = cameraPos.y - fogParams.y;
+    float k = d.y / H;
+    // ∫0..dist exp(-(h0 + t*d.y/dist)/H) dt
+    float depth = abs(k) > 1e-4 ? dist * exp(-h0 / H) * (1.0 - exp(-k)) / k : dist * exp(-h0 / H);
+    float3 betaR = fogScattering.rgb;
+    float betaM = fogScattering.w;
+    float3 betaT = betaR + betaM;
+    transmittance = exp(-betaT * depth);
+
+    float3 v = d / dist;
+    float cosT = dot(v, -normalize(lightDir.xyz));
+    float phaseR = 3.0 / (16.0 * 3.14159265) * (1.0 + cosT * cosT);
+    float g = fogParams.z;
+    float phaseM = (1.0 - g * g) / (4.0 * 3.14159265 * pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5));
+    float3 sunE = lightColor.rgb * max(lightColor.a, 0.0) * 3.14159265;
+    float3 source = sunE * (betaR * phaseR + betaM * phaseM) / max(betaT, 1e-9) + ambientColor.rgb * ambientColor.a * 0.6;
+    inscatter = source * (1.0 - transmittance);
+}
+
 // ДОБАВЛЕНО (честный SSAO): два выхода — полный HDR-цвет и
 // отдельно ambient-вклад (см. Renderer::ambient_target). Composite
 // затеняет SSAO только ambient-часть.
@@ -617,8 +672,42 @@ PS_OUTPUT main(PS_INPUT input) {
     // ИЗМЕНЕНО (честный PBR): текстура декодируется из sRGB в
     // линейное пространство (см. SRGBToLinear), цвет вершины —
     // часть альбедо (базовый цвет материала), и ТОЛЬКО здесь.
-    float3 albedoRaw = input.color.rgb * SRGBToLinear(AlbedoMap.Sample(MaterialSampler, input.uv).rgb);
+    float4 albedoSample = AlbedoMap.Sample(MaterialSampler, input.uv);
+    if (alphaCutoff > 0.0 && albedoSample.a < alphaCutoff) {
+        discard;
+    }
+    // ДОБАВЛЕНО (детальная текстура): как Detail в Unity — основной * детальный * 2
+    // в гамма-пространстве, где их смешивал художник; затем в линейное.
+    float3 albedoSrgb = albedoSample.rgb;
+    if (detailParams.z > 0.5) {
+        albedoSrgb = saturate(albedoSrgb * DetailMap.Sample(MaterialSampler, input.uv * detailParams.xy).rgb * 2.0);
+    }
+    float3 albedoRaw = input.color.rgb * SRGBToLinear(albedoSrgb) * instanceTint.rgb;
+    float coverage = saturate(albedoSample.a * input.color.a * instanceTint.a);
+    // ДОБАВЛЕНО (небо, интерфейс): готовая яркость без освещения и воздуха.
+    if (blendParams.z > 0.5) {
+        PS_OUTPUT unlitOut;
+        unlitOut.color = float4(albedoRaw, blendParams.x > 0.5 ? coverage : input.color.a);
+        // Альфа ambient-таргета = 1 — метка "unlit": bloom-extract такие
+        // пиксели пропускает. Цвета unlit-объектов (2D-паппеты, текст)
+        // закодированы яркостями выше 1 под тонмаппинг, и без метки bloom
+        // обводил бы их ореолом, как источники света.
+        unlitOut.ambient = float4(0.0, 0.0, 0.0, 1.0);
+        return unlitOut;
+    }
     float3 viewDir = normalize(cameraPos.xyz - input.worldPos);
+    // ДОБАВЛЕНО (тонкое стекло): диффузно светит только непрозрачный слой
+    // (грязь, тонировка) — albedo домножается на его долю, всё остальное
+    // стекло только отражает (F0 = 0.04) и пропускает. Стекло видно с обеих
+    // сторон — нормаль к зрителю.
+    bool isGlass = blendParams.y > 0.5;
+    if (isGlass) {
+        albedoRaw *= coverage;
+        if (dot(geomNormal, viewDir) < 0.0) {
+            normal = -normal;
+            geomNormal = -geomNormal;
+        }
+    }
     float NdotV = saturate(dot(normal, viewDir));
 
     // Directional-свет (солнце/луна) — тот же ShadeLight, что и у
@@ -710,8 +799,29 @@ PS_OUTPUT main(PS_INPUT input) {
     // albedoRaw выше, так что диффуз получал его В КВАДРАТЕ
     // (серый 0.5 рендерился как 0.25), а блик — окрашивался в цвет
     // диэлектрика, чего в реальности не бывает (блик пластика белый).
+    // ДОБАВЛЕНО (воздушная перспектива): ослабление и подсветка воздухом.
+    float3 fogT;
+    float3 fogL;
+    ApplyAerialPerspective(input.worldPos, fogT, fogL);
+
     PS_OUTPUT output;
-    output.color = float4(brightness + emitted, input.color.a);
-    output.ambient = float4(ambientTerm, 0.0);
+    // brightness уже содержит ambientTerm; отдельно он идёт во второй target
+    // только для SSAO (composite вычитает затенённую часть).
+    output.color = float4((brightness + emitted) * fogT + fogL, input.color.a);
+    output.ambient = float4(ambientTerm * fogT, 0.0);
+    if (blendParams.x > 0.5) {
+        // ИСПРАВЛЕНО: раньше здесь прибавлялся ambientTerm второй раз.
+        output.color = float4((brightness + emitted) * fogT + fogL, coverage);
+        if (isGlass) {
+            // Премультиплицированный результат (диффуз слоя * доля + отражение)
+            // через смешивание SrcAlpha/InvSrcAlpha: непрозрачность = доля слоя
+            // плюс отражённая Френелем часть остального; цвет делим на неё.
+            // Ограничение 6e4 — предел half-float HDR-таргета (блик солнца).
+            float reflectance = dot(envSpec, float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0));
+            float a = saturate(coverage + (1.0 - coverage) * reflectance);
+            float3 premul = (brightness + emitted) * fogT + fogL * a;
+            output.color = float4(min(premul / max(a, 1e-3), 60000.0), a);
+        }
+    }
     return output;
 }
