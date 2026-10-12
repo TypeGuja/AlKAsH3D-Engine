@@ -81,10 +81,6 @@ path = "src/bin/ponies/main.rs"
 name = "restroom"
 path = "src/bin/restroom/main.rs"
 
-[[bin]]
-name = "brsc2altex"
-path = "src/bin/brsc2altex.rs"
-
 
 [dependencies]
 # ДОБАВЛЕНО (звуковая подсистема — XAudio2): "Win32_Media_Audio_XAudio2"
@@ -129,6 +125,7 @@ rustpython-stdlib = "0.4"
 [profile.release]
 opt-level = 3
 lto = true
+
 [[bin]]
 name = "void_scene"
 path = "src/bin/void_scene.rs"
