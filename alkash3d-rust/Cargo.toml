@@ -65,6 +65,26 @@ path = "src/bin/example_minimal.rs"
 name = "benchmark"
 path = "src/bin/benchmark.rs"
 
+[[bin]]
+name = "buckshot"
+path = "src/bin/buckshot/main.rs"
+
+[[bin]]
+name = "msc"
+path = "src/bin/msc/main.rs"
+
+[[bin]]
+name = "ponies"
+path = "src/bin/ponies/main.rs"
+
+[[bin]]
+name = "restroom"
+path = "src/bin/restroom/main.rs"
+
+[[bin]]
+name = "brsc2altex"
+path = "src/bin/brsc2altex.rs"
+
 
 [dependencies]
 # ДОБАВЛЕНО (звуковая подсистема — XAudio2): "Win32_Media_Audio_XAudio2"
@@ -109,3 +129,6 @@ rustpython-stdlib = "0.4"
 [profile.release]
 opt-level = 3
 lto = true
+[[bin]]
+name = "void_scene"
+path = "src/bin/void_scene.rs"
