@@ -77,6 +77,16 @@ pub struct TransformConstants {
     pub shadow_map_size: f32,
     pub shadows_enabled: u32,
     pub _shadow_padding: u32,
+    // ДОБАВЛЕНО (воздушная перспектива, порт My Summer Car): рассеяние
+    // света в воздухе между камерой и поверхностью — однократное рассеяние
+    // в экспоненциальной по высоте атмосфере (см. ApplyAerialPerspective в
+    // main_ps.hlsl). Поля в КОНЦЕ структуры: шейдеры, объявляющие только
+    // начало cbuffer'а, их не видят и не ломаются.
+    /// rgb — коэффициент рэлеевского рассеяния у земли (1/м), w — Ми (1/м).
+    pub fog_scattering: [f32; 4],
+    /// x — шкала высоты плотности (м), y — высота, где плотность = 1 (м),
+    /// z — g фазовой функции Хеньи–Гринстейна (Ми), w — 1 включено / 0 нет.
+    pub fog_params: [f32; 4],
 }
 
 impl TransformConstants {
@@ -100,6 +110,8 @@ impl TransformConstants {
             shadow_map_size: 2048.0,
             shadows_enabled: 0,
             _shadow_padding: 0,
+            fog_scattering: [0.0; 4],
+            fog_params: [1200.0, 0.0, 0.76, 0.0],
         }
     }
 

@@ -40,7 +40,11 @@ impl D3D12Device {
             // /D3D12GetDebugInterface вернёт ошибку) — тогда просто
             // продолжаем без валидации, как раньше.
             let mut debug: Option<ID3D12Debug> = None;
-            match D3D12GetDebugInterface(&mut debug) {
+            // ИЗМЕНЕНО (FPS): в release валидация каждого вызова стоила
+            // заметную часть CPU-кадра. Теперь она включена в debug-сборке
+            // или в release по ALKASH3D_DEBUG_LAYER=1 (для диагностики).
+            let want_debug = cfg!(debug_assertions) || std::env::var_os("ALKASH3D_DEBUG_LAYER").is_some();
+            match if want_debug { D3D12GetDebugInterface(&mut debug) } else { Err(windows::core::Error::from(windows::Win32::Foundation::E_NOTIMPL)) } {
                 Ok(()) => {
                     if let Some(debug) = debug {
                         debug.EnableDebugLayer();
