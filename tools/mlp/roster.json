@@ -1,0 +1,178 @@
+{
+ "twilight_sparkle": {
+  "source": "official",
+  "xfl": "xfl/main_stk_c01_twilight_sparkle",
+  "symbol": "~TS_Character"
+ },
+ "applejack": {
+  "source": "official",
+  "xfl": "xfl/main_stk_c04_applejack",
+  "symbol": "~AJ_Character"
+ },
+ "rainbow_dash": {
+  "source": "official",
+  "xfl": "xfl/main_stk_c03_rainbow_dash",
+  "symbol": "~RD_Character"
+ },
+ "pinkie_pie": {
+  "source": "official",
+  "xfl": "xfl/main_stk_c02_pinkie_pie",
+  "symbol": "~PP_Character"
+ },
+ "rarity": {
+  "source": "official",
+  "xfl": "xfl/main_stk_c05_rarity",
+  "symbol": "~RY_Character"
+ },
+ "fluttershy": {
+  "source": "official",
+  "xfl": "xfl/main_stk_c06_fluttershy",
+  "symbol": "~FS_Character"
+ },
+ "princess_celestia": {
+  "source": "official",
+  "xfl": "xfl/main_stk_c08_princess_celestia",
+  "symbol": "~PC_Character"
+ },
+ "princess_luna": {
+  "source": "official",
+  "xfl": "xfl/main_STK_C28_Princess_Luna",
+  "symbol": "~PL_Character"
+ },
+ "aloe": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~Aloe_Character"
+ },
+ "amethyst_star": {
+  "source": "official",
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC01_Character"
+ },
+ "berry_punch": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "BS/~BS_Character"
+ },
+ "bon_bon": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "BB/~BB_Character"
+ },
+ "carrot_top": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "GH/~GH_Character"
+ },
+ "cheerilee": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~CL_Character"
+ },
+ "cherry_berry": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "IP06/~IP06_Character"
+ },
+ "cloud_kicker": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~CK_Character"
+ },
+ "daisy": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "IP03/~IP03_Character"
+ },
+ "derpy_hooves": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~DERP_Character"
+ },
+ "lemon_hearts": {
+  "source": "official",
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC05_Character"
+ },
+ "lily_valley": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~LY_Character"
+ },
+ "lotus_blossom": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~Lot_B_Character"
+ },
+ "lyra_heartstrings": {
+  "source": "official",
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC02_Character"
+ },
+ "minuette": {
+  "source": "official",
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC04_Character"
+ },
+ "octavia": {
+  "source": "official",
+  "xfl": "xfl/main_509_C04_Octavia",
+  "symbol": "~Octavia_Character"
+ },
+ "roseluck": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "RO/~RO_Character"
+ },
+ "sea_swirl": {
+  "source": "official",
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC03_Character"
+ },
+ "starlight_glimmer": {
+  "source": "official",
+  "xfl": "xfl/main_606_C03_Starlight_New",
+  "symbol": "~STL_Character"
+ },
+ "sunshower_raindrops": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~SSR_Character"
+ },
+ "trixie": {
+  "source": "official",
+  "xfl": "xfl/main_STK_C39_Trixie",
+  "symbol": "~TX_Character"
+ },
+ "twinkleshine": {
+  "source": "official",
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC06_Character"
+ },
+ "vinyl_scratch": {
+  "source": "official",
+  "xfl": "xfl/female",
+  "symbol": "~DJP_Character"
+ },
+ "blossomforth": {
+  "source": "fan",
+  "fla": "puppets/Blossom Forth.fla"
+ },
+ "cloudchaser": {
+  "source": "fan",
+  "fla": "puppets/Cloudchaser.fla"
+ },
+ "flitter": {
+  "source": "fan",
+  "fla": "puppets/Flitter.fla"
+ },
+ "sunset_shimmer": {
+  "source": "fan",
+  "fla": "puppets/Sunset Shimmer.fla"
+ },
+ "princess_twilight": {
+  "source": "official",
+  "xfl": "xfl/main_STK_C23_Princess_Twilight_Sparkle",
+  "symbol": "~PTS_Character"
+ }
+}

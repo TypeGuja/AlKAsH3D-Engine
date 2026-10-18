@@ -1,0 +1,1172 @@
+{
+ "twilight_sparkle": {
+  "xfl": "xfl/main_stk_c01_twilight_sparkle",
+  "symbol": "~TS_Character",
+  "rot_at": 100,
+  "rot_len": 32,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130
+  ],
+  "notfinal": [],
+  "heads": [
+   "~TS_Head"
+  ],
+  "frames": 135,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "applejack": {
+  "xfl": "xfl/main_stk_c04_applejack",
+  "symbol": "~AJ_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~AJ_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Audio",
+   "Rotation",
+   "Sit",
+   "Arms"
+  ]
+ },
+ "rainbow_dash": {
+  "xfl": "xfl/main_stk_c03_rainbow_dash",
+  "symbol": "~RD_Character",
+  "rot_at": 100,
+  "rot_len": 32,
+  "keys": [
+   100,
+   101,
+   102,
+   103,
+   104,
+   105,
+   106,
+   107,
+   108,
+   109,
+   110,
+   111,
+   112,
+   113,
+   114,
+   115,
+   116,
+   117,
+   118,
+   119,
+   120,
+   121,
+   122,
+   123,
+   124,
+   125,
+   126,
+   127,
+   128,
+   129,
+   130,
+   131
+  ],
+  "notfinal": [],
+  "heads": [
+   "~RD_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Audio",
+   "Rotation",
+   "Sit",
+   "Arms"
+  ]
+ },
+ "pinkie_pie": {
+  "xfl": "xfl/main_stk_c02_pinkie_pie",
+  "symbol": "~PP_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~PP_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Audio",
+   "Rotation",
+   "sit pose"
+  ]
+ },
+ "rarity": {
+  "xfl": "xfl/main_stk_c05_rarity",
+  "symbol": "~RY_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~RY_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Audio",
+   "Rotation"
+  ]
+ },
+ "fluttershy": {
+  "xfl": "xfl/main_stk_c06_fluttershy",
+  "symbol": "~FS_Character",
+  "rot_at": 100,
+  "rot_len": 32,
+  "keys": [
+   100,
+   101,
+   102,
+   103,
+   104,
+   105,
+   106,
+   107,
+   108,
+   109,
+   110,
+   111,
+   112,
+   113,
+   114,
+   115,
+   116,
+   117,
+   118,
+   119,
+   120,
+   121,
+   122,
+   123,
+   124,
+   125,
+   126,
+   127,
+   128,
+   129,
+   130,
+   131
+  ],
+  "notfinal": [],
+  "heads": [
+   "~FS_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Audio",
+   "Rotation"
+  ]
+ },
+ "princess_celestia": {
+  "xfl": "xfl/main_stk_c08_princess_celestia",
+  "symbol": "~PC_Character",
+  "rot_at": 100,
+  "rot_len": 30,
+  "keys": [
+   100,
+   101,
+   104,
+   106,
+   107,
+   110,
+   111,
+   112,
+   113,
+   114
+  ],
+  "notfinal": [],
+  "heads": [
+   "~PC_Head"
+  ],
+  "frames": 151,
+  "labels": [
+   "Rotation",
+   "TILTS"
+  ]
+ },
+ "princess_luna": {
+  "xfl": "xfl/main_STK_C28_Princess_Luna",
+  "symbol": "~PL_Character",
+  "rot_at": 100,
+  "rot_len": 20,
+  "keys": [
+   100,
+   101,
+   102,
+   103,
+   104,
+   105,
+   106,
+   107,
+   108,
+   109,
+   110,
+   111,
+   112,
+   113,
+   114,
+   115,
+   116,
+   117,
+   118,
+   119
+  ],
+  "notfinal": [],
+  "heads": [
+   "~PL_Head"
+  ],
+  "frames": 130,
+  "labels": [
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "aloe": {
+  "xfl": "xfl/female",
+  "symbol": "~Aloe_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   124,
+   128
+  ],
+  "heads": [
+   "~Aloe_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "amethyst_star": {
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC01_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   118,
+   124,
+   128
+  ],
+  "heads": [
+   "~IUC01_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "berry_punch": {
+  "xfl": "xfl/female",
+  "symbol": "BS/~BS_Character",
+  "rot_at": 100,
+  "rot_len": 32,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130
+  ],
+  "notfinal": [],
+  "heads": [
+   "~BS_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Rotation",
+   "Rotation",
+   "Turn",
+   "Sit",
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "bon_bon": {
+  "xfl": "xfl/female",
+  "symbol": "BB/~BB_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~BB_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "carrot_top": {
+  "xfl": "xfl/female",
+  "symbol": "GH/~GH_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~GH_Head"
+  ],
+  "frames": 145,
+  "labels": [
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "cheerilee": {
+  "xfl": "xfl/female",
+  "symbol": "~CL_Character",
+  "rot_at": 100,
+  "rot_len": 18,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   107,
+   108,
+   110,
+   112,
+   114,
+   116
+  ],
+  "notfinal": [
+   102,
+   108,
+   114
+  ],
+  "heads": [
+   "~CL_Head"
+  ],
+  "frames": 118,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "cherry_berry": {
+  "xfl": "xfl/female",
+  "symbol": "IP06/~IP06_Character",
+  "rot_at": 100,
+  "rot_len": 32,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130
+  ],
+  "notfinal": [],
+  "heads": [
+   "~IP06_Head"
+  ],
+  "frames": 145,
+  "labels": [
+   "Rotation",
+   "Rotation",
+   "Turn",
+   "Sit",
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "cloud_kicker": {
+  "xfl": "xfl/female",
+  "symbol": "~CK_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   118,
+   124,
+   128
+  ],
+  "heads": [
+   "~CK_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "daisy": {
+  "xfl": "xfl/female",
+  "symbol": "IP03/~IP03_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~IP03_Head"
+  ],
+  "frames": 145,
+  "labels": [
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "derpy_hooves": {
+  "xfl": "xfl/female",
+  "symbol": "~DERP_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [],
+  "heads": [
+   "~DERP_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "lemon_hearts": {
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC05_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   118,
+   124,
+   128
+  ],
+  "heads": [
+   "~IUC05_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "lily_valley": {
+  "xfl": "xfl/female",
+  "symbol": "~LY_Character",
+  "rot_at": 100,
+  "rot_len": 18,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116
+  ],
+  "notfinal": [
+   112
+  ],
+  "heads": [
+   "~LY_Head"
+  ],
+  "frames": 118,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "lotus_blossom": {
+  "xfl": "xfl/female",
+  "symbol": "~Lot_B_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   124,
+   128
+  ],
+  "heads": [
+   "~Lot_B_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "lyra_heartstrings": {
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC02_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   118,
+   124,
+   128
+  ],
+  "heads": [
+   "~IUC02_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "minuette": {
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC04_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   118,
+   124,
+   128
+  ],
+  "heads": [
+   "~IUC04_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "octavia": {
+  "xfl": "xfl/main_509_C04_Octavia",
+  "symbol": "~Octavia_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~Octavia_Head"
+  ],
+  "frames": 209,
+  "labels": [
+   "Rotation",
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "roseluck": {
+  "xfl": "xfl/female",
+  "symbol": "RO/~RO_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~RO_Head"
+  ],
+  "frames": 144,
+  "labels": [
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "sea_swirl": {
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC03_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   118,
+   124,
+   128
+  ],
+  "heads": [
+   "~IUC03_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "starlight_glimmer": {
+  "xfl": "xfl/main_606_C03_Starlight_New",
+  "symbol": "~STL_Character",
+  "rot_at": 100,
+  "rot_len": 32,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130
+  ],
+  "notfinal": [],
+  "heads": [
+   "~STL_Head"
+  ],
+  "frames": 150,
+  "labels": [
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "sunshower_raindrops": {
+  "xfl": "xfl/female",
+  "symbol": "~SSR_Character",
+  "rot_at": 100,
+  "rot_len": 32,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130
+  ],
+  "notfinal": [
+   130
+  ],
+  "heads": [
+   "~SSR_Head"
+  ],
+  "frames": 132,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "trixie": {
+  "xfl": "xfl/main_STK_C39_Trixie",
+  "symbol": "~TX_Character",
+  "rot_at": 100,
+  "rot_len": 36,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132,
+   133,
+   134
+  ],
+  "notfinal": [],
+  "heads": [
+   "~TX_Head"
+  ],
+  "frames": 206,
+  "labels": [
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation",
+   "Rotation"
+  ]
+ },
+ "twinkleshine": {
+  "xfl": "xfl/unicorns",
+  "symbol": "~IUC06_Character",
+  "rot_at": 100,
+  "rot_len": 40,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116,
+   118,
+   120,
+   122,
+   124,
+   126,
+   128,
+   130,
+   132
+  ],
+  "notfinal": [
+   102,
+   108,
+   114,
+   118,
+   124,
+   128
+  ],
+  "heads": [
+   "~IUC06_Head"
+  ],
+  "frames": 140,
+  "labels": [
+   "Rotation",
+   "0 alpha"
+  ]
+ },
+ "vinyl_scratch": {
+  "xfl": "xfl/female",
+  "symbol": "~DJP_Character",
+  "rot_at": 100,
+  "rot_len": 18,
+  "keys": [
+   100,
+   102,
+   104,
+   106,
+   108,
+   110,
+   112,
+   114,
+   116
+  ],
+  "notfinal": [
+   102,
+   108,
+   116
+  ],
+  "heads": [
+   "~DJP_Head"
+  ],
+  "frames": 118,
+  "labels": [
+   "Rotation"
+  ]
+ },
+ "princess_twilight": {
+  "xfl": "xfl/main_STK_C23_Princess_Twilight_Sparkle",
+  "symbol": "~PTS_Character"
+ }
+}

@@ -1,0 +1,17 @@
+var doc = openCopy("G:/mlp_characters/mlp_2d/official/misc/!Updated FLA's!/stk_c08_princess_celestia.fla", "C:/Temp/claude/celestia3d/stk_c08_princess_celestia_9views.fla");
+var CH = "~PC_Character", HD = "~PC_Head";
+log("H140 " + makeView(doc, HD, 112, 110, 140, 0.5, {}));
+log("H142 " + makeView(doc, HD, 114, 112, 142, 0.5, {}));
+log("H144 " + makeView(doc, HD, 113, 111, 144, 0.5, {}));
+log("H146 " + makeView(doc, HD, 115, 113, 146, 0.5, {}));
+log("C150 " + makeView(doc, CH, 104, 104, 150, 0, { "PC_Wing": 8, "PC_Wing 3-4 far": 8 }));
+log("C152 " + makeView(doc, CH, 111, 107, 152, 0.5, {}));
+log("C154 " + makeView(doc, CH, 113, 111, 154, 0.5, {}));
+log("C156 " + makeView(doc, CH, 114, 113, 156, 0.5, {}));
+log("C158 " + makeView(doc, CH, 110, 106, 158, 0.5, {}));
+log("C160 " + makeView(doc, CH, 112, 110, 160, 0.5, {}));
+log("C162 " + makeView(doc, CH, 114, 112, 162, 0.5, {}));
+saveAs(doc, "C:/Temp/claude/celestia3d/stk_c08_princess_celestia_9views.fla");
+var K = [[101, 150, 107, 152, 111, 154, 113, 156, 114], [100, 104, 106, 158, 110, 160, 112, 162, 114]];
+for (var r = 0; r < 2; r++) for (var i = 0; i < 9; i++) renderSymbol(doc, CH, K[r][i] + 1, K[r][i] + 1, "C:/Temp/claude/celestia3d/views" + "AB".charAt(r) + "/" + i);
+fl.closeDocument(doc, false);
