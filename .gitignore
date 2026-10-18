@@ -5,3 +5,10 @@
 /alkash3d-rust/target
 /alkash3d-luascript/target
 /alkash3d-examplescript/target
+
+# Данные игр и карт (рипы, сгенерированное) — не коммитить
+/data/
+# Свои тулзы к рипам — только локально
+/tools/buckshot/
+/tools/msc/
+/alkash3d-luascript/scripts/
