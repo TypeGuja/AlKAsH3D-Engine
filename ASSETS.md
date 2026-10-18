@@ -12,13 +12,13 @@ Third-party files, see LICENSE §3. / Чужие файлы, см. LICENSE §3.
 
 **EN:** GitHub LFS rejects files over 2 GB, so the pack is split into `part00` and
 `part01`. Run `join.bat` (Windows) or `join.sh` once to get `all_v15c.mlpo`, then
-start the game with `PONIES_OFFICIAL=buckshot-equestria/assets/mlp/pack/all_v15c.mlpo`.
+start the game with `PONIES_OFFICIAL=<path>/assets/mlp/pack/all_v15c.mlpo`.
 The joined file is gitignored.
 
 **RU:** GitHub LFS не принимает файлы больше 2 ГБ, поэтому пак разрезан на `part00`
 и `part01`. Один раз запусти `join.bat` (Windows) или `join.sh`, чтобы получить
 `all_v15c.mlpo`. Потом запускай игру с
-`PONIES_OFFICIAL=buckshot-equestria/assets/mlp/pack/all_v15c.mlpo`.
+`PONIES_OFFICIAL=<path>/assets/mlp/pack/all_v15c.mlpo`.
 Склеенный файл в git не попадает.
 
 ### Animate files / Файлы Animate — `assets/mlp/fla/`
