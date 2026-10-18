@@ -11,7 +11,7 @@
 //!   здоровья, и перед доской загораются два прожектора;
 //! - панель здоровья и плашка с патронами — логика стола (`table.rs`); пока
 //!   раунда нет, их показ — отладочная F5;
-//! - пони — официальные паппеты DHX (пакет `official.mlpo`, `ponies/official.rs`)
+//! - пони — официальные паппеты DHX (пакет `official.mlpo` или `RESTROOM_PONIES`, `ponies/official.rs`)
 //!   с idle-анимацией; кто и где стоит — файл `ponies.txt` рядом со сценой
 //!   (строка `имя x z угол [масштаб]`: x, z — в единицах сцены, угол — куда
 //!   смотрит, градусы: 0 — на +X, 90 — на +Z, 180 — на игрока со стороны
@@ -203,7 +203,8 @@ impl Void {
         let (pony_tint, puppets) = if names.is_empty() {
             (1.0, Vec::new())
         } else {
-            official::read_pack(engine, OFFICIAL_PACK, Some(&names)).unwrap_or_else(|e| {
+            let pack = std::env::var("RESTROOM_PONIES").unwrap_or_else(|_| OFFICIAL_PACK.to_string());
+            official::read_pack(engine, &pack, Some(&names)).unwrap_or_else(|e| {
                 eprintln!("[VOID] пони не загружены: {}", e);
                 (1.0, Vec::new())
             })
