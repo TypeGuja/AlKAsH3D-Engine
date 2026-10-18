@@ -66,8 +66,12 @@ author's property and are NOT covered by sections 1 or 2.
 
   - "My Little Pony", its characters and artwork are owned by Hasbro, Inc.
     The original animation files were produced by DHX Media (WildBrain).
+  - rigs.mlpr, views.mlps and the early .mlps packs are built from fan-made
+    puppets: the "MLP Flash Puppets – collection" compiled by jerry411
+    (DeviantArt), mostly from the fan animation "Double Rainboom". The
+    puppet authors keep their rights.
   - The .fla files are official DHX puppet files with turn animation added by
-    the author. The .mlpo pack is an engine export of them.
+    the author. The .mlpo packs are engine exports of DHX puppets.
   - The author grants NO rights to the third-party material in them and cannot
     do so. Any rights the author may have in their own modifications are
     offered only for non-commercial fan use, without warranty.
@@ -82,8 +86,12 @@ RU:
 
   - «My Little Pony», персонажи и графика принадлежат Hasbro, Inc.
     Исходные анимационные файлы созданы DHX Media (WildBrain).
+  - rigs.mlpr, views.mlps и ранние паки .mlps собраны из фанатских паппетов:
+    коллекция «MLP Flash Puppets – collection», которую собрал jerry411
+    (DeviantArt), в основном из фан-анимации «Double Rainboom». Права
+    остаются за авторами паппетов.
   - Файлы .fla — официальные паппеты DHX с анимацией поворота, которую
-    добавил автор. Пак .mlpo — их экспорт для движка.
+    добавил автор. Паки .mlpo — экспорт паппетов DHX для движка.
   - Автор НЕ передаёт никаких прав на чужие материалы в этих файлах и не может
     их передать. Права, которые у автора могут быть на его собственные
     правки, предоставляются только для некоммерческого фанатского
