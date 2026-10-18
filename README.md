@@ -25,13 +25,21 @@
 
 ## Build & run / Сборка и запуск
 
-**EN:** Build from `alkash3d-rust`; the bin paths are in its `Cargo.toml`.
-**RU:** Собирать из `alkash3d-rust`, пути бинов прописаны в его `Cargo.toml`.
+**EN:** This branch does not build on its own. Put its contents into the
+[AlKAsH3D Engine](https://github.com/TypeGuja/AlKAsH3D-Engine) repo as the folder
+`buckshot-equestria/`, then build from `alkash3d-rust`. The bins in its `Cargo.toml`
+point to `../buckshot-equestria/src/<bin>/main.rs`.
+
+**RU:** Сама по себе ветка не собирается. Положи её содержимое в репозиторий
+[AlKAsH3D Engine](https://github.com/TypeGuja/AlKAsH3D-Engine) папкой
+`buckshot-equestria/` и собирай из `alkash3d-rust`. Бины в его `Cargo.toml`
+указывают на `../buckshot-equestria/src/<бин>/main.rs`.
 
 ```
 git lfs pull
-buckshot-equestria/assets/mlp/pack/join.bat
-cd alkash3d-rust
+assets/mlp/pack/join.bat
+# copy this branch into <engine>/buckshot-equestria/ / скопировать ветку в <движок>/buckshot-equestria/
+cd <engine>/alkash3d-rust
 cargo run --release --bin restroom      # buckshot, ponies
 ```
 
