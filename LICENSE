@@ -1,0 +1,93 @@
+Buckshot Equestria — License / Лицензия
+=======================================
+
+Copyright (c) 2026 Type_Guja
+
+This project consists of parts with DIFFERENT terms. Read NOTICE.md first.
+Проект состоит из частей с РАЗНЫМИ условиями. Сначала прочитай NOTICE.md.
+
+=======================================================================
+1. Code / Код — MIT
+=======================================================================
+Applies to / Относится к:
+  buckshot-equestria/src/
+  buckshot-equestria/scripts/
+  buckshot-equestria/tools/
+  buckshot-equestria/assets/mlp/pack/join.bat, join.sh
+  alkash3d-rust/src/bin/msc/mouse.rs
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+=======================================================================
+2. Story texts / Тексты сюжета — CC BY-NC-SA 4.0
+=======================================================================
+Applies to / Относится к:
+  buckshot-equestria/story/
+
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International.
+Full text / Полный текст: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+EN: You may copy and adapt the texts with attribution, non-commercially, under
+the same license. This covers only the author's original writing. Character
+names, places and anything else owned by third parties (see NOTICE.md) are NOT
+licensed by it.
+
+RU: Тексты можно копировать и переделывать с указанием автора, только
+некоммерчески и под той же лицензией. Лицензия касается только оригинального
+текста автора. Имена персонажей, места и всё, что принадлежит третьим лицам
+(см. NOTICE.md), ею НЕ передаются.
+
+=======================================================================
+3. MLP files / Файлы MLP — NOT licensed / НЕ лицензируются
+=======================================================================
+Applies to / Относится к:
+  buckshot-equestria/assets/mlp/   (except join.bat / join.sh)
+
+EN:
+The MLP files in this repository are kept here as a single place where
+everything the project needs can be obtained at once. They are NOT the
+author's property and are NOT covered by sections 1 or 2.
+
+  - "My Little Pony", its characters and artwork are owned by Hasbro, Inc.
+    The original animation files were produced by DHX Media (WildBrain).
+  - The .fla files are official DHX puppet files with turn animation added by
+    the author. The .mlpo pack is an engine export of them.
+  - The author grants NO rights to the third-party material in them and cannot
+    do so. Any rights the author may have in their own modifications are
+    offered only for non-commercial fan use, without warranty.
+  - Do not sell, monetize or redistribute these files as a product.
+  - See also NOTICE.md, "Third-Party Assets and Intellectual Property".
+  - Rights holders: see NOTICE.md. The files will be removed on request.
+
+RU:
+Файлы MLP лежат в репозитории как единое место, откуда можно взять всё нужное
+проекту сразу. Они НЕ являются собственностью автора, и разделы 1 и 2 на них
+НЕ распространяются.
+
+  - «My Little Pony», персонажи и графика принадлежат Hasbro, Inc.
+    Исходные анимационные файлы созданы DHX Media (WildBrain).
+  - Файлы .fla — официальные паппеты DHX с анимацией поворота, которую
+    добавил автор. Пак .mlpo — их экспорт для движка.
+  - Автор НЕ передаёт никаких прав на чужие материалы в этих файлах и не может
+    их передать. Права, которые у автора могут быть на его собственные
+    правки, предоставляются только для некоммерческого фанатского
+    использования, без гарантий.
+  - Эти файлы нельзя продавать, монетизировать или распространять как продукт.
+  - См. также NOTICE.md, «Сторонние ассеты и интеллектуальная собственность».
+  - Правообладателям: см. NOTICE.md. Файлы будут удалены по запросу.
