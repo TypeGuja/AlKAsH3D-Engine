@@ -25,18 +25,18 @@ The joined file is gitignored.
 
 | File / Файл | Size / Размер | Used by / Кто использует |
 |---|---|---|
-| `official.mlpo` | 407 992 930 | `restroom` void ponies (fixed path `G:/mlp_characters/mlp_2d/engine/official.mlpo`); `ponies` default (`PONIES_OFFICIAL`) / пони в пустоте и `ponies` по умолчанию |
+| `official.mlpo` | 407 992 930 | `restroom` void ponies (`RESTROOM_PONIES`, default `G:/mlp_characters/mlp_2d/engine/official.mlpo`); `ponies` default (`PONIES_OFFICIAL`) / пони в пустоте и `ponies` по умолчанию |
 | `rigs.mlpr` | 122 882 859 | `ponies`: fan puppet rigs (jerry411), `PONIES_RIG` / фан-риги |
 | `views.mlps` | 51 475 530 | `ponies`: "all sides" views, `PONIES_VIEWS` / «шестёрка со всех сторон» |
 | `background.mlps` | 66 924 552 | early pack (2026-10-10), not loaded / ранний пак, не используется |
 | `ponies.mlps` | 29 729 037 | early pack (2026-10-10), not loaded / ранний пак, не используется |
 | `ponies_frames.mlps` | 23 833 633 | early pack (2026-10-10), not loaded / ранний пак, не используется |
 
-**EN:** `restroom` reads `official.mlpo` from a fixed `G:` path with no env override.
-Put the file there, or change `OFFICIAL_PACK` in `src/restroom/void.rs`.
+**EN:** `restroom` reads `official.mlpo` from `G:` by default; on another machine set
+`RESTROOM_PONIES=<path>/assets/mlp/pack/official.mlpo`.
 
-**RU:** `restroom` читает `official.mlpo` по жёсткому пути на `G:`, переменной для
-него нет. Положи файл туда или поменяй `OFFICIAL_PACK` в `src/restroom/void.rs`.
+**RU:** `restroom` по умолчанию читает `official.mlpo` с `G:`; на другой машине задай
+`RESTROOM_PONIES=<path>/assets/mlp/pack/official.mlpo`.
 
 ### Animate files / Файлы Animate — `assets/mlp/fla/`
 
