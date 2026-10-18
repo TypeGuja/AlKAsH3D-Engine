@@ -481,13 +481,13 @@ mod tests {
     /// Сквозная проверка на реальной карте (tools/samara_map): импорт центра
     /// -> экспорт .alworld -> обратный импорт. Внешние данные, поэтому
     /// `#[ignore]`: `cargo test city_roundtrip -- --ignored`
-    /// (папка — `SAMARA_MAP_DIR` или ../samara_map).
+    /// (папка — `SAMARA_MAP_DIR` или ../data/samara_map).
     #[test]
     #[ignore]
     fn city_roundtrip_keeps_textures_shared() {
         let dir = std::env::var("SAMARA_MAP_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../samara_map")));
+            .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/samara_map")));
         if !dir.join("chunks").is_dir() {
             eprintln!("нет {} — пропуск", dir.display());
             return;
