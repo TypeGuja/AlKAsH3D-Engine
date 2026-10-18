@@ -21,6 +21,23 @@ The joined file is gitignored.
 `PONIES_OFFICIAL=<path>/assets/mlp/pack/all_v15c.mlpo`.
 Склеенный файл в git не попадает.
 
+### Other packs / Другие паки — `assets/mlp/pack/`
+
+| File / Файл | Size / Размер | Used by / Кто использует |
+|---|---|---|
+| `official.mlpo` | 407 992 930 | `restroom` void ponies (fixed path `G:/mlp_characters/mlp_2d/engine/official.mlpo`); `ponies` default (`PONIES_OFFICIAL`) / пони в пустоте и `ponies` по умолчанию |
+| `rigs.mlpr` | 122 882 859 | `ponies`: fan puppet rigs (jerry411), `PONIES_RIG` / фан-риги |
+| `views.mlps` | 51 475 530 | `ponies`: "all sides" views, `PONIES_VIEWS` / «шестёрка со всех сторон» |
+| `background.mlps` | 66 924 552 | early pack (2026-10-10), not loaded / ранний пак, не используется |
+| `ponies.mlps` | 29 729 037 | early pack (2026-10-10), not loaded / ранний пак, не используется |
+| `ponies_frames.mlps` | 23 833 633 | early pack (2026-10-10), not loaded / ранний пак, не используется |
+
+**EN:** `restroom` reads `official.mlpo` from a fixed `G:` path with no env override.
+Put the file there, or change `OFFICIAL_PACK` in `src/restroom/void.rs`.
+
+**RU:** `restroom` читает `official.mlpo` по жёсткому пути на `G:`, переменной для
+него нет. Положи файл туда или поменяй `OFFICIAL_PACK` в `src/restroom/void.rs`.
+
 ### Animate files / Файлы Animate — `assets/mlp/fla/`
 
 **EN:** The pack is built from these latest versions: 0..180° turns, plus the
