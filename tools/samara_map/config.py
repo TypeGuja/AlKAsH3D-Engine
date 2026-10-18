@@ -11,11 +11,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]          # AlKAsH3D-Engine/
 # SAMARA_OUT — собрать карту в другую папку (кэш OSM/рельефа и промежуточные данные
 # по-прежнему берутся из samara_map/_cache): новая версия рядом со старой, на одобрение
-OUT = Path(os.environ.get("SAMARA_OUT", ROOT / "samara_map"))
-CACHE = ROOT / "samara_map" / "_cache"
+OUT = Path(os.environ.get("SAMARA_OUT", ROOT / "data" / "samara_map"))
+CACHE = ROOT / "data" / "samara_map" / "_cache"
 WORK = CACHE / "work"
 # что сборка чанков пишет «для себя» (статистика, временные файлы merge) — в папку своей карты
-OUT_WORK = WORK if OUT == ROOT / "samara_map" else OUT / "_work"
+OUT_WORK = WORK if OUT == ROOT / "data" / "samara_map" else OUT / "_work"
 
 PBF = CACHE / "samara_oblast.osm.pbf"
 DEM_TILES = {  # имя файла -> (lon0, lat0 верхнего левого пикселя)
