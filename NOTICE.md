@@ -10,6 +10,10 @@ with, endorsed or sponsored by the rights holders listed below.
 - **My Little Pony** and **My Little Pony: Friendship is Magic** belong to
   **Hasbro, Inc.**, as do all characters, names and related marks. The
   series' animation sources were made by **DHX Media (WildBrain)**.
+- Fan-made puppets (source of `rigs.mlpr`, `views.mlps` and the early
+  `.mlps` packs) come from the **"MLP Flash Puppets – collection"** compiled
+  by **jerry411** (DeviantArt), mostly from the fan animation
+  **"Double Rainboom"**. Their authors keep their rights.
 - **Buckshot Roulette** belongs to **Mike Klubnika** and the publisher
   **CRITICAL REFLEX**.
 - These names are used only to identify what this fan project refers to
@@ -71,6 +75,10 @@ This is an independent fan-maintained collection and is not an official *My Litt
 - **My Little Pony** и **My Little Pony: Friendship is Magic** принадлежат
   **Hasbro, Inc.**, как и все персонажи, имена и связанные знаки. Анимационные
   исходники сериала созданы **DHX Media (WildBrain)**.
+- Фанатские паппеты (из них собраны `rigs.mlpr`, `views.mlps` и ранние паки
+  `.mlps`) взяты из коллекции **«MLP Flash Puppets – collection»**, которую
+  собрал **jerry411** (DeviantArt), в основном из фан-анимации
+  **«Double Rainboom»**. Права остаются за их авторами.
 - **Buckshot Roulette** принадлежит **Mike Klubnika** и издателю
   **CRITICAL REFLEX**.
 - Названия используются только для того, чтобы указать, к чему относится
