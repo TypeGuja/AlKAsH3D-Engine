@@ -10,11 +10,11 @@ This project consists of parts with DIFFERENT terms. Read NOTICE.md first.
 1. Code / Код — MIT
 =======================================================================
 Applies to / Относится к:
-  buckshot-equestria/src/
-  buckshot-equestria/scripts/
-  buckshot-equestria/tools/
-  buckshot-equestria/assets/mlp/pack/join.bat, join.sh
-  alkash3d-rust/src/bin/msc/mouse.rs
+  src/
+  scripts/
+  tools/
+  assets/mlp/pack/join.bat, join.sh
+  alkash3d-rust/src/bin/msc/mouse.rs (engine repo / в репозитории движка)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -38,7 +38,7 @@ DEALINGS IN THE SOFTWARE.
 2. Story texts / Тексты сюжета — CC BY-NC-SA 4.0
 =======================================================================
 Applies to / Относится к:
-  buckshot-equestria/story/
+  story/
 
 Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International.
 Full text / Полный текст: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
@@ -57,7 +57,7 @@ RU: Тексты можно копировать и переделывать с 
 3. MLP files / Файлы MLP — NOT licensed / НЕ лицензируются
 =======================================================================
 Applies to / Относится к:
-  buckshot-equestria/assets/mlp/   (except join.bat / join.sh)
+  assets/mlp/   (except join.bat / join.sh)
 
 EN:
 The MLP files in this repository are kept here as a single place where
