@@ -116,6 +116,11 @@ impl AlkashEngine {
                     self.input.on_key_up(wparam.0 as u32);
                     LRESULT(0)
                 }
+                // ДОБАВЛЕНО (ввод текста, CODEC): напечатанный символ.
+                WM_CHAR => {
+                    self.input.on_char(wparam.0 as u32);
+                    LRESULT(0)
+                }
                 // ДОБАВЛЕНО (мышь): позиция курсора в NDC и кнопки как VK_LBUTTON/VK_RBUTTON.
                 WM_MOUSEMOVE => {
                     let x = (lparam.0 & 0xFFFF) as i16 as f32;
@@ -232,7 +237,9 @@ impl AlkashEngine {
     /// в этот момент `false` — это не перетаскивание рамки мышью, а
     /// программная смена размера, для которой WM_SIZE применяет ресайз
     /// немедленно, одним вызовом.
-    fn toggle_fullscreen(&mut self) {
+    /// ИЗМЕНЕНО (CODEC — запуск сразу на весь экран): публичная, чтобы игра
+    /// могла включить полноэкранный режим сама, а не только по Alt+F11.
+    pub fn toggle_fullscreen(&mut self) {
         let Some(hwnd) = self.hwnd else {
             return;
         };

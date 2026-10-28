@@ -30,6 +30,14 @@ pub struct InputState {
     pub mouse_ndc: [f32; 2],
     /// ДОБАВЛЕНО (колесо мыши): щелчки колеса за этот кадр (вперёд > 0).
     pub wheel: f32,
+    /// ДОБАВЛЕНО (ввод текста, CODEC — редактор кода): символы, напечатанные
+    /// за этот кадр (WM_CHAR, уже с раскладкой и регистром; Backspace = '\u{8}',
+    /// Enter = '\r', Tab = '\t'), включая автоповтор при удержании.
+    pub text: Vec<char>,
+    /// ДОБАВЛЕНО (ввод текста): нажатия клавиш за кадр ВМЕСТЕ с автоповтором
+    /// Windows — для стрелок/Delete в редакторе (`just_pressed` автоповтор
+    /// намеренно не видит).
+    pub repeats: Vec<u32>,
 }
 
 impl InputState {
@@ -44,6 +52,23 @@ impl InputState {
     pub fn on_key_down(&mut self, vk: u32) {
         if self.down.insert(vk) {
             self.pressed_this_frame.insert(vk);
+        }
+        self.repeats.push(vk);
+    }
+
+    /// Вызывается движком из wndproc при WM_CHAR. Окно ANSI, поэтому байт
+    /// приходит в кодовой странице системы: кириллица (cp1251) переводится в
+    /// Unicode здесь, остальное выше ASCII отбрасывается.
+    pub fn on_char(&mut self, code: u32) {
+        let c = match code {
+            0..=0x7F => char::from_u32(code),
+            0xC0..=0xFF => char::from_u32(0x0410 + code - 0xC0),
+            0xA8 => Some('Ё'),
+            0xB8 => Some('ё'),
+            _ => None,
+        };
+        if let Some(c) = c {
+            self.text.push(c);
         }
     }
 
@@ -70,6 +95,8 @@ impl InputState {
         self.pressed_this_frame.clear();
         self.released_this_frame.clear();
         self.wheel = 0.0;
+        self.text.clear();
+        self.repeats.clear();
     }
 
     /// Зажата ли клавиша прямо сейчас (можно опрашивать каждый кадр для
