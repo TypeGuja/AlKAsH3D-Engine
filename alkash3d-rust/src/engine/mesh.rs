@@ -204,6 +204,9 @@ pub struct Mesh {
     /// отбрасывает тень, не участвует в occlusion culling как заслоняющий и
     /// не получает воздушную перспективу. Купол неба, экранный текст.
     pub unlit: bool,
+    /// ДОБАВЛЕНО (непрямой свет лучами, DDGI): средний цвет вершин (линейный)
+    /// — вместе со средним цветом текстуры даёт цвет поверхности для лучей.
+    pub avg_color: [f32; 3],
     /// ДОБАВЛЕНО (детальная текстура, порт My Summer Car): мелкая
     /// повторяющаяся текстура поверх основной, как Detail в Unity: цвет =
     /// основной * детальный * 2 (в гамма-пространстве — так их задумывал
@@ -216,6 +219,19 @@ pub struct Mesh {
 
 impl Mesh {
     pub fn from_vertices(vertices: &[Vertex]) -> Result<Self> {
+        // ДОБАВЛЕНО (DDGI): средний цвет вершин — цвет поверхности для лучей.
+        let avg_color = if vertices.is_empty() {
+            [1.0; 3]
+        } else {
+            let mut sum = [0.0f32; 3];
+            for v in vertices {
+                for c in 0..3 {
+                    sum[c] += v.color[c];
+                }
+            }
+            sum.map(|s| s / vertices.len() as f32)
+        };
+
         let vertex_data: Vec<u8> = vertices
             .iter()
             .flat_map(|v| {
@@ -292,6 +308,7 @@ impl Mesh {
             unlit: false,
             detail_srv_index: None,
             detail_uv_scale: [1.0, 1.0],
+            avg_color,
         })
     }
 

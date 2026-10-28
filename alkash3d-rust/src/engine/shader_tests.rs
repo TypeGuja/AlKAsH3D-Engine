@@ -8,10 +8,24 @@ fn compile(name: &str, source: &str, target: &str) {
         .unwrap_or_else(|e| panic!("{} не скомпилировался: {:?}", name, e));
 }
 
+/// Лучевые проходы DDGI — через DXC (SM 6.5); без DXC на машине тест молча
+/// пропускается (движок тогда работает без непрямого света).
+#[test]
+fn ddgi_shaders_compile() {
+    if !crate::dxc::available() {
+        eprintln!("DXC нет — ddgi.hlsl не проверен");
+        return;
+    }
+    let source = super::gi::ddgi_source();
+    for entry in super::gi::DDGI_KERNELS {
+        crate::dxc::compile(&source, "cs_6_5", entry).unwrap_or_else(|e| panic!("ddgi.hlsl:{} не скомпилировался: {:?}", entry, e));
+    }
+}
+
 #[test]
 fn all_shaders_compile() {
     compile("main_vs", include_str!("shaders/main_vs.hlsl"), "vs_5_0");
-    compile("main_ps", include_str!("shaders/main_ps.hlsl"), "ps_5_0");
+    compile("main_ps", &super::gi::main_ps_source(), "ps_5_0");
     compile("shadow_vs", include_str!("shaders/shadow_vs.hlsl"), "vs_5_0");
     compile("occluder_vs", include_str!("shaders/occluder_vs.hlsl"), "vs_5_0");
     compile("fullscreen_vs", include_str!("shaders/fullscreen_vs.hlsl"), "vs_5_0");

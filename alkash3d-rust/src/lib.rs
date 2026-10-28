@@ -17,6 +17,8 @@ mod utils;
 // render target (Renderer::hdr_target) и промежуточных bloom-текстур.
 pub mod texture;
 mod shader;
+// ДОБАВЛЕНО (непрямой свет лучами, DDGI): компиляция SM 6.x через DXC.
+pub mod dxc;
 mod pso;
 // ИСПРАВЛЕНО (alkash3d-editorapp: `Transform` неоднозначен между
 // altex_format::Transform и math::Transform, оба реэкспортируются здесь

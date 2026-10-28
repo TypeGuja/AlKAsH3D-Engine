@@ -93,6 +93,8 @@ impl AlkashEngine {
         self.shadow_dsv_heap = Some(dsv_heap);
         self.shadow_srv_heap = Some(srv_heap);
         self.shadow_srv_gpu = srv_gpu;
+        // ДОБАВЛЕНО (DDGI): слоты атласов проб в той же таблице.
+        self.write_gi_srvs();
 
         println!(
             "[ENGINE] ✓ Shadow map resources created: {} каскадов по {}x{}",

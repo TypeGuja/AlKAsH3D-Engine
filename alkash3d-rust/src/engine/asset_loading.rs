@@ -375,6 +375,8 @@ impl AlkashEngine {
         self.shadow_srv_heap = Some(heap);
         self.shadow_srv_gpu = srv_gpu;
         self.material_srv_capacity = new_material_capacity;
+        // ДОБАВЛЕНО (DDGI): атласы проб — в новый хип тоже.
+        self.write_gi_srvs();
         Ok(())
     }
 
@@ -406,6 +408,22 @@ impl AlkashEngine {
 
         self.material_textures.push(texture);
         self.material_texture_count += 1;
+        // ДОБАВЛЕНО (DDGI): средний цвет текстуры в линейном пространстве
+        // (пиксели — sRGB), с учётом альфы как доли покрытия.
+        let mut sum = [0.0f64; 3];
+        let mut count = 0.0f64;
+        let lin = |c: u8| {
+            let c = c as f64 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        for px in pixels.chunks_exact(4).step_by(((pixels.len() / 4) / 65536).max(1)) {
+            let a = px[3] as f64 / 255.0;
+            for c in 0..3 {
+                sum[c] += lin(px[c]) * a;
+            }
+            count += a;
+        }
+        self.material_texture_avg.push(if count > 0.0 { sum.map(|s| (s / count) as f32) } else { [1.0; 3] });
         Ok(slot)
     }
 

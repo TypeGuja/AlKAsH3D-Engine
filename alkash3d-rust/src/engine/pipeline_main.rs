@@ -15,13 +15,15 @@ use windows::Win32::Foundation::*;
 use crate::STATE;
 use crate::shader::ShaderBlob;
 use crate::pso::PipelineState;
-use super::{AlkashEngine, Vertex, NUM_CASCADES, SPOT_SHADOW_ATLAS_SLOT, POINT_SHADOW_ATLAS_SLOT};
+use super::{AlkashEngine, Vertex, NUM_CASCADES, SPOT_SHADOW_ATLAS_SLOT, POINT_SHADOW_ATLAS_SLOT, GI_IRRADIANCE_SLOT};
 
 impl AlkashEngine {
     pub(super) fn compile_default_shaders(&mut self) -> Result<()> {
         let vs_source = include_str!("shaders/main_vs.hlsl");
 
-        let ps_source = include_str!("shaders/main_ps.hlsl");
+        // ИЗМЕНЕНО (DDGI): перед main_ps — общая часть DDGI (выборка проб).
+        let ps_source = super::gi::main_ps_source();
+        let ps_source = ps_source.as_str();
 
         self.vs = Some(ShaderBlob::compile(vs_source, "vs_5_0", "main")?);
         self.ps = Some(ShaderBlob::compile(ps_source, "ps_5_0", "main")?);
@@ -59,6 +61,14 @@ impl AlkashEngine {
                 BaseShaderRegister: 10,
                 RegisterSpace: 0,
                 OffsetInDescriptorsFromTableStart: POINT_SHADOW_ATLAS_SLOT as u32,
+            },
+            // ДОБАВЛЕНО (DDGI): атласы проб — освещённость t12, расстояния t13.
+            D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                NumDescriptors: 2,
+                BaseShaderRegister: 12,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: GI_IRRADIANCE_SLOT as u32,
             },
         ];
 
@@ -252,6 +262,19 @@ impl AlkashEngine {
                     DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
                         NumDescriptorRanges: 1,
                         pDescriptorRanges: &detail_srv_range,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+            // ДОБАВЛЕНО (DDGI): root-параметр 11 — объём проб (b3, DDGIVolume,
+            // 16 значений; enabled = 0 — прежний равномерный ambient).
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Constants: D3D12_ROOT_CONSTANTS {
+                        ShaderRegister: 3,
+                        RegisterSpace: 0,
+                        Num32BitValues: 16,
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,

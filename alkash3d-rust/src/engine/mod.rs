@@ -11,6 +11,7 @@ pub use scripting::{ScriptHandle, pack_entity_id};
 // MeshInstance), не зависящие от `AlkashEngine` — см. engine/mesh.rs.
 mod mesh;
 pub use mesh::{Vertex, Mesh, MeshInstance};
+pub use gi::GiVolume;
 
 // ВЫНЕСЕНО (Фаза 1 архитектурного рефакторинга): цикл дня/ночи — см.
 // engine/day_night.rs. `ManagedLight` нужен здесь как тип поля
@@ -82,6 +83,8 @@ mod pipeline_ssao;
 mod render_frame;
 // ДОБАВЛЕНО (замер производительности): время проходов на GPU, см. gpu_timer.rs
 mod gpu_timer;
+// ДОБАВЛЕНО (непрямой свет лучами, DDGI): сетка проб, см. engine/gi.rs.
+mod gi;
 
 // ВЫНЕСЕНО (Фаза 1 архитектурного рефакторинга, финальный шаг): жизненный
 // цикл движка (new/init/update/shutdown/Drop) — см. engine/lifecycle.rs.
@@ -919,6 +922,13 @@ pub struct AlkashEngine {
     /// (в `AlkashEngine`), а не как временные локальные переменные в
     /// месте загрузки.
     material_textures: Vec<crate::texture::Texture>,
+    /// ДОБАВЛЕНО (DDGI): средний линейный цвет каждой material-текстуры
+    /// (по индексу в `material_textures`) — цвет поверхности для лучей.
+    material_texture_avg: Vec<[f32; 3]>,
+    /// ДОБАВЛЕНО (DDGI): непрямой свет лучами; None — не включался или
+    /// недоступен (`gi_unavailable`).
+    gi: Option<gi::Gi>,
+    gi_unavailable: bool,
     /// Кэш "путь к текстуре -> её SRV-индекс (уже с учётом NUM_CASCADES-
     /// смещения)" — та же идея, что и `altex_mesh_cache` выше: одна и та
     /// же текстура (например обычный кирпич/асфальт) типично
@@ -1075,7 +1085,11 @@ pub const POINT_SHADOW_FACE_MARGIN_TEXELS: f32 = 3.0;
 /// затем spot-атлас, затем point-атлас; material-текстуры идут после неё.
 pub const SPOT_SHADOW_ATLAS_SLOT: usize = NUM_CASCADES;
 pub const POINT_SHADOW_ATLAS_SLOT: usize = NUM_CASCADES + 1;
-pub const SHADOW_TABLE_SLOTS: usize = NUM_CASCADES + 2;
+/// ДОБАВЛЕНО (непрямой свет лучами, DDGI): атласы проб — освещённость (t12)
+/// и расстояния (t13); без объёма GI — пустые SRV.
+pub const GI_IRRADIANCE_SLOT: usize = NUM_CASCADES + 2;
+pub const GI_DISTANCE_SLOT: usize = NUM_CASCADES + 3;
+pub const SHADOW_TABLE_SLOTS: usize = NUM_CASCADES + 4;
 
 /// tan половины угла обзора грани cube-тени (см. POINT_SHADOW_FACE_MARGIN_TEXELS):
 /// граница 90°-грани — tan=1, расширяем на margin текселей из tile/2.

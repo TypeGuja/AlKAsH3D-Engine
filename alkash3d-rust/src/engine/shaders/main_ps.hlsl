@@ -85,6 +85,13 @@ Texture2D NormalMap : register(t7);
 Texture2D MetallicRoughnessMap : register(t8);
 // ДОБАВЛЕНО (детальная текстура, порт My Summer Car): см. Mesh::detail_srv_index.
 Texture2D DetailMap : register(t11);
+// ДОБАВЛЕНО (непрямой свет лучами, DDGI): атласы проб и объём (root-
+// параметр 11) — см. ddgi_common.hlsl (подставляется перед этим файлом).
+Texture2D GiIrradiance : register(t12);
+Texture2D GiDistance : register(t13);
+cbuffer GiVolumeConstants : register(b3) {
+    DDGIVolume giVolume;
+};
 
 // ДОБАВЛЕНО (Задача #15, normal mapping): root constants (root-
 // параметр 8, register b1). `rootMetallic`/`rootRoughness` —
@@ -721,7 +728,18 @@ PS_OUTPUT main(PS_INPUT input) {
     float3 ambientRadiance = ambientColor.rgb * ambientColor.a;
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedoRaw, metallic);
     float3 envSpec = EnvBRDFApprox(F0, roughness, NdotV);
-    float3 ambientTerm = ambientRadiance * (albedoRaw * (1.0 - envSpec) * (1.0 - metallic) + envSpec);
+    // ДОБАВЛЕНО (непрямой свет лучами, DDGI): внутри объёма проб рассеянный
+    // свет — не равномерное небо, а то, что реально приходит в эту точку
+    // (свет, отражённый от стен/пола/предметов, и небо там, где оно видно).
+    // Отражения окружения (envSpec) пока остаются от неба.
+    float3 diffuseAmbient = ambientRadiance;
+    if (giVolume.enabled != 0) {
+        float4 gi = DDGISampleIrradiance(input.worldPos, normal, viewDir, giVolume, GiIrradiance, GiDistance, MaterialSampler);
+        if (gi.a > 0.5 && DDGIFinite3(gi.rgb)) {
+            diffuseAmbient = gi.rgb;
+        }
+    }
+    float3 ambientTerm = diffuseAmbient * albedoRaw * (1.0 - envSpec) * (1.0 - metallic) + ambientRadiance * envSpec;
     brightness += ambientTerm;
 
     // ДОБАВЛЕНО (светящиеся плафоны): собственное излучение поверхности —
@@ -822,6 +840,11 @@ PS_OUTPUT main(PS_INPUT input) {
             float3 premul = (brightness + emitted) * fogT + fogL * a;
             output.color = float4(min(premul / max(a, 1e-3), 60000.0), a);
         }
+    }
+    // ДОБАВЛЕНО (DDGI, отладка — AlkashEngine::set_gi_debug): только
+    // рассеянный свет в точке (без альбедо), умноженный на _pad.y.
+    if (giVolume._pad.x > 0.5) {
+        output.color = float4(diffuseAmbient * giVolume._pad.y, 1.0);
     }
     return output;
 }

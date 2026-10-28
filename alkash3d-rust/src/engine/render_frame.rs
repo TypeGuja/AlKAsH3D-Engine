@@ -198,7 +198,7 @@ impl AlkashEngine {
     /// сцены), все 5 — чистый `[ENGINE] Shutdown complete` без единого
     /// краша/DRED-сообщения. Краш exit code 2173/0x87D, ради которого этот
     /// вызов был добавлен, не воспроизвёлся — баг считается закрытым.
-    fn wait_for_all_frames_idle_before_realloc(&self) {
+    pub(super) fn wait_for_all_frames_idle_before_realloc(&self) {
         if let Ok(fence) = crate::get_fence() {
             let target = self.frame_fence_values.iter().copied().max().unwrap_or(0);
             if let Err(reason) = wait_for_fence(&fence, target, std::time::Duration::from_secs(5)) {
@@ -1056,6 +1056,34 @@ impl AlkashEngine {
 
         cmd_list = self.maybe_flush_for_warm_up(cmd_list, &allocator, "shadow")?;
 
+        // ДОБАВЛЕНО (непрямой свет лучами, DDGI): пробы обновляются до
+        // основного прохода — он читает их освещённость вместо ambient.
+        if self.gi.as_ref().is_some_and(|g| g.atlases().is_some()) {
+            let mut draws = Vec::with_capacity(self.mesh_instances.len());
+            for instance in &self.mesh_instances {
+                if instance.mesh_index < self.meshes.len() {
+                    let albedo = self.mesh_albedo(&self.meshes[instance.mesh_index]);
+                    draws.push(super::gi::RtDraw { mesh: instance.mesh_index, world: instance.transform_matrix(), tint: instance.tint, albedo });
+                }
+            }
+            for (mesh_index, world) in self.scene.collect_renderables() {
+                if mesh_index < self.meshes.len() {
+                    let albedo = self.mesh_albedo(&self.meshes[mesh_index]);
+                    draws.push(super::gi::RtDraw { mesh: mesh_index, world, tint: [1.0; 4], albedo });
+                }
+            }
+            let lights = self.get_gpu_lights().to_vec();
+            let lighting = super::gi::RtLighting {
+                sun_dir: self.transform_constants.light_dir,
+                sun_color: self.transform_constants.light_color,
+                sky: self.transform_constants.ambient_color,
+                lights: &lights,
+            };
+            if let Err(e) = self.gi.as_mut().unwrap().record(&cmd_list, frame_index, &self.meshes, &draws, &lighting) {
+                eprintln!("[GI] обновление проб не записано: {:?}", e);
+            }
+        }
+
         unsafe {
             // ИЗМЕНЕНО (честный SSAO): два RT — HDR-цвет и ambient
             // (renderer.ambient_rtv лежит в том же RTV-хипе сразу за
@@ -1120,6 +1148,9 @@ impl AlkashEngine {
                 cmd_list.SetDescriptorHeaps(&heaps);
                 cmd_list.SetGraphicsRootDescriptorTable(4, self.shadow_srv_gpu);
             }
+            // ДОБАВЛЕНО (DDGI): объём проб (root-параметр 11), enabled = 0 — без GI.
+            let gi_volume = self.gi.as_ref().map(|g| g.volume_gpu()).unwrap_or_default();
+            cmd_list.SetGraphicsRoot32BitConstants(11, 16, &gi_volume as *const _ as *const _, 0);
 
             // ДОБАВЛЕНО (тени фонарей): матрицы плиток spot-атласа (b2).
             // Биндится всегда (root CBV должен быть валиден при любом
