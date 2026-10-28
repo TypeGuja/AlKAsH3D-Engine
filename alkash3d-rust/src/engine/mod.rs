@@ -219,6 +219,15 @@ impl LodGroup {
     }
 }
 
+/// ДОБАВЛЕНО (bloom цепочкой уровней): один уровень ниже half-res.
+pub(crate) struct BloomMip {
+    pub(crate) texture: crate::render::RenderTexture,
+    pub(crate) rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
+    pub(crate) srv_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
+    /// `true` = сейчас PIXEL_SHADER_RESOURCE, `false` = RENDER_TARGET.
+    pub(crate) is_srv: bool,
+}
+
 pub struct AlkashEngine {
     /// ДОБАВЛЕНО (по прямому запросу пользователя — включение/выключение
     /// SSAO/MSAA/bloom/volumetric/shadows переменной из кода бинарника, а
@@ -478,34 +487,42 @@ pub struct AlkashEngine {
     tonemap_constant_buffer: Option<Buffer>,
 
     bloom_extract_ps: Option<ShaderBlob>,
+    /// Разделимый гауссов блюр — теперь только для SSAO (см.
+    /// `ssao_blur_texture`): bloom идёт цепочкой уровней (`bloom_mips`).
     bloom_blur_ps: Option<ShaderBlob>,
-    /// Общая root signature для extract/blur — один SRV (t0) + сэмплер +
-    /// один CBV (b0) с параметрами (порог для extract, направление блюра
-    /// для blur — оба варианта используют одну и ту же по форме структуру
-    /// параметров, чтобы не плодить лишние root signatures).
+    /// ДОБАВЛЕНО (bloom цепочкой уровней): понижение 13 выборками и
+    /// тент-повышение со сложением (Jimenez 2014).
+    bloom_down_ps: Option<ShaderBlob>,
+    bloom_up_ps: Option<ShaderBlob>,
+    /// Root signature блюра SSAO: один SRV (t0) + point-сэмплер + CBV (b0)
+    /// с параметрами (форма BloomParams старого блюра).
     bloom_root_signature: Option<ID3D12RootSignature>,
-    /// Extract: тот же вид, но таблица из AMBIENT_SRV_SLOT+1 SRV (метка unlit в t4).
+    /// Extract: таблица из AMBIENT_SRV_SLOT+1 SRV (метка unlit в t4),
+    /// билинейный сэмплер, параметры — 4 root constants (b0).
     bloom_extract_root_signature: Option<ID3D12RootSignature>,
+    /// Понижение/повышение уровней: один SRV, билинейный сэмплер, 4 root constants.
+    bloom_chain_root_signature: Option<ID3D12RootSignature>,
     bloom_extract_pipeline_state: Option<ID3D12PipelineState>,
     bloom_blur_pipeline_state: Option<ID3D12PipelineState>,
-    bloom_params_buffer: Option<Buffer>,
-    /// Half-res ping-pong render target A — хранится вне `Renderer`
-    /// (в отличие от `hdr_target`), т.к. это внутренняя деталь именно
-    /// bloom-прохода, а не что-то, что нужно основному 3D draw pass'у.
+    bloom_down_pipeline_state: Option<ID3D12PipelineState>,
+    /// Со смешиванием ONE/ONE — прибавляет уровень к следующему по размеру.
+    bloom_up_pipeline_state: Option<ID3D12PipelineState>,
+    /// Half-res уровень 0 bloom (его читает tonemap) — хранится вне
+    /// `Renderer` (в отличие от `hdr_target`), т.к. это внутренняя деталь
+    /// именно bloom-прохода, а не что-то, что нужно основному 3D draw pass'у.
     bloom_texture_a: Option<crate::render::RenderTexture>,
     bloom_rtv_a: D3D12_CPU_DESCRIPTOR_HANDLE,
     bloom_srv_a_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
-    bloom_texture_b: Option<crate::render::RenderTexture>,
-    bloom_rtv_b: D3D12_CPU_DESCRIPTOR_HANDLE,
-    bloom_srv_b_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
-    /// Отдельные RTV heap (2 дескриптора: A, B) и SRV heap (2 дескриптора:
-    /// A, B) под bloom-таргеты — тот же паттерн, что и `hdr_rtv_heap`/
-    /// `srv_uav_heap` в Renderer, но здесь, а не там, т.к. размер
-    /// bloom-таргетов (half-res) отличается от размера HDR-таргета и
-    /// пересоздаётся вместе с ним при ресайзе окна в будущем.
+    /// Уровни 1.. (1/4, 1/8, ... разрешения): каждый вдвое меньше предыдущего.
+    bloom_mips: Vec<BloomMip>,
+    /// Отдельные RTV heap и SRV heap (уровень 0 — индекс 0, далее
+    /// `bloom_mips` по порядку) под bloom-таргеты — тот же паттерн, что и
+    /// `hdr_rtv_heap`/`srv_uav_heap` в Renderer, но здесь, а не там, т.к.
+    /// размер bloom-таргетов отличается от размера HDR-таргета и
+    /// пересоздаётся вместе с ним при ресайзе окна.
     bloom_rtv_heap: Option<ID3D12DescriptorHeap>,
     bloom_srv_heap: Option<ID3D12DescriptorHeap>,
-    /// ВАЖНО: реальное текущее состояние bloom_texture_a/b НАЧИНАЕТСЯ как
+    /// ВАЖНО: реальное текущее состояние bloom_texture_a НАЧИНАЕТСЯ как
     /// RENDER_TARGET (см. `create_hdr_target` — все render targets в этом
     /// движке создаются именно в этом состоянии) и МЕНЯЕТСЯ каждый кадр
     /// bloom-проходом в `render_frame`. Без явного трекера пришлось бы
@@ -513,8 +530,8 @@ pub struct AlkashEngine {
     /// вставлять "safety"-барьеры с неверным StateBefore на первом кадре
     /// (что валидатор D3D12 debug layer справедливо считает ошибкой).
     /// `true` = сейчас PIXEL_SHADER_RESOURCE, `false` = сейчас RENDER_TARGET.
+    /// У уровней `bloom_mips` — свой такой же флаг `is_srv`.
     bloom_a_is_srv: bool,
-    bloom_b_is_srv: bool,
 
     /// Массив из `NUM_CASCADES` depth-таргетов (по одному на каскад) —
     /// см. подробное объяснение у `RenderTexture::create_shadow_map` в

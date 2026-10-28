@@ -18,6 +18,8 @@ fn all_shaders_compile() {
     compile("tonemap_ps", include_str!("shaders/tonemap_ps.hlsl"), "ps_5_0");
     compile("bloom_extract_ps", include_str!("shaders/bloom_extract_ps.hlsl"), "ps_5_0");
     compile("bloom_blur_ps", include_str!("shaders/bloom_blur_ps.hlsl"), "ps_5_0");
+    compile("bloom_down_ps", include_str!("shaders/bloom_down_ps.hlsl"), "ps_5_0");
+    compile("bloom_up_ps", include_str!("shaders/bloom_up_ps.hlsl"), "ps_5_0");
 
     // SSAO и volumetric собираются в двух вариантах — с MSAA и без (см.
     // compile_ssao_shaders / compile_volumetric_shaders).

@@ -67,12 +67,11 @@ float4 main(PS_INPUT input) : SV_TARGET {
     float3 aoColor = SSAOSource.Sample(PointSampler, input.uv).rgb;
     float3 ambientColor = AmbientSource.Sample(PointSampler, input.uv).rgb;
     hdrColor = max(hdrColor - ambientColor * (1.0 - aoColor), 0.0);
-    // BloomSource — half-res текстура, PointSampler здесь всё
-    // равно даёт визуально мягкий результат, т.к. само свечение
-    // уже размыто предыдущим Gaussian-blur проходом (см.
-    // compile_bloom_shaders) — отдельный билинейный сэмплер под
-    // апскейл bloom не заводим, чтобы не плодить лишний статический
-    // сэмплер только ради этого.
+    // BloomSource — half-res текстура. ИЗМЕНЕНО (bloom цепочкой
+    // уровней): статический сэмплер s0 теперь билинейный (имя
+    // PointSampler осталось историческим) — растяжение на экран
+    // гладкое, без квадратов 2x2; полноразмерные источники читаются
+    // в центрах пикселей, для них это то же, что point.
     float3 bloomColor = BloomSource.Sample(PointSampler, input.uv).rgb;
     // ДОБАВЛЕНО (Фаза 8): volumetric-свет — тоже half-res, тот же
     // point-сэмплер + upscale "как есть" (raymarch сам по себе уже

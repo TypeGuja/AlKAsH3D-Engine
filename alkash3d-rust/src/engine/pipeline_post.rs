@@ -1,7 +1,8 @@
 //! Пост-обработка HDR-кадра: composite/tonemap-проход (ACES filmic +
 //! экспозиция + гамма, читает HDR + bloom + volumetric источники в одном
-//! fullscreen-треугольнике) и bloom (extract по порогу яркости + separable
-//! Gaussian blur на half-res ping-pong таргетах).
+//! fullscreen-треугольнике) и bloom (extract по порогу яркости с понижением
+//! до half-res + цепочка уровней вниз/вверх, Jimenez 2014; separable
+//! Gaussian blur остался только для SSAO).
 //!
 //! ВЫНЕСЕНО из `engine/mod.rs` (Фаза 1 архитектурного рефакторинга — разбивка
 //! монолита `impl AlkashEngine` на подсистемы). Перенос дословный, тела
@@ -13,6 +14,13 @@ use crate::STATE;
 use crate::shader::ShaderBlob;
 use crate::buffer::Buffer;
 use super::AlkashEngine;
+
+/// ДОБАВЛЕНО (bloom цепочкой уровней): сколько уровней (half-res, 1/4,
+/// 1/8 ...) и до какого размера (меньшая сторона, пиксели) их понижать.
+/// Каждый уровень — вдвое шире ореол; 6 уровней от half-res дают радиус
+/// порядка 1/10 экрана, сумма — плавный спад яркости от источника.
+pub(super) const BLOOM_LEVELS: usize = 6;
+const BLOOM_MIN_SIZE: u32 = 8;
 
 impl AlkashEngine {
     /// ДОБАВЛЕНО (Фаза 5 плана по реализму/фонарям): шейдеры
@@ -86,8 +94,12 @@ impl AlkashEngine {
             ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
         }];
 
+        // ИЗМЕНЕНО (bloom цепочкой уровней): билинейный — half-res bloom и
+        // volumetric растягиваются на экран гладко, а не квадратами 2x2.
+        // Полноразмерные источники (HDR, SSAO, ambient) читаются ровно в
+        // центрах своих пикселей, для них билинейный = point.
         let static_sampler = D3D12_STATIC_SAMPLER_DESC {
-            Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+            Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
             AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
@@ -293,8 +305,10 @@ impl AlkashEngine {
 
         self.bloom_extract_ps = Some(ShaderBlob::compile(extract_source, "ps_5_0", "main")?);
         self.bloom_blur_ps = Some(ShaderBlob::compile(blur_source, "ps_5_0", "main")?);
+        self.bloom_down_ps = Some(ShaderBlob::compile(include_str!("shaders/bloom_down_ps.hlsl"), "ps_5_0", "main")?);
+        self.bloom_up_ps = Some(ShaderBlob::compile(include_str!("shaders/bloom_up_ps.hlsl"), "ps_5_0", "main")?);
 
-        println!("[ENGINE] ✓ Bloom shaders compiled (extract + separable Gaussian blur)");
+        println!("[ENGINE] ✓ Bloom shaders compiled (extract + down/up chain + separable blur for SSAO)");
         Ok(())
     }
 
@@ -309,16 +323,23 @@ impl AlkashEngine {
     /// будущих правках (например если один из двух проходов расширят
     /// дополнительными параметрами).
     pub(super) fn create_bloom_root_signature(&mut self) -> Result<()> {
-        self.bloom_root_signature = Some(Self::bloom_root_signature_with(1)?);
+        // Блюр SSAO: point-сэмплер, параметры в своих CBV (см. ssao_blur_*).
+        self.bloom_root_signature = Some(Self::bloom_root_signature_with(1, false)?);
+        // ИЗМЕНЕНО (bloom цепочкой уровней): у проходов bloom параметры —
+        // root constants (снимок на каждый draw; общий CBV, переписанный
+        // несколькими проходами до исполнения списка, отдавал GPU только
+        // последнее значение) и билинейный сэмплер.
         // Extract читает ещё метку unlit из ambient-таргета (t4): таблица —
         // с hdr_srv_gpu, как у tonemap, до AMBIENT_SRV_SLOT включительно.
-        // Blur привязывает свою маленькую кучу, ему остаётся один SRV.
-        self.bloom_extract_root_signature = Some(Self::bloom_root_signature_with(crate::render::AMBIENT_SRV_SLOT + 1)?);
-        println!("[ENGINE] ✓ Bloom root signatures created (SRV table + static sampler s0 + CBV b0)");
+        self.bloom_extract_root_signature = Some(Self::bloom_root_signature_with(crate::render::AMBIENT_SRV_SLOT + 1, true)?);
+        self.bloom_chain_root_signature = Some(Self::bloom_root_signature_with(1, true)?);
+        println!("[ENGINE] ✓ Bloom root signatures created (SRV table + static sampler s0 + b0)");
         Ok(())
     }
 
-    fn bloom_root_signature_with(num_srv: u32) -> Result<windows::Win32::Graphics::Direct3D12::ID3D12RootSignature> {
+    /// `root_constants`: b0 — 4 root constants и билинейный сэмплер (проходы
+    /// bloom); иначе b0 — CBV и point-сэмплер (блюр SSAO).
+    fn bloom_root_signature_with(num_srv: u32, root_constants: bool) -> Result<windows::Win32::Graphics::Direct3D12::ID3D12RootSignature> {
         use windows::Win32::Graphics::Direct3D12::*;
 
         let srv_range = D3D12_DESCRIPTOR_RANGE {
@@ -330,7 +351,7 @@ impl AlkashEngine {
         };
 
         let static_sampler = D3D12_STATIC_SAMPLER_DESC {
-            Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+            Filter: if root_constants { D3D12_FILTER_MIN_MAG_MIP_LINEAR } else { D3D12_FILTER_MIN_MAG_MIP_POINT },
             AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
@@ -345,6 +366,30 @@ impl AlkashEngine {
             ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
         };
 
+        let params_b0 = if root_constants {
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Constants: D3D12_ROOT_CONSTANTS {
+                        ShaderRegister: 0,
+                        RegisterSpace: 0,
+                        Num32BitValues: 4,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            }
+        } else {
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR {
+                        ShaderRegister: 0,
+                        RegisterSpace: 0,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            }
+        };
         let root_params = [
             D3D12_ROOT_PARAMETER {
                 ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
@@ -356,16 +401,7 @@ impl AlkashEngine {
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
             },
-            D3D12_ROOT_PARAMETER {
-                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
-                Anonymous: D3D12_ROOT_PARAMETER_0 {
-                    Descriptor: D3D12_ROOT_DESCRIPTOR {
-                        ShaderRegister: 0,
-                        RegisterSpace: 0,
-                    },
-                },
-                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
-            },
+            params_b0,
         ];
 
         let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
@@ -420,7 +456,6 @@ impl AlkashEngine {
         use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
         let vs = self.tonemap_vs.as_ref().unwrap();
-        let root_sig = self.bloom_root_signature.as_ref().unwrap();
         let device = crate::get_device()?;
 
         let rasterizer = D3D12_RASTERIZER_DESC {
@@ -475,8 +510,22 @@ impl AlkashEngine {
             },
         };
 
-        for (target_ps, target_field_is_extract) in [(self.bloom_extract_ps.as_ref().unwrap(), true), (self.bloom_blur_ps.as_ref().unwrap(), false)] {
-            let sig = if target_field_is_extract { self.bloom_extract_root_signature.as_ref().unwrap() } else { root_sig };
+        // Повышение уровня прибавляется к содержимому таргета (ONE/ONE).
+        let mut additive = blend_desc;
+        additive.RenderTarget[0].BlendEnable = TRUE;
+        additive.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+        additive.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+        let extract_sig = self.bloom_extract_root_signature.as_ref().unwrap();
+        let blur_sig = self.bloom_root_signature.as_ref().unwrap();
+        let chain_sig = self.bloom_chain_root_signature.as_ref().unwrap();
+        let passes = [
+            (self.bloom_extract_ps.as_ref().unwrap(), extract_sig, blend_desc),
+            (self.bloom_blur_ps.as_ref().unwrap(), blur_sig, blend_desc),
+            (self.bloom_down_ps.as_ref().unwrap(), chain_sig, blend_desc),
+            (self.bloom_up_ps.as_ref().unwrap(), chain_sig, additive),
+        ];
+        let mut psos = Vec::with_capacity(passes.len());
+        for (target_ps, sig, blend) in passes {
             let mut pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
                 pRootSignature: std::mem::ManuallyDrop::new(Some(sig.clone())),
                 VS: D3D12_SHADER_BYTECODE {
@@ -491,7 +540,7 @@ impl AlkashEngine {
                 HS: D3D12_SHADER_BYTECODE::default(),
                 GS: D3D12_SHADER_BYTECODE::default(),
                 StreamOutput: D3D12_STREAM_OUTPUT_DESC::default(),
-                BlendState: blend_desc,
+                BlendState: blend,
                 SampleMask: u32::MAX,
                 RasterizerState: rasterizer,
                 DepthStencilState: depth_stencil,
@@ -515,16 +564,15 @@ impl AlkashEngine {
             unsafe {
                 std::mem::ManuallyDrop::drop(&mut pso_desc.pRootSignature);
             }
-            let pso = result?;
-
-            if target_field_is_extract {
-                self.bloom_extract_pipeline_state = Some(pso);
-            } else {
-                self.bloom_blur_pipeline_state = Some(pso);
-            }
+            psos.push(result?);
         }
+        let mut psos = psos.into_iter();
+        self.bloom_extract_pipeline_state = psos.next();
+        self.bloom_blur_pipeline_state = psos.next();
+        self.bloom_down_pipeline_state = psos.next();
+        self.bloom_up_pipeline_state = psos.next();
 
-        println!("[ENGINE] ✓ Bloom pipeline states created (extract + blur)");
+        println!("[ENGINE] ✓ Bloom pipeline states created (extract + blur + down + up)");
         Ok(())
     }
 
@@ -546,19 +594,31 @@ impl AlkashEngine {
     pub(super) fn create_bloom_resources(&mut self) -> Result<()> {
         use windows::Win32::Graphics::Direct3D12::*;
 
-        let bloom_width = (self.width / 2).max(1);
-        let bloom_height = (self.height / 2).max(1);
+        // ИЗМЕНЕНО (bloom цепочкой уровней): уровень 0 — half-res (его
+        // читает tonemap), дальше каждый вдвое меньше, пока не станет мельче
+        // `BLOOM_MIN_SIZE` или не наберётся `BLOOM_LEVELS`.
+        let mut sizes = vec![((self.width / 2).max(1), (self.height / 2).max(1))];
+        while sizes.len() < BLOOM_LEVELS {
+            let (w, h) = *sizes.last().unwrap();
+            if w / 2 < BLOOM_MIN_SIZE || h / 2 < BLOOM_MIN_SIZE {
+                break;
+            }
+            sizes.push((w / 2, h / 2));
+        }
+        let (bloom_width, bloom_height) = sizes[0];
 
         // ИЗМЕНЕНО (максимальная графика — MSAA, см. `create_hdr_target` в
         // render.rs): bloom-таргеты — ВСЕГДА одноимпловые обычные
         // render target'ы (RENDER_TARGET initial state, как и раньше) —
         // ЭТОТ вызов не имеет отношения к MSAA основного цветового
         // прохода, просто переиспользует тот же формат-хелпер (R16G16B16A16_FLOAT).
-        let texture_a = crate::render::RenderTexture::create_hdr_target(bloom_width, bloom_height, 1, windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET)?;
-        let texture_b = crate::render::RenderTexture::create_hdr_target(bloom_width, bloom_height, 1, windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        let textures = sizes
+            .iter()
+            .map(|&(w, h)| crate::render::RenderTexture::create_hdr_target(w, h, 1, D3D12_RESOURCE_STATE_RENDER_TARGET))
+            .collect::<Result<Vec<_>>>()?;
 
-        let rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(2)?;
-        let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(2)?;
+        let rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(textures.len() as u32)?;
+        let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(textures.len() as u32)?;
 
         let rtv_size = {
             let state = STATE.lock().unwrap();
@@ -569,45 +629,35 @@ impl AlkashEngine {
             state.cbv_srv_uav_descriptor_size
         };
 
-        let rtv_a = crate::heap::DescriptorHeap::get_cpu_handle(&rtv_heap, 0, rtv_size);
-        let rtv_b = crate::heap::DescriptorHeap::get_cpu_handle(&rtv_heap, 1, rtv_size);
-        texture_a.create_rtv(rtv_a)?;
-        texture_b.create_rtv(rtv_b)?;
-
-        let srv_a_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, 0, cbv_srv_uav_size);
-        let srv_a_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_heap, 0, cbv_srv_uav_size);
-        let srv_b_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, 1, cbv_srv_uav_size);
-        let srv_b_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_heap, 1, cbv_srv_uav_size);
-        texture_a.create_srv(srv_a_cpu)?;
-        texture_b.create_srv(srv_b_cpu)?;
+        let mut levels = Vec::with_capacity(textures.len());
+        for (i, texture) in textures.into_iter().enumerate() {
+            let rtv = crate::heap::DescriptorHeap::get_cpu_handle(&rtv_heap, i as u32, rtv_size);
+            texture.create_rtv(rtv)?;
+            texture.create_srv(crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, i as u32, cbv_srv_uav_size))?;
+            let srv_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_heap, i as u32, cbv_srv_uav_size);
+            levels.push(super::BloomMip { texture, rtv, srv_gpu, is_srv: false });
+        }
 
         let renderer = self.renderer.as_ref().ok_or_else(|| {
             eprintln!("[ENGINE] ERROR: create_bloom_resources() called before renderer initialized");
             Error::from_hresult(HRESULT(1))
         })?;
         let bloom_final_srv_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&renderer.srv_uav_heap, 1, cbv_srv_uav_size);
-        texture_a.create_srv(bloom_final_srv_cpu)?;
+        levels[0].texture.create_srv(bloom_final_srv_cpu)?;
 
-        self.bloom_texture_a = Some(texture_a);
-        self.bloom_rtv_a = rtv_a;
-        self.bloom_srv_a_gpu = srv_a_gpu;
-        self.bloom_texture_b = Some(texture_b);
-        self.bloom_rtv_b = rtv_b;
-        self.bloom_srv_b_gpu = srv_b_gpu;
+        let mut levels = levels.into_iter();
+        let top = levels.next().unwrap();
+        self.bloom_texture_a = Some(top.texture);
+        self.bloom_rtv_a = top.rtv;
+        self.bloom_srv_a_gpu = top.srv_gpu;
+        self.bloom_a_is_srv = false;
+        self.bloom_mips = levels.collect();
         self.bloom_rtv_heap = Some(rtv_heap);
         self.bloom_srv_heap = Some(srv_heap);
 
-        let params_cb = Buffer::create_constant_buffer(256)?;
-        let default_params: [f32; 4] = [1.0, 1.0 / bloom_width as f32, 0.0, 0.0];
-        let bytes = unsafe {
-            std::slice::from_raw_parts(default_params.as_ptr() as *const u8, 16)
-        };
-        params_cb.update_constant_buffer(bytes)?;
-        self.bloom_params_buffer = Some(params_cb);
-
         println!(
-            "[ENGINE] ✓ Bloom resources created: {}x{} half-res ping-pong targets",
-            bloom_width, bloom_height
+            "[ENGINE] ✓ Bloom resources created: {}x{} half-res + {} smaller levels",
+            bloom_width, bloom_height, self.bloom_mips.len()
         );
         Ok(())
     }

@@ -102,21 +102,22 @@ impl AlkashEngine {
             tonemap_constant_buffer: None,
             bloom_extract_ps: None,
             bloom_blur_ps: None,
+            bloom_down_ps: None,
+            bloom_up_ps: None,
             bloom_root_signature: None,
             bloom_extract_root_signature: None,
+            bloom_chain_root_signature: None,
             bloom_extract_pipeline_state: None,
             bloom_blur_pipeline_state: None,
-            bloom_params_buffer: None,
+            bloom_down_pipeline_state: None,
+            bloom_up_pipeline_state: None,
             bloom_texture_a: None,
             bloom_rtv_a: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
             bloom_srv_a_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
-            bloom_texture_b: None,
-            bloom_rtv_b: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
-            bloom_srv_b_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
+            bloom_mips: Vec::new(),
             bloom_rtv_heap: None,
             bloom_srv_heap: None,
             bloom_a_is_srv: false,
-            bloom_b_is_srv: false,
 
             shadow_maps: [None, None, None],
             shadow_dsv_heap: None,
@@ -504,16 +505,20 @@ impl AlkashEngine {
         self.renderer = None;
 
         self.bloom_texture_a = None;
-        self.bloom_texture_b = None;
+        self.bloom_mips.clear();
         self.bloom_rtv_heap = None;
         self.bloom_srv_heap = None;
         self.bloom_extract_ps = None;
         self.bloom_blur_ps = None;
+        self.bloom_down_ps = None;
+        self.bloom_up_ps = None;
         self.bloom_root_signature = None;
         self.bloom_extract_root_signature = None;
+        self.bloom_chain_root_signature = None;
         self.bloom_extract_pipeline_state = None;
         self.bloom_blur_pipeline_state = None;
-        self.bloom_params_buffer = None;
+        self.bloom_down_pipeline_state = None;
+        self.bloom_up_pipeline_state = None;
 
         self.tonemap_vs = None;
         self.tonemap_ps = None;

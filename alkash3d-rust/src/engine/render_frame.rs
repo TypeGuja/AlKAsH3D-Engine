@@ -2089,158 +2089,92 @@ impl AlkashEngine {
             if perf_enabled() {
                 super::gpu_timer::mark(&cmd_list, frame_index, 5);
             }
-            if self.graphics_settings.bloom { if let (Some(bloom_a), Some(bloom_b), Some(bloom_srv_heap)) =
-                (&self.bloom_texture_a, &self.bloom_texture_b, &self.bloom_srv_heap)
+            // ИЗМЕНЕНО (bloom цепочкой уровней, Jimenez 2014): яркое
+            // выделяется сразу с понижением до half-res (уровень 0), затем
+            // понижается до мелких уровней и поднимается обратно тент-фильтром
+            // со сложением. Было: один гауссов блюр 9 выборок point-сэмплером,
+            // и все проходы брали параметры из ОДНОГО constant buffer, который
+            // к исполнению списка содержал последнее значение — оба "разделимых"
+            // блюра шли по вертикали (вертикальные полосы у ярких точек).
+            // Параметры теперь — root constants (снимок на каждый draw).
+            if self.graphics_settings.bloom { if let (Some(bloom_a), Some(bloom_srv_heap)) =
+                (&self.bloom_texture_a, &self.bloom_srv_heap)
             {
-                let bloom_a_resource = &bloom_a.resource;
-                let bloom_b_resource = &bloom_b.resource;
-                let bloom_width = bloom_a.width;
-                let bloom_height = bloom_a.height;
-
-                let bloom_viewport = D3D12_VIEWPORT {
-                    TopLeftX: 0.0,
-                    TopLeftY: 0.0,
-                    Width: bloom_width as f32,
-                    Height: bloom_height as f32,
-                    MinDepth: 0.0,
-                    MaxDepth: 1.0,
+                // Уровни сверху вниз: (ресурс, RTV, SRV, ширина, высота) и их состояния.
+                let mut levels = vec![(bloom_a.resource.clone(), self.bloom_rtv_a, self.bloom_srv_a_gpu, bloom_a.width, bloom_a.height)];
+                levels.extend(self.bloom_mips.iter().map(|m| (m.texture.resource.clone(), m.rtv, m.srv_gpu, m.texture.width, m.texture.height)));
+                let mut is_srv: Vec<bool> = std::iter::once(self.bloom_a_is_srv).chain(self.bloom_mips.iter().map(|m| m.is_srv)).collect();
+                let set_state = |is_srv: &mut Vec<bool>, k: usize, srv: bool| {
+                    if is_srv[k] != srv {
+                        let (before, after) = if srv {
+                            (D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+                        } else {
+                            (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
+                        };
+                        let barriers = [Self::transition_barrier(&levels[k].0, before, after)];
+                        cmd_list.ResourceBarrier(&barriers);
+                        for b in barriers {
+                            Self::drop_transition_barrier(b);
+                        }
+                        is_srv[k] = srv;
+                    }
                 };
-                let bloom_scissor = RECT {
-                    left: 0,
-                    top: 0,
-                    right: bloom_width as i32,
-                    bottom: bloom_height as i32,
+                // Рисовать в уровень `k`: состояние, вьюпорт, таргет.
+                let target = |is_srv: &mut Vec<bool>, k: usize| {
+                    set_state(is_srv, k, false);
+                    let (_, rtv, _, w, h) = levels[k];
+                    cmd_list.RSSetViewports(&[D3D12_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: w as f32, Height: h as f32, MinDepth: 0.0, MaxDepth: 1.0 }]);
+                    cmd_list.RSSetScissorRects(&[RECT { left: 0, top: 0, right: w as i32, bottom: h as i32 }]);
+                    cmd_list.OMSetRenderTargets(1, Some(&rtv), false, None);
                 };
-
-                cmd_list.RSSetViewports(&[bloom_viewport]);
-                cmd_list.RSSetScissorRects(&[bloom_scissor]);
-                cmd_list.SetGraphicsRootSignature(Some(self.bloom_root_signature.as_ref().unwrap()));
-                let heaps = [Some(bloom_srv_heap.clone())];
-                cmd_list.SetDescriptorHeaps(&heaps);
+                let constants = |params: [f32; 4]| {
+                    cmd_list.SetGraphicsRoot32BitConstants(1, 4, params.as_ptr() as *const _, 0);
+                };
                 cmd_list.IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-                // ИЗМЕНЕНО (MSAA — см. resolve-шаг сразу после main pass
-                // выше): раньше здесь был переход `hdr_target` RENDER_TARGET
-                // -> PIXEL_SHADER_RESOURCE — теперь не нужен, `hdr_target`
-                // уже вернулась в RENDER_TARGET сразу после resolve, а то,
-                // что реально читает bloom-extract (`renderer.hdr_srv_gpu`),
-                // указывает на `hdr_resolved`, УЖЕ находящуюся в
-                // PIXEL_SHADER_RESOURCE к этому моменту.
-                let a_before = if self.bloom_a_is_srv {
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-                } else {
-                    D3D12_RESOURCE_STATE_RENDER_TARGET
-                };
-                if a_before != D3D12_RESOURCE_STATE_RENDER_TARGET {
-                    let barriers = [Self::transition_barrier(
-                        bloom_a_resource,
-                        a_before,
-                        D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    )];
-                    cmd_list.ResourceBarrier(&barriers);
-                    for b in barriers {
-                        Self::drop_transition_barrier(b);
-                    }
-                }
-                self.bloom_a_is_srv = false;
-
-                cmd_list.OMSetRenderTargets(1, Some(&self.bloom_rtv_a), false, None);
+                // Выделение яркого с понижением полноразмерного HDR до уровня 0.
+                // Каждый уровень несёт ту же энергию, при сложении их
+                // `levels.len()` — поэтому доля на уровень 1/len.
+                // ИЗМЕНЕНО (MSAA): читается `hdr_resolved` (renderer.hdr_srv_gpu),
+                // уже в PIXEL_SHADER_RESOURCE после resolve основного прохода.
+                target(&mut is_srv, 0);
                 cmd_list.SetGraphicsRootSignature(Some(self.bloom_extract_root_signature.as_ref().unwrap()));
                 cmd_list.SetPipelineState(Some(self.bloom_extract_pipeline_state.as_ref().unwrap()));
                 let hdr_heap = [Some(renderer.srv_uav_heap.clone())];
                 cmd_list.SetDescriptorHeaps(&hdr_heap);
                 cmd_list.SetGraphicsRootDescriptorTable(0, renderer.hdr_srv_gpu);
-                if let Some(params_cb) = &self.bloom_params_buffer {
-                    let params: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
-                    let bytes = std::slice::from_raw_parts(params.as_ptr() as *const u8, 16);
-                    let _ = params_cb.update_constant_buffer(bytes);
-                    cmd_list.SetGraphicsRootConstantBufferView(1, params_cb.resource.GetGPUVirtualAddress());
-                }
+                constants([1.0 / self.width.max(1) as f32, 1.0 / self.height.max(1) as f32, 1.0, 1.0 / levels.len() as f32]);
                 cmd_list.DrawInstanced(3, 1, 0, 0);
-                // Blur — со своей (одно-SRV) root signature.
-                cmd_list.SetGraphicsRootSignature(Some(self.bloom_root_signature.as_ref().unwrap()));
+                set_state(&mut is_srv, 0, true);
 
-                let bloom_heap_rebind = [Some(bloom_srv_heap.clone())];
-                cmd_list.SetDescriptorHeaps(&bloom_heap_rebind);
+                cmd_list.SetGraphicsRootSignature(Some(self.bloom_chain_root_signature.as_ref().unwrap()));
+                let bloom_heap = [Some(bloom_srv_heap.clone())];
+                cmd_list.SetDescriptorHeaps(&bloom_heap);
+                // Вниз: k -> k+1.
+                cmd_list.SetPipelineState(Some(self.bloom_down_pipeline_state.as_ref().unwrap()));
+                for k in 0..levels.len() - 1 {
+                    target(&mut is_srv, k + 1);
+                    let (_, _, src, w, h) = levels[k];
+                    cmd_list.SetGraphicsRootDescriptorTable(0, src);
+                    constants([1.0 / w as f32, 1.0 / h as f32, 0.0, 0.0]);
+                    cmd_list.DrawInstanced(3, 1, 0, 0);
+                    set_state(&mut is_srv, k + 1, true);
+                }
+                // Вверх: k+1 прибавляется к k.
+                cmd_list.SetPipelineState(Some(self.bloom_up_pipeline_state.as_ref().unwrap()));
+                for k in (0..levels.len() - 1).rev() {
+                    target(&mut is_srv, k);
+                    let (_, _, src, w, h) = levels[k + 1];
+                    cmd_list.SetGraphicsRootDescriptorTable(0, src);
+                    constants([1.0 / w as f32, 1.0 / h as f32, 0.0, 0.0]);
+                    cmd_list.DrawInstanced(3, 1, 0, 0);
+                    set_state(&mut is_srv, k, true);
+                }
 
-                let a_to_srv = Self::transition_barrier(
-                    bloom_a_resource,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                );
-                let b_before = if self.bloom_b_is_srv {
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-                } else {
-                    D3D12_RESOURCE_STATE_RENDER_TARGET
-                };
-                let mut barriers = Vec::with_capacity(2);
-                barriers.push(a_to_srv);
-                if b_before != D3D12_RESOURCE_STATE_RENDER_TARGET {
-                    barriers.push(Self::transition_barrier(
-                        bloom_b_resource,
-                        b_before,
-                        D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    ));
+                self.bloom_a_is_srv = is_srv[0];
+                for (m, s) in self.bloom_mips.iter_mut().zip(&is_srv[1..]) {
+                    m.is_srv = *s;
                 }
-                cmd_list.ResourceBarrier(&barriers);
-                for b in barriers {
-                    Self::drop_transition_barrier(b);
-                }
-                self.bloom_a_is_srv = true;
-                self.bloom_b_is_srv = false;
-
-                cmd_list.OMSetRenderTargets(1, Some(&self.bloom_rtv_b), false, None);
-                cmd_list.SetPipelineState(Some(self.bloom_blur_pipeline_state.as_ref().unwrap()));
-                cmd_list.SetGraphicsRootDescriptorTable(0, self.bloom_srv_a_gpu);
-                if let Some(params_cb) = &self.bloom_params_buffer {
-                    let texel_x = 1.0 / bloom_width as f32;
-                    let params: [f32; 4] = [1.0, texel_x, 0.0, 0.0];
-                    let bytes = std::slice::from_raw_parts(params.as_ptr() as *const u8, 16);
-                    let _ = params_cb.update_constant_buffer(bytes);
-                    cmd_list.SetGraphicsRootConstantBufferView(1, params_cb.resource.GetGPUVirtualAddress());
-                }
-                cmd_list.DrawInstanced(3, 1, 0, 0);
-
-                let b_to_srv = Self::transition_barrier(
-                    bloom_b_resource,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                );
-                let a_back_to_rt = Self::transition_barrier(
-                    bloom_a_resource,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                );
-                let barriers = [b_to_srv, a_back_to_rt];
-                cmd_list.ResourceBarrier(&barriers);
-                for b in barriers {
-                    Self::drop_transition_barrier(b);
-                }
-                self.bloom_b_is_srv = true;
-                self.bloom_a_is_srv = false;
-
-                cmd_list.OMSetRenderTargets(1, Some(&self.bloom_rtv_a), false, None);
-                cmd_list.SetGraphicsRootDescriptorTable(0, self.bloom_srv_b_gpu);
-                if let Some(params_cb) = &self.bloom_params_buffer {
-                    let texel_y = 1.0 / bloom_height as f32;
-                    let params: [f32; 4] = [1.0, 0.0, texel_y, 0.0];
-                    let bytes = std::slice::from_raw_parts(params.as_ptr() as *const u8, 16);
-                    let _ = params_cb.update_constant_buffer(bytes);
-                    cmd_list.SetGraphicsRootConstantBufferView(1, params_cb.resource.GetGPUVirtualAddress());
-                }
-                cmd_list.DrawInstanced(3, 1, 0, 0);
-
-                let a_final_to_srv = Self::transition_barrier(
-                    bloom_a_resource,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                );
-                let barriers = [a_final_to_srv];
-                cmd_list.ResourceBarrier(&barriers);
-                for b in barriers {
-                    Self::drop_transition_barrier(b);
-                }
-                self.bloom_a_is_srv = true;
             } } else if let Some(bloom_a) = &self.bloom_texture_a {
                 // ИСПРАВЛЕНО (та же причина, что у SSAO/volumetric выше):
                 // bloom тоже АДДИТИВНЫЙ (`bloomColor * bloomIntensity`,
