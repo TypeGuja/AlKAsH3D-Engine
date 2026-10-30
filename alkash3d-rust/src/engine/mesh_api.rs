@@ -110,6 +110,67 @@ impl AlkashEngine {
         self.meshes.len() - 1
     }
 
+    /// ДОБАВЛЕНО (геометрия в видеопамяти): перенести буферы мешей из
+    /// оперативной памяти в видеопамять (см. `Buffer::copies_in_video_memory`).
+    /// Меши с `cpu_writable` остаются на месте: у остальных `update_vertices`
+    /// после этого вернёт ошибку. Вызывать один раз, в конце загрузки, до
+    /// `set_gi_volume`. Меши, созданные позже (ленивые глифы), останутся в
+    /// оперативной памяти; чанки стриминга переносит
+    /// `new_meshes_to_video_memory`. Возвращает перенесённые байты.
+    /// ALKASH3D_VRAM=0 — ничего не переносить, для сравнения.
+    pub fn meshes_to_video_memory(&mut self) -> windows::core::Result<u64> {
+        if std::env::var("ALKASH3D_VRAM").is_ok_and(|v| v == "0") {
+            return Ok(0);
+        }
+        self.wait_for_all_frames_idle_before_realloc();
+        let sources: Vec<&crate::buffer::Buffer> = self.meshes.iter().filter(|m| !m.cpu_writable).flat_map(|m| std::iter::once(&m.vertex_buffer).chain(m.index_buffer.as_ref())).collect();
+        let bytes = sources.iter().map(|b| b.size).sum();
+        let mut copies = crate::buffer::Buffer::copies_in_video_memory(&sources)?.into_iter();
+        for mesh in self.meshes.iter_mut().filter(|m| !m.cpu_writable) {
+            mesh.vertex_buffer = copies.next().expect("копий столько же, сколько буферов");
+            if mesh.index_buffer.is_some() {
+                mesh.index_buffer = copies.next();
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// ДОБАВЛЕНО (чанки стриминга в видеопамяти): перенести меши с индекса
+    /// `first` и дальше, без ожидания GPU. Вызывать до первого кадра, который
+    /// их рисует: на исходные буферы тогда ссылается только само копирование,
+    /// а `release_finished_copies` отпустит их после него. При ошибке меши
+    /// остаются в оперативной памяти. ALKASH3D_VRAM=0 — не переносить.
+    pub(super) fn new_meshes_to_video_memory(&mut self, first: usize) {
+        if first >= self.meshes.len() || std::env::var("ALKASH3D_VRAM").is_ok_and(|v| v == "0") {
+            return;
+        }
+        let sources: Vec<&crate::buffer::Buffer> = self.meshes[first..].iter().filter(|m| !m.cpu_writable).flat_map(|m| std::iter::once(&m.vertex_buffer).chain(m.index_buffer.as_ref())).collect();
+        if sources.is_empty() {
+            return;
+        }
+        let (copies, pending) = match crate::buffer::Buffer::copies_in_video_memory_nowait(&sources) {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("[ENGINE] WARNING: меши чанка остались в оперативной памяти: {:?}", e);
+                return;
+            }
+        };
+        let mut copies = copies.into_iter();
+        for mesh in self.meshes[first..].iter_mut().filter(|m| !m.cpu_writable) {
+            mesh.vertex_buffer = copies.next().expect("копий столько же, сколько буферов");
+            if mesh.index_buffer.is_some() {
+                mesh.index_buffer = copies.next();
+            }
+        }
+        self.pending_mesh_copies.push(pending);
+    }
+
+    /// Отпустить исходные буферы законченных копирований (см.
+    /// `new_meshes_to_video_memory`).
+    pub(super) fn release_finished_copies(&mut self) {
+        self.pending_mesh_copies.retain(|p| !p.is_finished());
+    }
+
     pub fn add_triangle(&mut self) -> usize {
         let mesh = Mesh::triangle().unwrap();
         self.add_mesh(mesh)

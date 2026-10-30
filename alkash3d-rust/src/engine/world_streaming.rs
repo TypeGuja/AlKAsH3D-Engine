@@ -512,6 +512,7 @@ impl AlkashEngine {
             }
         };
 
+        let first_new_mesh = self.meshes.len();
         let mut spawned = Vec::with_capacity(content.objects.len());
         let mut spawned_bodies = Vec::new();
         for obj in &content.objects {
@@ -545,6 +546,7 @@ impl AlkashEngine {
                 spawned_bodies.push(body_id);
             }
         }
+        self.new_meshes_to_video_memory(first_new_mesh);
 
         if let Some(world) = &mut self.world {
             let state = &mut world.chunk_states[chunk_idx];
@@ -788,6 +790,10 @@ impl AlkashEngine {
     ///     телепорта камеры далеко в сторону) не давал свой всплеск на
     ///     одном кадре.
     pub(super) fn drain_pending_chunk_io(&mut self) {
+        self.release_finished_copies();
+        // Одно копирование на все чанки кадра (см. `new_meshes_to_video_memory`).
+        let first_new_mesh = self.meshes.len();
+
         let mut integrate_budget = CHUNK_LOAD_BUDGET_PER_FRAME;
         while integrate_budget > 0 {
             let Ok(result) = self.chunk_loader_rx.try_recv() else { break };
@@ -800,6 +806,7 @@ impl AlkashEngine {
             self.integrate_loaded_chunk(result);
             integrate_budget -= 1;
         }
+        self.new_meshes_to_video_memory(first_new_mesh);
 
         loop {
             let next = match &mut self.world {

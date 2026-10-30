@@ -12,6 +12,7 @@ pub use scripting::{ScriptHandle, pack_entity_id};
 mod mesh;
 pub use mesh::{Vertex, Mesh, MeshInstance};
 pub use gi::GiVolume;
+pub use self::Medium as ParticipatingMedium; // имя для игр (Medium в движке)
 
 // ВЫНЕСЕНО (Фаза 1 архитектурного рефакторинга): цикл дня/ночи — см.
 // engine/day_night.rs. `ManagedLight` нужен здесь как тип поля
@@ -83,8 +84,20 @@ mod pipeline_ssao;
 mod render_frame;
 // ДОБАВЛЕНО (замер производительности): время проходов на GPU, см. gpu_timer.rs
 mod gpu_timer;
+// ДОБАВЛЕНО (снимок кадра в PNG, ALKASH3D_SHOT): см. engine/screenshot.rs
+mod screenshot;
+// ДОБАВЛЕНО (кэш теней фонарей без полного копирования): см. engine/shadow_restore.rs
+mod shadow_restore;
+// ДОБАВЛЕНО (forward-декали): см. engine/decals.rs
+mod decals;
+pub use decals::Decal;
 // ДОБАВЛЕНО (непрямой свет лучами, DDGI): сетка проб, см. engine/gi.rs.
 mod gi;
+// ДОБАВЛЕНО (временное сглаживание): см. engine/taa.rs.
+mod taa;
+// ДОБАВЛЕНО (замер экспозиции по кадру): см. engine/metering.rs.
+mod metering;
+mod local_exposure;
 
 // ВЫНЕСЕНО (Фаза 1 архитектурного рефакторинга, финальный шаг): жизненный
 // цикл движка (new/init/update/shutdown/Drop) — см. engine/lifecycle.rs.
@@ -222,6 +235,69 @@ impl LodGroup {
     }
 }
 
+impl AlkashEngine {
+    /// ДОБАВЛЕНО (TAA): забыть накопленные кадры — после телепорта камеры
+    /// или смены сцены, иначе первые кадры покажут «призрак» старого вида.
+    pub fn scene_luminance(&self) -> Option<f32> {
+        self.metering_state.as_ref().and_then(|m| m.last)
+    }
+
+    pub fn reset_taa(&mut self) {
+        if let Some(t) = self.taa_state.as_mut() {
+            t.reset();
+        }
+    }
+}
+
+/// ДОБАВЛЕНО (рассеяние света фонарей в среде): объём (AABB), где воздух
+/// мутный — снегопад, морось, дым. Свет точечных и прожекторных
+/// фонарей рассеивается в нём (однократно, аналитически по лучу), всё
+/// за средой ослабляется. Тени в воздухе не учитываются (приближение).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Medium {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// Коэффициент рассеяния, 1/м (ослабление берётся равным ему).
+    /// Снегопад ~0.02–0.05, туман 0.05–0.3, чистый воздух ~1e-4.
+    pub scattering: f32,
+    /// Хеньи–Гринстейн g: 0 — во все стороны, 0.6–0.8 — снег/капли вперёд.
+    pub anisotropy: f32,
+}
+
+/// ДОБАВЛЕНО (камера): то, что делает с кадром настоящая камера. По
+/// умолчанию всё выключено — кадр как раньше.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Lens {
+    /// Естественное виньетирование объектива (cos^4 угла от оси).
+    pub vignetting: bool,
+    /// Дробовой шум сенсора: дисперсия = сигнал * экспозиция * это.
+    /// 0 — без шума; ~0.002 — заметен только в темноте.
+    pub sensor_noise: f32,
+    /// Точный тонмаппинг ACES (RRT+ODT, фит Хилла, как в UE4) вместо
+    /// короткой формулы Нарковича.
+    pub aces_full: bool,
+    /// Сумеречное зрение (эффект Пуркинье): кд/м² на единицу яркости
+    /// кадра — в темноте цвет уходит в палочковое зрение. 0 — выключено.
+    pub vision_cd_per_unit: f32,
+    /// Бочкообразная дисторсия объектива: k в r' = r(1 + k r²), углы кадра
+    /// остаются на месте. 0 — выключено; ~0.03–0.06 — как у широкоугольника.
+    pub distortion: f32,
+    /// Поперечная хроматическая аберрация: доля радиуса, на которую красный
+    /// и синий расходятся к краю кадра. 0 — выключено; ~0.002 — заметно в углах.
+    pub chromatic_aberration: f32,
+    /// Локальная экспозиция (как local exposure в UE5): яркость каждого
+    /// места кадра подтягивается к средней — тёмные углы светлее, пересвет у
+    /// ламп мягче, мелкие детали не трогаются. Степень сжатия 0..1: 0 —
+    /// выключено, ~0.3–0.5 — как видит глаз.
+    pub local_exposure: f32,
+    /// ДОБАВЛЕНО (размытие в движении): доля пути пикселя за кадр, которую
+    /// «видит» выдержка (0.5 — кинокамера с обтюратором 180°; 0 — выключено).
+    /// Движение — камеры (из глубины и матрицы прошлого кадра): в кадре
+    /// нет быстрых подвижных тел, а поворот головы — главный признак игры,
+    /// когда каждый кадр идеально резкий.
+    pub motion_blur: f32,
+}
+
 /// ДОБАВЛЕНО (bloom цепочкой уровней): один уровень ниже half-res.
 pub(crate) struct BloomMip {
     pub(crate) texture: crate::render::RenderTexture,
@@ -269,6 +345,14 @@ pub struct AlkashEngine {
     pub pipeline_state: Option<ID3D12PipelineState>,
     /// ДОБАВЛЕНО (прозрачность): PSO прозрачного прохода, см. `create_pipeline_state`.
     pub transparent_pipeline_state: Option<ID3D12PipelineState>,
+    /// ДОБАВЛЕНО (отражения лучами в стекле): прозрачный + запись G-буфера.
+    pub glass_pipeline_state: Option<ID3D12PipelineState>,
+    /// ДОБАВЛЕНО (предпроход глубины): только глубина / непрозрачное поверх
+    /// готовой глубины (LESS_EQUAL без записи), см. PipelineState.
+    pub prepass_pipeline_state: Option<ID3D12PipelineState>,
+    pub after_prepass_pipeline_state: Option<ID3D12PipelineState>,
+    /// Предпроход включён (по умолчанию да; ALKASH3D_PREPASS=0 — выкл, для сравнения).
+    pub depth_prepass: bool,
     pub vs: Option<ShaderBlob>,
     pub ps: Option<ShaderBlob>,
 
@@ -444,6 +528,43 @@ pub struct AlkashEngine {
     /// каждой следующей фазы.
     pub light_ambient: Option<crate::alfar_format::AmbientLight>,
     pub light_global_settings: Option<crate::alfar_format::GlobalLightSettings>,
+    /// ДОБАВЛЕНО (хроматическая адаптация): цвет света (линейный sRGB), к
+    /// которому привык глаз/камера — он будет выглядеть белым (адаптация
+    /// Брэдфорда в пространстве колбочек LMS, как баланс белого в камере).
+    /// [1,1,1] — без адаптации (белый D65), как было.
+    pub white_point: [f32; 3],
+    /// ДОБАВЛЕНО (камера): свойства объектива и сенсора, см. `Lens`.
+    pub lens: Lens,
+    /// ДОБАВЛЕНО (рассеяние света фонарей в среде): см. `Medium`. None — нет.
+    pub medium: Option<Medium>,
+    pub(crate) lens_frame: u32,
+    /// ДОБАВЛЕНО (временное сглаживание, TAA): камера каждый кадр сдвинута
+    /// на долю пикселя, кадры накапливаются (см. engine/taa.rs). false —
+    /// как было. `reset_taa()` — забыть историю (телепорт камеры).
+    pub taa: bool,
+    /// ДОБАВЛЕНО (замер экспозиции): мерить среднюю яркость кадра —
+    /// `scene_luminance()` (с задержкой в пару кадров).
+    pub metering: bool,
+    metering_state: Option<metering::Metering>,
+    /// ДОБАВЛЕНО (локальная экспозиция): создаётся при `lens.local_exposure > 0`.
+    local_exposure_state: Option<local_exposure::LocalExposure>,
+    local_exposure_unavailable: bool,
+    /// ДОБАВЛЕНО (отражения лучами): отражённое окружение непрозрачных
+    /// поверхностей — лучами по сцене DDGI (нужен объём GI). false — из проб.
+    pub rt_reflections: bool,
+    /// ДОБАВЛЕНО (пауза непрямого света): не обновлять пробы DDGI в этом
+    /// кадре — атласы остаются как были (игра знает, что объём сейчас не
+    /// виден: подъезд, когда игрок на улице за закрытой дверью). TLAS для
+    /// отражений тоже не перестраивается — остаётся прошлый.
+    pub gi_paused: bool,
+    /// SSAO: радиус поиска преград, м, и сила затенения рассеянного света
+    /// (в углах, стыках, под предметами).
+    pub ssao_radius: f32,
+    pub ssao_strength: f32,
+    taa_state: Option<taa::Taa>,
+    /// view_proj основного прохода этого кадра (со сдвигом) — для репроекции.
+    taa_view_proj: crate::math::Mat4,
+    taa_unavailable: bool,
     /// ДОБАВЛЕНО (порт My Summer Car): дальность солнечных теней (метры).
     /// None — каскады делят всю дальность камеры, как раньше. Нужна, когда
     /// camera.far большой (купол неба): иначе дальний каскад тянется на
@@ -679,6 +800,17 @@ pub struct AlkashEngine {
     point_shadow_atlas: Option<crate::render::RenderTexture>,
     point_shadow_dsv: D3D12_CPU_DESCRIPTOR_HANDLE,
     point_shadow_atlas_is_srv: bool,
+    /// ДОБАВЛЕНО (кэш теней фонарей): копии атласов [spot, point] только со
+    /// статикой — создаются, когда в атласе появился `Mesh::moving`; между
+    /// кадрами в COPY_SOURCE.
+    local_shadow_static: [Option<ID3D12Resource>; 2],
+    /// Перенос глубины из `local_shadow_static` в плитку (None — ещё не
+    /// создан; `Err` при создании — кэш статики выключается).
+    shadow_restore: Option<std::result::Result<shadow_restore::ShadowRestore, ()>>,
+    /// ДОБАВЛЕНО (размытие в движении): view_proj прошлого кадра без сдвига TAA.
+    motion_prev_view_proj: Option<Mat4>,
+    /// ДОБАВЛЕНО (forward-декали): атлас и буферы (None — декалей нет).
+    decal_set: Option<decals::DecalSet>,
     spot_shadow_pipeline_state: Option<ID3D12PipelineState>,
     /// Матрицы view-proj тенеобразующих фонарей (cbuffer b2 основного PS),
     /// по слоту на frame_index. Фиксированного размера.
@@ -869,6 +1001,10 @@ pub struct AlkashEngine {
     /// отдельных частей с разными материалами.
     altex_mesh_cache: std::collections::HashMap<String, Vec<usize>>,
 
+    /// ДОБАВЛЕНО (чанки стриминга в видеопамяти): копирования, которые GPU ещё
+    /// не закончил, см. `new_meshes_to_video_memory`.
+    pending_mesh_copies: Vec<crate::buffer::PendingCopies>,
+
     /// ДОБАВЛЕНО (масштабирование стриминга на пул планировщика — см.
     /// `world_streaming.rs::load_chunk_data`): кэш "путь к `.altex` файлу
     /// -> уже РАСПАРСЕННЫЙ (не GPU!) файл", РАЗДЕЛЯЕМЫЙ между всеми
@@ -1016,6 +1152,11 @@ pub struct GraphicsSettings {
     pub bloom: bool,
     pub volumetric: bool,
     pub shadows: bool,
+    /// ДОБАВЛЕНО (досборка разрешения, TAAU): доля разрешения экрана, в
+    /// которой рисуется кадр (0.5..1). Меньше 1 — TAA собирает из кадра
+    /// полное разрешение (см. engine/taa.rs); без TAA кадр собирается тем
+    /// же проходом без истории, просто фильтром. 1 — как раньше.
+    pub render_scale: f32,
 }
 
 impl Default for GraphicsSettings {
@@ -1026,6 +1167,7 @@ impl Default for GraphicsSettings {
             bloom: true,
             volumetric: true,
             shadows: true,
+            render_scale: 1.0,
         }
     }
 }
@@ -1089,7 +1231,8 @@ pub const POINT_SHADOW_ATLAS_SLOT: usize = NUM_CASCADES + 1;
 /// и расстояния (t13); без объёма GI — пустые SRV.
 pub const GI_IRRADIANCE_SLOT: usize = NUM_CASCADES + 2;
 pub const GI_DISTANCE_SLOT: usize = NUM_CASCADES + 3;
-pub const SHADOW_TABLE_SLOTS: usize = NUM_CASCADES + 4;
+/// ДОБАВЛЕНО (forward-декали): ещё 4 слота — атлас и буферы (engine/decals.rs).
+pub const SHADOW_TABLE_SLOTS: usize = NUM_CASCADES + 8;
 
 /// tan половины угла обзора грани cube-тени (см. POINT_SHADOW_FACE_MARGIN_TEXELS):
 /// граница 90°-грани — tan=1, расширяем на margin текселей из tile/2.
