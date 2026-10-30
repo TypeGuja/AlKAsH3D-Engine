@@ -12,3 +12,20 @@
 /tools/buckshot/
 /tools/msc/
 /alkash3d-luascript/scripts/
+# Buckshot Equestria (junction на worktree AlKAsH3D-buckshot) и его запуск — только локально
+/buckshot-equestria/
+/alkash3d-rust/run_restroom.bat
+
+# Сборки для раздачи (tools/codec/build_steam.ps1)
+/dist/
+
+# Автозамер подъезда (tools/podezd_bench/bench.py) — результаты локальные
+/tools/podezd_bench/out/
+
+# Сканы подъезда: игра читает только Color, NormalDX и Roughness
+/alkash3d-rust/assets/podezd/scan/*/*
+!/alkash3d-rust/assets/podezd/scan/*/*_Color.png
+!/alkash3d-rust/assets/podezd/scan/*/*_NormalDX.png
+!/alkash3d-rust/assets/podezd/scan/*/*_Roughness.png
+
+__pycache__/
