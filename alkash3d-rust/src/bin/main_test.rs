@@ -153,6 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bloom: ENABLE_BLOOM,
         volumetric: ENABLE_VOLUMETRIC,
         shadows: ENABLE_SHADOWS,
+        render_scale: 1.0,
     };
     println!(
         "[MAIN_TEST] GraphicsSettings: msaa={} ssao={} bloom={} volumetric={} shadows={} (правь константы ENABLE_* в начале файла)",

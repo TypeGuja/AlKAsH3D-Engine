@@ -486,8 +486,14 @@ pub struct Renderer {
     pub depth_stencil_view: D3D12_CPU_DESCRIPTOR_HANDLE,
     pub rtv_size: u32,
     pub dsv_size: u32,
+    /// Размер экрана (back buffer'ы, всё после TAA).
     pub width: u32,
     pub height: u32,
+    /// ДОБАВЛЕНО (досборка разрешения, TAAU): размер, в котором рисуется
+    /// кадр — глубина, HDR, G-буфер, SSAO, отражения. Меньше экрана —
+    /// TAA собирает из него кадр размера экрана в `hdr_upscaled`.
+    pub render_width: u32,
+    pub render_height: u32,
 
     // ДОБАВЛЕНО (Фаза 5 плана по реализму/фонарям): HDR render target
     // (R16G16B16A16_FLOAT) — основной draw pass теперь рисует СЮДА, а не
@@ -541,12 +547,30 @@ pub struct Renderer {
     pub ambient_rtv: D3D12_CPU_DESCRIPTOR_HANDLE,
     /// Одноимпловая копия (resolve), SRV в srv_uav_heap слот AMBIENT_SRV_SLOT.
     pub ambient_resolved: RenderTexture,
+    /// ДОБАВЛЕНО (отражения лучами): G-буфер основного прохода — вес
+    /// отражённого окружения (rgb, уже с Френелем и воздухом) и
+    /// шероховатость (a); нормаль (rgb * 0.5 + 0.5, a = 1 — непрозрачная
+    /// поверхность). RTV лежат в hdr_rtv_heap сразу за ambient (слоты 2, 3).
+    pub spec_target: RenderTexture,
+    pub spec_resolved: RenderTexture,
+    pub normal_target: RenderTexture,
+    pub normal_resolved: RenderTexture,
+    /// ДОБАВЛЕНО (TAAU): выход TAA размера экрана, когда кадр рисуется
+    /// меньше; на нём SRV слота 0 (bloom, tonemap). None — кадр размера
+    /// экрана, TAA пишет обратно в `hdr_resolved`.
+    pub hdr_upscaled: Option<RenderTexture>,
 }
 
 /// ДОБАВЛЕНО (честный SSAO): слот SRV `ambient_resolved` в `srv_uav_heap`
 /// (0 = HDR, 1 = bloom, 2 = volumetric, 3 = SSAO — см. таблицу t0..t4
 /// тонмапа в engine/pipeline_post.rs).
 pub const AMBIENT_SRV_SLOT: u32 = 4;
+/// ДОБАВЛЕНО (локальная экспозиция): сетка средней яркости (t5 тонмапа),
+/// SRV пишет engine/local_exposure.rs.
+pub const LOCAL_EXPOSURE_SRV_SLOT: u32 = 5;
+/// ДОБАВЛЕНО (размытие в движении): глубина кадра (t6 тонмапа) — скорость
+/// пикселя восстанавливается из неё.
+pub const DEPTH_SRV_SLOT: u32 = 6;
 
 impl Renderer {
     /// `msaa_samples` — ДОБАВЛЕНО (runtime-переключаемый MSAA, по прямому
@@ -557,9 +581,11 @@ impl Renderer {
     /// готовое число сюда явным параметром. `MSAA_SAMPLES` (константа) при
     /// этом остаётся — она теперь означает "сколько сэмплов, КОГДА MSAA
     /// включён", а не "сколько сэмплов всегда".
-    pub fn new(width: u32, height: u32, buffer_count: u32, msaa_samples: u32) -> Result<Self> {
+    /// `render_width`/`render_height` — размер кадра (см. поле): равен
+    /// экрану или меньше (досборка через TAA).
+    pub fn new(width: u32, height: u32, render_width: u32, render_height: u32, buffer_count: u32, msaa_samples: u32) -> Result<Self> {
         println!("[RENDERER] ========== CREATING RENDERER ==========");
-        println!("[RENDERER] Width: {}, Height: {}, Buffer count: {}", width, height, buffer_count);
+        println!("[RENDERER] Width: {}, Height: {}, Render: {}x{}, Buffer count: {}", width, height, render_width, render_height, buffer_count);
 
         // ИСПРАВЛЕНО: было `state.device.as_ref().unwrap().clone()` и
         // `state.swap_chain.as_ref().unwrap().clone()`.
@@ -611,7 +637,7 @@ impl Renderer {
         }
 
         println!("[RENDERER] Creating depth stencil...");
-        let depth_stencil = RenderTexture::create_depth_stencil(width, height, msaa_samples)?;
+        let depth_stencil = RenderTexture::create_depth_stencil(render_width, render_height, msaa_samples)?;
         let depth_stencil_view = crate::heap::DescriptorHeap::get_cpu_handle(&dsv_heap, 0, dsv_size);
         // ОБНОВЛЕНО (Фаза 8 плана по реализму/фонарям — volumetric-
         // подсветка): раньше здесь стоял `device.CreateDepthStencilView(
@@ -635,8 +661,8 @@ impl Renderer {
         // существовал в heap.rs, но не был подключён нигде в движке до
         // этой фазы).
         println!("[RENDERER] Creating HDR target...");
-        let hdr_target = RenderTexture::create_hdr_target(width, height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
-        let hdr_rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(2)?;
+        let hdr_target = RenderTexture::create_hdr_target(render_width, render_height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        let hdr_rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(4)?;
         let hdr_rtv = crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 0, rtv_size);
         unsafe {
             // `None` desc — рантайм выводит вид из resource_desc самого
@@ -649,12 +675,21 @@ impl Renderer {
         }
 
         // ДОБАВЛЕНО (честный SSAO): ambient-таргет — см. поле `ambient_target`.
-        let ambient_target = RenderTexture::create_hdr_target_with_clear(width, height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET, [0.0; 4])?;
+        let ambient_target = RenderTexture::create_hdr_target_with_clear(render_width, render_height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET, [0.0; 4])?;
         let ambient_rtv = crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 1, rtv_size);
         unsafe {
             device.CreateRenderTargetView(&ambient_target.resource, None, ambient_rtv);
         }
-        let ambient_resolved = RenderTexture::create_hdr_target(width, height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
+        let ambient_resolved = RenderTexture::create_hdr_target(render_width, render_height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
+        // ДОБАВЛЕНО (отражения лучами): G-буфер — см. поля spec_*/normal_*.
+        let spec_target = RenderTexture::create_hdr_target_with_clear(render_width, render_height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET, [0.0; 4])?;
+        let normal_target = RenderTexture::create_hdr_target_with_clear(render_width, render_height, msaa_samples, D3D12_RESOURCE_STATE_RENDER_TARGET, [0.0; 4])?;
+        unsafe {
+            device.CreateRenderTargetView(&spec_target.resource, None, crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 2, rtv_size));
+            device.CreateRenderTargetView(&normal_target.resource, None, crate::heap::DescriptorHeap::get_cpu_handle(&hdr_rtv_heap, 3, rtv_size));
+        }
+        let spec_resolved = RenderTexture::create_hdr_target(render_width, render_height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
+        let normal_resolved = RenderTexture::create_hdr_target(render_width, render_height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
 
         // ДОБАВЛЕНО (максимальная графика — MSAA): одноимпловая копия
         // `hdr_target` — см. подробное обоснование у поля
@@ -662,9 +697,14 @@ impl Renderer {
         // PIXEL_SHADER_RESOURCE (см. `create_hdr_target`) — `render_frame`
         // переводит её в RESOLVE_DEST перед КАЖДЫМ (включая первый) кадром
         // одним и тем же переходом.
-        let hdr_resolved = RenderTexture::create_hdr_target(width, height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
+        let hdr_resolved = RenderTexture::create_hdr_target(render_width, render_height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
+        let hdr_upscaled = if (render_width, render_height) != (width, height) {
+            Some(RenderTexture::create_hdr_target(width, height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?)
+        } else {
+            None
+        };
 
-        let srv_uav_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(AMBIENT_SRV_SLOT + 1)?;
+        let srv_uav_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(DEPTH_SRV_SLOT + 1)?;
         let cbv_srv_uav_size = {
             let state = STATE.lock().unwrap();
             state.cbv_srv_uav_descriptor_size
@@ -674,9 +714,11 @@ impl Renderer {
         // ИЗМЕНЕНО (MSAA): SRV теперь на `hdr_resolved` (одноимпловая,
         // обычный Texture2D — то, что и ожидают bloom/tonemap-шейдеры), а
         // не на многосэмпловый `hdr_target` напрямую.
-        hdr_resolved.create_srv(hdr_srv_cpu)?;
+        // ИЗМЕНЕНО (TAAU): при досборке bloom/tonemap читают выход TAA
+        hdr_upscaled.as_ref().unwrap_or(&hdr_resolved).create_srv(hdr_srv_cpu)?;
         let ambient_srv_cpu = crate::heap::DescriptorHeap::get_cpu_handle(&srv_uav_heap, AMBIENT_SRV_SLOT, cbv_srv_uav_size);
         ambient_resolved.create_srv(ambient_srv_cpu)?;
+        depth_stencil.create_depth_srv(crate::heap::DescriptorHeap::get_cpu_handle(&srv_uav_heap, DEPTH_SRV_SLOT, cbv_srv_uav_size))?;
         println!("[RENDERER] ✓ HDR target (MSAA) + resolved copy + RTV + SRV created");
 
         // ВАЖНО: дескрипторный хип (`hdr_rtv_heap`) должен пережить весь
@@ -698,6 +740,8 @@ impl Renderer {
             dsv_size,
             width,
             height,
+            render_width,
+            render_height,
             hdr_target,
             hdr_rtv,
             hdr_rtv_heap,
@@ -707,6 +751,17 @@ impl Renderer {
             ambient_target,
             ambient_rtv,
             ambient_resolved,
+            spec_target,
+            spec_resolved,
+            normal_target,
+            normal_resolved,
+            hdr_upscaled,
         })
+    }
+
+    /// ДОБАВЛЕНО (TAAU): HDR, который читает всё после TAA (экспонометр,
+    /// локальная экспозиция, bloom, tonemap) — размера экрана.
+    pub fn post_hdr(&self) -> &RenderTexture {
+        self.hdr_upscaled.as_ref().unwrap_or(&self.hdr_resolved)
     }
 }

@@ -650,7 +650,14 @@ impl AlkashEngine {
                 continue;
             }
             let score = ((pos - cam_pos).length() - range).max(0.0);
-            candidates.push((score, i, Self::compute_point_shadow_view_projs(pos, range)));
+            // ИЗМЕНЕНО (тень патрона и провода у голой лампы): если задан
+            // размер светящегося тела (params.z), near-плоскость — сразу за
+            // ним: всё, что ближе 20 см к нити (патрон, цоколь, провод),
+            // тоже отбрасывает тень. Без размера — прежние 0.2 м (у
+            // городских фонарей ближе стоит их собственный плафон).
+            // размер тела точечного света — минус в params.z (углы прожекторов там >= 0)
+            let near = if l.params[2] < 0.0 { (-l.params[2] * 1.5).clamp(0.01, SPOT_SHADOW_NEAR) } else { SPOT_SHADOW_NEAR };
+            candidates.push((score, i, Self::compute_point_shadow_view_projs(pos, range, near)));
         }
         candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         candidates.into_iter().take(MAX_POINT_SHADOWS).map(|(_, i, vps)| (i, vps)).collect()
@@ -660,9 +667,10 @@ impl AlkashEngine {
     /// порядок +X,-X,+Y,-Y,+Z,-Z — ОБЯЗАН совпадать с выбором грани в
     /// SamplePointShadow (HLSL). Угол чуть больше 90° — см.
     /// point_shadow_face_tan_half_fov.
-    pub(super) fn compute_point_shadow_view_projs(position: Vec3, range: f32) -> [Mat4; 6] {
+    /// ИЗМЕНЕНО: `near` — своя у каждого фонаря (см. select_point_shadow_lights).
+    pub(super) fn compute_point_shadow_view_projs(position: Vec3, range: f32, near: f32) -> [Mat4; 6] {
         let fov = 2.0 * super::point_shadow_face_tan_half_fov().atan();
-        let proj = crate::math::perspective(fov, 1.0, SPOT_SHADOW_NEAR, range);
+        let proj = crate::math::perspective(fov, 1.0, near, range);
         let faces: [(Vec3, Vec3); 6] = [
             (Vec3::X, Vec3::Y),
             (-Vec3::X, Vec3::Y),

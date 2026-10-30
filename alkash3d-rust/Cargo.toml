@@ -74,12 +74,16 @@ name = "msc"
 path = "src/bin/msc/main.rs"
 
 [[bin]]
+name = "codec"
+path = "src/bin/codec/main.rs"
+
+[[bin]]
 name = "ponies"
-path = "src/bin/ponies/main.rs"
+path = "../buckshot-equestria/src/ponies/main.rs"
 
 [[bin]]
 name = "restroom"
-path = "src/bin/restroom/main.rs"
+path = "../buckshot-equestria/src/restroom/main.rs"
 
 
 [dependencies]
@@ -99,7 +103,7 @@ path = "src/bin/restroom/main.rs"
 # Win32_Storage_FileSystem — WriteFile/ReadFile для сырой записи/чтения
 # байтов через хендлы (в обход std::io::stdout(), см. комментарий в
 # console_log.rs про то, почему это важно именно здесь).
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D_Dxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Graphics_Dxgi_Common", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_Media_Audio_XAudio2", "Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_System_Console", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_Graphics_Direct3D12", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D_Dxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Graphics_Dxgi_Common", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_Media_Audio_XAudio2", "Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_System_Console", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Com"] }
 widestring = "1.0"
 windows-core = "0.62.2"
 winit = "0.31.0-beta.2"
@@ -112,6 +116,8 @@ rayon = "1.8"
 sysinfo = "0.39.3"
 rand = "0.10.1"
 glam = "0.33.2"
+# сканы поверхностей (ambientCG, PNG) для материалов podezd
+png = "0.17"
 nalgebra = "0.35.0"
 # ДОБАВЛЕНО (скриптинг, вторая волна — Python как hot-reload): чистый
 # Rust, никаких системных зависимостей (в отличие от pyo3, требующего

@@ -558,6 +558,14 @@ impl AudioEngine {
     /// заставлять XAudio2 пересэмплировать вывод на устройствах с другой
     /// частотой дискретизации по умолчанию.
     pub fn new() -> Result<Self, String> {
+        // ИСПРАВЛЕНО: XAudio2 (CreateMasteringVoice — поиск устройства через
+        // MMDevice) требует COM в потоке, а движок его нигде не
+        // инициализировал — звук падал с CO_E_NOTINITIALIZED (0x800401F0).
+        // Уже инициализированный COM (S_FALSE) или другой режим потока
+        // (RPC_E_CHANGED_MODE) — не ошибка: COM в потоке есть.
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+        }
         let xaudio2: IXAudio2 = unsafe {
             let mut ptr: Option<IXAudio2> = None;
             XAudio2CreateWithVersionInfo(&mut ptr, 0, 0 /* XAUDIO2_DEFAULT_PROCESSOR не задан явно — 0 тоже валиден, движок сам выбирает */, NTDDI_VERSION_UNSPECIFIED)
@@ -716,6 +724,24 @@ impl AudioEngine {
     /// Загружает .wav и кладёт в кэш клипов под заданным именем — повторная
     /// загрузка того же `name` заменяет старый клип (не ошибка — полезно
     /// при горячей перезагрузке звуковых ассетов в редакторе в будущем).
+    /// ДОБАВЛЕНО (процедурный звук): клип из готовых PCM16-сэмплов в памяти
+    /// (каналы чередуются) — игры синтезируют звук кодом, без файлов.
+    pub fn add_clip_pcm16(&mut self, name: &str, samples: &[i16], sample_rate: u32, channels: u16) {
+        let block = channels * 2;
+        let format = WAVEFORMATEX {
+            wFormatTag: WAVE_FORMAT_PCM as u16,
+            nChannels: channels,
+            nSamplesPerSec: sample_rate,
+            nAvgBytesPerSec: sample_rate * block as u32,
+            nBlockAlign: block,
+            wBitsPerSample: 16,
+            cbSize: 0,
+        };
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let duration_ms = (samples.len() as u64 * 1000 / (sample_rate as u64 * channels.max(1) as u64)) as u32;
+        self.clips.insert(name.to_string(), std::sync::Arc::new(SoundClip { format, data, duration_ms, vram: None }));
+    }
+
     pub fn load_clip(&mut self, name: &str, wav_path: &str) -> Result<(), String> {
         let mut clip = Self::load_wav_file(wav_path).map_err(|e| format!("{:?}", e))?;
         maybe_offload_to_vram(&mut clip, name);

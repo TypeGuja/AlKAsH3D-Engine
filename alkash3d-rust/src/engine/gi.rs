@@ -33,13 +33,31 @@ pub(super) fn main_ps_source() -> String {
 }
 
 /// Точки входа ddgi.hlsl (порядок = индексы `Gi::psos`).
-pub(super) const DDGI_KERNELS: [&str; 6] = ["TraceRays", "UpdateIrradiance", "UpdateDistance", "BorderIrradiance", "BorderDistance", "ClearAtlases"];
+pub(super) const DDGI_KERNELS: [&str; 8] = ["TraceRays", "UpdateIrradiance", "UpdateDistance", "BorderIrradiance", "BorderDistance", "ClearAtlases", "TraceReflections", "ResolveReflections"];
 const K_TRACE: usize = 0;
 const K_IRR: usize = 1;
 const K_DIST: usize = 2;
 const K_BORDER_IRR: usize = 3;
 const K_BORDER_DIST: usize = 4;
 const K_CLEAR: usize = 5;
+const K_REFL: usize = 6;
+const K_REFL_RESOLVE: usize = 7;
+/// ДОБАВЛЕНО (отражения лучами): дескрипторы прохода отражений в конце
+/// хипа — t6 вес/шероховатость, t7 нормаль/расстояние, t8 цвет,
+/// t9 лучи половинного разрешения (SRV), u3 выход, u4 лучи (UAV).
+const REFL_SLOT: u32 = HEAP_FIXED + 2 * MAX_RT_MESHES;
+
+/// Как cbuffer ReflConstants (b1) в ddgi.hlsl.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReflConstants {
+    inv_view_proj: [f32; 16],
+    cam_pos: [f32; 3],
+    frame: u32,
+    size: [f32; 2],
+    max_roughness: f32,
+    _pad: f32,
+}
 
 /// Внутренняя часть плитки пробы (как DDGI_IRR_N / DDGI_DIST_N в HLSL).
 const IRR_N: u32 = 8;
@@ -189,6 +207,12 @@ pub(crate) struct Gi {
     next_probe: u32,
     /// Отладка: показывать только рассеянный свет с этим усилением (0 — выкл).
     pub(super) debug_gain: f32,
+    /// ДОБАВЛЕНО (отражения лучами): выход прохода (UAV) и его размер.
+    refl_out: Option<(ID3D12Resource, u32, u32)>,
+    /// Лучи отражений, по одному на блок 2x2 выхода (тот же размер, что у refl_out).
+    refl_half: Option<ID3D12Resource>,
+    /// Ресурсы, на которые записаны SRV t6..t8 (пересоздаются при ресайзе).
+    refl_srcs: [usize; 3],
 }
 
 fn buffer(device: &ID3D12Device5, size: u64, heap: D3D12_HEAP_TYPE, flags: D3D12_RESOURCE_FLAGS, state: D3D12_RESOURCE_STATES) -> Result<ID3D12Resource> {
@@ -355,7 +379,7 @@ impl Gi {
         let heap: ID3D12DescriptorHeap = unsafe {
             device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: HEAP_FIXED + 2 * MAX_RT_MESHES,
+                NumDescriptors: HEAP_FIXED + 2 * MAX_RT_MESHES + 6,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             })
@@ -363,13 +387,17 @@ impl Gi {
         .map_err(|e| format!("descriptor heap: {}", e))?;
         let inc = unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) };
         println!("[GI] ✓ DDGI готов (DXR 1.1, {} ядер)", psos.len());
-        Ok(Gi { device, root, psos, heap, inc, blas: Vec::new(), frames: Default::default(), probes: None, frame_counter: 0, next_probe: 0, debug_gain: 0.0 })
+        Ok(Gi { device, root, psos, heap, inc, blas: Vec::new(), frames: Default::default(), probes: None, frame_counter: 0, next_probe: 0, debug_gain: 0.0, refl_out: None, refl_half: None, refl_srcs: [0; 3] })
     }
 
     fn root_signature(device: &ID3D12Device5) -> Result<ID3D12RootSignature> {
         let srv_atlases = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NumDescriptors: 3, BaseShaderRegister: 3, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 0 };
         let uavs = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV, NumDescriptors: 3, BaseShaderRegister: 0, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 0 };
         let buffers = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NumDescriptors: 2 * MAX_RT_MESHES, BaseShaderRegister: 0, RegisterSpace: 1, OffsetInDescriptorsFromTableStart: 0 };
+        let refl = [
+            D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NumDescriptors: 4, BaseShaderRegister: 6, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 0 },
+            D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV, NumDescriptors: 2, BaseShaderRegister: 3, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 4 },
+        ];
         let root_desc = |t: D3D12_ROOT_PARAMETER_TYPE, reg: u32| D3D12_ROOT_PARAMETER {
             ParameterType: t,
             Anonymous: D3D12_ROOT_PARAMETER_0 { Descriptor: D3D12_ROOT_DESCRIPTOR { ShaderRegister: reg, RegisterSpace: 0 } },
@@ -390,6 +418,17 @@ impl Gi {
             table(&srv_atlases),
             table(&uavs),
             table(&buffers),
+            // 7 — отражения: t6..t9 + u3..u4; 8 — их константы b1
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 { DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE { NumDescriptorRanges: 2, pDescriptorRanges: refl.as_ptr() } },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            },
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                Anonymous: D3D12_ROOT_PARAMETER_0 { Constants: D3D12_ROOT_CONSTANTS { ShaderRegister: 1, RegisterSpace: 0, Num32BitValues: (std::mem::size_of::<ReflConstants>() / 4) as u32 } },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            },
         ];
         let sampler = D3D12_STATIC_SAMPLER_DESC {
             Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -604,7 +643,11 @@ impl Gi {
             let base = d.albedo;
             let albedo = [base[0] * d.tint[0], base[1] * d.tint[1], base[2] * d.tint[2]];
             let e = mesh.material_emissive;
-            let slot = HEAP_FIXED + 2 * d.mesh as u32;
+            // ИСПРАВЛЕНО: индекс внутри таблицы Buffers[] (она начинается с
+            // HEAP_FIXED, см. SetComputeRootDescriptorTable(6, ...)), а не
+            // номер дескриптора в хипе — раньше луч читал нормали и индексы
+            // меша на HEAP_FIXED/2 дальше: ложные «изнанки» гасили пробы.
+            let slot = 2 * d.mesh as u32;
             materials.push(RtInstance {
                 albedo: [albedo[0].min(1.0), albedo[1].min(1.0), albedo[2].min(1.0)],
                 vertex_buffer: slot,
@@ -745,6 +788,87 @@ impl Gi {
     }
 }
 
+impl Gi {
+    /// ДОБАВЛЕНО (отражения лучами): один отражённый луч на пиксель по
+    /// G-буферу (`spec`, `normal` — разрешённые, PIXEL_SHADER_RESOURCE),
+    /// результат «цвет + вес * отражение» копируется обратно в `color`
+    /// (hdr_resolved). Нужны TLAS и константы, записанные `record` этого
+    /// же кадра; без них — false (кадр не тронут).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_reflections(&mut self, list: &ID3D12GraphicsCommandList, frame: usize, spec: &ID3D12Resource, normal: &ID3D12Resource, color: &ID3D12Resource, size: [u32; 2], inv_view_proj: Mat4, cam_pos: Vec3, max_roughness: f32) -> Result<bool> {
+        if self.probes.is_none() {
+            return Ok(false);
+        }
+        let f = &self.frames[frame];
+        let (Some(cb), Some(tlas), Some(materials), Some(lights)) = (f.constants.resource.clone(), f.tlas.resource.clone(), f.materials.resource.clone(), f.lights.resource.clone()) else {
+            return Ok(false);
+        };
+        let list4: ID3D12GraphicsCommandList4 = list.cast()?;
+        let [w, h] = size;
+        if !self.refl_out.as_ref().is_some_and(|(_, ow, oh)| *ow == w && *oh == h) {
+            let t = texture(&self.device, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT)?;
+            texture_uav(&self.device, &t, DXGI_FORMAT_R16G16B16A16_FLOAT, self.cpu(REFL_SLOT + 4));
+            let half = texture(&self.device, w.div_ceil(2), h.div_ceil(2), DXGI_FORMAT_R16G16B16A16_FLOAT)?;
+            texture_srv(&self.device, Some(&half), DXGI_FORMAT_R16G16B16A16_FLOAT, self.cpu(REFL_SLOT + 3));
+            texture_uav(&self.device, &half, DXGI_FORMAT_R16G16B16A16_FLOAT, self.cpu(REFL_SLOT + 5));
+            // прежний выход может читать кадр в полёте — освободится вместе с
+            // мусором этого слота кадра (после его fence)
+            if let Some((old, _, _)) = self.refl_out.replace((t, w, h)) {
+                self.frames[frame].garbage.push(old);
+            }
+            if let Some(old) = self.refl_half.replace(half) {
+                self.frames[frame].garbage.push(old);
+            }
+        }
+        for (k, r) in [spec, normal, color].into_iter().enumerate() {
+            let ptr = r.as_raw() as usize;
+            if self.refl_srcs[k] != ptr {
+                texture_srv(&self.device, Some(r), DXGI_FORMAT_R16G16B16A16_FLOAT, self.cpu(REFL_SLOT + k as u32));
+                self.refl_srcs[k] = ptr;
+            }
+        }
+        let out = self.refl_out.as_ref().unwrap().0.clone();
+        let half = self.refl_half.clone().unwrap();
+        let pixel = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        let all_srv = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        let ua = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        let c = ReflConstants {
+            inv_view_proj: inv_view_proj.to_cols_array(),
+            cam_pos: cam_pos.to_array(),
+            frame: self.frame_counter as u32,
+            size: [w as f32, h as f32],
+            max_roughness,
+            _pad: 0.0,
+        };
+        transitions(&list4, &[(spec, pixel, all_srv), (normal, pixel, all_srv), (color, pixel, all_srv)]);
+        unsafe {
+            list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
+            list.SetComputeRootSignature(&self.root);
+            list.SetComputeRootConstantBufferView(0, cb.GetGPUVirtualAddress());
+            list.SetComputeRootShaderResourceView(1, tlas.GetGPUVirtualAddress());
+            list.SetComputeRootShaderResourceView(2, materials.GetGPUVirtualAddress());
+            list.SetComputeRootShaderResourceView(3, lights.GetGPUVirtualAddress());
+            list.SetComputeRootDescriptorTable(4, self.gpu(3));
+            list.SetComputeRootDescriptorTable(5, self.gpu(0));
+            list.SetComputeRootDescriptorTable(6, self.gpu(HEAP_FIXED));
+            list.SetComputeRootDescriptorTable(7, self.gpu(REFL_SLOT));
+            list.SetComputeRoot32BitConstants(8, (std::mem::size_of::<ReflConstants>() / 4) as u32, &c as *const _ as *const _, 0);
+            list.SetPipelineState(&self.psos[K_REFL]);
+            list.Dispatch(w.div_ceil(2).div_ceil(8), h.div_ceil(2).div_ceil(8), 1);
+        }
+        transitions(&list4, &[(&half, ua, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)]);
+        unsafe {
+            list.SetPipelineState(&self.psos[K_REFL_RESOLVE]);
+            list.Dispatch(w.div_ceil(8), h.div_ceil(8), 1);
+        }
+        transitions(&list4, &[(&half, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, ua)]);
+        transitions(&list4, &[(&out, ua, D3D12_RESOURCE_STATE_COPY_SOURCE), (color, all_srv, D3D12_RESOURCE_STATE_COPY_DEST), (spec, all_srv, pixel), (normal, all_srv, pixel)]);
+        unsafe { list.CopyResource(color, &out) };
+        transitions(&list4, &[(&out, D3D12_RESOURCE_STATE_COPY_SOURCE, ua), (color, D3D12_RESOURCE_STATE_COPY_DEST, pixel)]);
+        Ok(true)
+    }
+}
+
 /// Равномерно случайный поворот (кватернион из трёх равномерных чисел, Shoemake).
 fn random_rotation(seed: u64) -> Quat {
     let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
@@ -794,6 +918,9 @@ impl super::AlkashEngine {
         let slot = |s: usize| crate::heap::DescriptorHeap::get_cpu_handle(heap, s as u32, size);
         texture_srv(&device, atlases.map(|a| a.0), IRR_FORMAT, slot(super::GI_IRRADIANCE_SLOT));
         texture_srv(&device, atlases.map(|a| a.1), DIST_FORMAT, slot(super::GI_DISTANCE_SLOT));
+        // ДОБАВЛЕНО (forward-декали): их слоты в той же таблице — после
+        // перевыделения хипа пишутся заново вместе с атласами проб
+        self.write_decal_srvs();
     }
 
     /// Отладка непрямого света: вместо кадра — только рассеянный свет в

@@ -24,7 +24,7 @@ impl PipelineState {
         depth_format: DXGI_FORMAT,
         sample_count: u32,
     ) -> Result<ID3D12PipelineState> {
-        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, false)
+        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, false, false, DepthMode::Write)
     }
 
     /// ДОБАВЛЕНО (прозрачность): тот же конвейер, но target 0 смешивается
@@ -39,9 +39,56 @@ impl PipelineState {
         depth_format: DXGI_FORMAT,
         sample_count: u32,
     ) -> Result<ID3D12PipelineState> {
-        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, true)
+        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, true, false, DepthMode::Write)
     }
 
+    /// ДОБАВЛЕНО (отражения лучами в стекле): как прозрачный, но цели 2+
+    /// (G-буфер: вес отражения, нормаль) перезаписываются — стекло само
+    /// становится поверхностью, от которой проход лучей строит отражение.
+    pub fn create_graphics_glass(
+        vs: &ShaderBlob,
+        ps: &ShaderBlob,
+        root_signature: &ID3D12RootSignature,
+        vertex_stride: u32,
+        render_target_formats: &[DXGI_FORMAT],
+        depth_format: DXGI_FORMAT,
+        sample_count: u32,
+    ) -> Result<ID3D12PipelineState> {
+        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, true, true, DepthMode::Write)
+    }
+
+    /// ДОБАВЛЕНО (предпроход глубины): только глубина — тот же VS, без PS и
+    /// без целей. Основной проход потом рисует непрозрачное поверх неё
+    /// (`create_graphics_after_prepass`): дорогой пиксельный шейдер
+    /// считается один раз на пиксель экрана, а не для каждой закрытой
+    /// поверхности (подъезд — большие меши по материалу, сортировка от
+    /// ближнего к дальнему перекрытие не убирает).
+    pub fn create_depth_prepass(
+        vs: &ShaderBlob,
+        ps: &ShaderBlob,
+        root_signature: &ID3D12RootSignature,
+        vertex_stride: u32,
+        depth_format: DXGI_FORMAT,
+        sample_count: u32,
+    ) -> Result<ID3D12PipelineState> {
+        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, &[], depth_format, sample_count, false, false, DepthMode::Prepass)
+    }
+
+    /// ДОБАВЛЕНО (предпроход глубины): как `create_graphics`, но глубина уже
+    /// готова — проверка LESS_EQUAL (тот же VS даёт ту же глубину), без записи.
+    pub fn create_graphics_after_prepass(
+        vs: &ShaderBlob,
+        ps: &ShaderBlob,
+        root_signature: &ID3D12RootSignature,
+        vertex_stride: u32,
+        render_target_formats: &[DXGI_FORMAT],
+        depth_format: DXGI_FORMAT,
+        sample_count: u32,
+    ) -> Result<ID3D12PipelineState> {
+        Self::create_graphics_impl(vs, ps, root_signature, vertex_stride, render_target_formats, depth_format, sample_count, false, false, DepthMode::AfterPrepass)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn create_graphics_impl(
         vs: &ShaderBlob,
         ps: &ShaderBlob,
@@ -51,6 +98,8 @@ impl PipelineState {
         depth_format: DXGI_FORMAT,
         sample_count: u32,
         transparent: bool,
+        gbuffer_writes: bool,
+        depth_mode: DepthMode,
     ) -> Result<ID3D12PipelineState> {
         println!("[PSO] ========== CREATING GRAPHICS PIPELINE STATE ==========");
         println!("[PSO] VS size: {} bytes", vs.size());
@@ -206,6 +255,11 @@ impl PipelineState {
                 RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALPHA.0 as u8,
                 ..opaque_rt
             };
+            if gbuffer_writes {
+                for rt in render_targets.iter_mut().skip(2) {
+                    *rt = opaque_rt;
+                }
+            }
         }
         let blend_desc = D3D12_BLEND_DESC {
             AlphaToCoverageEnable: FALSE,
@@ -217,8 +271,8 @@ impl PipelineState {
         println!("[PSO] Creating depth stencil state (ENABLED)...");
         let depth_stencil = D3D12_DEPTH_STENCIL_DESC {
             DepthEnable: TRUE,
-            DepthWriteMask: if transparent { D3D12_DEPTH_WRITE_MASK_ZERO } else { D3D12_DEPTH_WRITE_MASK_ALL },
-            DepthFunc: D3D12_COMPARISON_FUNC_LESS,
+            DepthWriteMask: if transparent || depth_mode == DepthMode::AfterPrepass { D3D12_DEPTH_WRITE_MASK_ZERO } else { D3D12_DEPTH_WRITE_MASK_ALL },
+            DepthFunc: if depth_mode == DepthMode::AfterPrepass { D3D12_COMPARISON_FUNC_LESS_EQUAL } else { D3D12_COMPARISON_FUNC_LESS },
             StencilEnable: FALSE,
             StencilReadMask: D3D12_DEFAULT_STENCIL_READ_MASK as u8,
             StencilWriteMask: D3D12_DEFAULT_STENCIL_WRITE_MASK as u8,
@@ -252,9 +306,13 @@ impl PipelineState {
                 pShaderBytecode: vs.as_ptr(),
                 BytecodeLength: vs.size(),
             },
-            PS: D3D12_SHADER_BYTECODE {
-                pShaderBytecode: ps.as_ptr(),
-                BytecodeLength: ps.size(),
+            PS: if depth_mode == DepthMode::Prepass {
+                D3D12_SHADER_BYTECODE::default()
+            } else {
+                D3D12_SHADER_BYTECODE {
+                    pShaderBytecode: ps.as_ptr(),
+                    BytecodeLength: ps.size(),
+                }
             },
             DS: D3D12_SHADER_BYTECODE::default(),
             HS: D3D12_SHADER_BYTECODE::default(),
@@ -315,4 +373,15 @@ impl PipelineState {
         }
         result
     }
+}
+
+/// ДОБАВЛЕНО (предпроход глубины): что конвейер делает с глубиной.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DepthMode {
+    /// Проверка LESS и запись (как было).
+    Write,
+    /// Предпроход: только глубина, без PS.
+    Prepass,
+    /// После предпрохода: LESS_EQUAL без записи.
+    AfterPrepass,
 }

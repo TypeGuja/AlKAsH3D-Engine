@@ -2,6 +2,8 @@
 use windows::core::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use crate::STATE;
 
 #[derive(Clone)]
@@ -9,6 +11,37 @@ pub struct Buffer {
     pub resource: ID3D12Resource,
     pub size: u64,
     pub vertex_stride: u32,
+}
+
+/// Копирование в видеопамять, отправленное на GPU: держит всё, что оно читает.
+/// Отпускать только после `is_finished` или `wait`.
+pub struct PendingCopies {
+    fence: ID3D12Fence,
+    _allocator: ID3D12CommandAllocator,
+    _list: ID3D12GraphicsCommandList,
+    _sources: Vec<Buffer>,
+}
+
+impl PendingCopies {
+    pub fn is_finished(&self) -> bool {
+        unsafe { self.fence.GetCompletedValue() >= 1 }
+    }
+
+    fn wait(&self) -> Result<()> {
+        if self.is_finished() {
+            return Ok(());
+        }
+        unsafe {
+            let event = CreateEventW(None, false, false, None)?;
+            let waited = self.fence.SetEventOnCompletion(1, event).map(|_| WaitForSingleObject(event, 5000));
+            let _ = CloseHandle(event);
+            if waited? != WAIT_OBJECT_0 {
+                eprintln!("[BUFFER] копирование в видеопамять не завершилось за 5 с");
+                return Err(Error::from_hresult(HRESULT(1)));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Buffer {
@@ -103,6 +136,78 @@ impl Buffer {
         // из hot path загрузки чанков по той же причине.
         let bytes: Vec<u8> = data.iter().flat_map(|&x| x.to_le_bytes()).collect();
         Self::create_vertex_buffer(&bytes, 4)
+    }
+
+    /// ДОБАВЛЕНО (геометрия в видеопамяти): копии буферов в DEFAULT-куче, в том
+    /// же порядке. `create_vertex_buffer` кладёт данные в UPLOAD-кучу — это
+    /// оперативная память, GPU читает её через PCIe, и каждая вершина обходится
+    /// заметно дороже. Копии с CPU уже не записать (`Mesh::update_vertices`
+    /// вернёт ошибку), поэтому — только для неизменяемой геометрии. Состояние
+    /// то же, что у исходных (GENERIC_READ). Ждёт конца копирования; при
+    /// ошибке исходные буферы остаются в силе.
+    pub fn copies_in_video_memory(buffers: &[&Buffer]) -> Result<Vec<Buffer>> {
+        let (copies, pending) = Self::copies_in_video_memory_nowait(buffers)?;
+        pending.wait()?;
+        Ok(copies)
+    }
+
+    /// То же без ожидания (чанки стриминга: ждать GPU в кадре — фриз). Копии
+    /// можно рисовать сразу: копирование стоит в той же очереди раньше любого
+    /// следующего кадра. Исходные буферы живут в `PendingCopies`, пока оно не
+    /// закончится.
+    pub fn copies_in_video_memory_nowait(buffers: &[&Buffer]) -> Result<(Vec<Buffer>, PendingCopies)> {
+        let device = crate::get_device()?;
+        let heap_properties = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_DEFAULT, ..Default::default() };
+        unsafe {
+            let allocator: ID3D12CommandAllocator = device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+            let list: ID3D12GraphicsCommandList = device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?;
+            let mut copies = Vec::with_capacity(buffers.len());
+            let mut barriers = Vec::with_capacity(buffers.len());
+            for b in buffers {
+                let desc = D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                    Width: b.size,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    Format: DXGI_FORMAT_UNKNOWN,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                    ..Default::default()
+                };
+                let mut resource: Option<ID3D12Resource> = None;
+                device.CreateCommittedResource(&heap_properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, None, &mut resource)?;
+                let resource = resource.ok_or_else(|| Error::from_hresult(HRESULT(1)))?;
+                list.CopyBufferRegion(&resource, 0, &b.resource, 0, b.size);
+                barriers.push(D3D12_RESOURCE_BARRIER {
+                    Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                    Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                    Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                        Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                            pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+                            Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                            StateBefore: D3D12_RESOURCE_STATE_COPY_DEST,
+                            StateAfter: D3D12_RESOURCE_STATE_GENERIC_READ,
+                        }),
+                    },
+                });
+                copies.push(Buffer { resource, size: b.size, vertex_stride: b.vertex_stride });
+            }
+            list.ResourceBarrier(&barriers);
+            for barrier in &mut barriers {
+                let mut transition = std::mem::ManuallyDrop::take(&mut barrier.Anonymous.Transition);
+                std::mem::ManuallyDrop::drop(&mut transition.pResource);
+            }
+            list.Close()?;
+
+            let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
+            let queue = crate::get_command_queue()?;
+            let lists: [Option<ID3D12CommandList>; 1] = [Some(list.clone().into())];
+            queue.ExecuteCommandLists(&lists);
+            queue.Signal(&fence, 1)?;
+            let sources = buffers.iter().map(|b| (*b).clone()).collect();
+            Ok((copies, PendingCopies { fence, _allocator: allocator, _list: list, _sources: sources }))
+        }
     }
 
     pub fn create_constant_buffer(size: u64) -> Result<Self> {

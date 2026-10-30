@@ -57,6 +57,10 @@ impl AlkashEngine {
             root_signature: None,
             pipeline_state: None,
             transparent_pipeline_state: None,
+            glass_pipeline_state: None,
+            prepass_pipeline_state: None,
+            after_prepass_pipeline_state: None,
+            depth_prepass: std::env::var("ALKASH3D_PREPASS").map(|v| v != "0").unwrap_or(true),
             vs: None,
             ps: None,
             camera: Camera::new(width, height),
@@ -88,6 +92,22 @@ impl AlkashEngine {
             input: InputState::new(),
             light_ambient: None,
             light_global_settings: None,
+            white_point: [1.0, 1.0, 1.0],
+            lens: super::Lens::default(),
+            medium: None,
+            lens_frame: 0,
+            taa: false,
+            metering: false,
+            metering_state: None,
+            local_exposure_state: None,
+            local_exposure_unavailable: false,
+            rt_reflections: false,
+            gi_paused: false,
+            ssao_radius: 0.5,
+            ssao_strength: 1.2,
+            taa_state: None,
+            taa_view_proj: crate::math::Mat4::IDENTITY,
+            taa_unavailable: false,
             shadow_far: None,
             light_buffer: None,
             light_buffer_capacity: 0,
@@ -157,6 +177,10 @@ impl AlkashEngine {
             point_shadow_atlas: None,
             point_shadow_dsv: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
             point_shadow_atlas_is_srv: false,
+            local_shadow_static: [None, None],
+            shadow_restore: None,
+            motion_prev_view_proj: None,
+            decal_set: None,
             spot_shadow_pipeline_state: None,
             spot_shadow_matrices_buffer: None,
             spot_shadow_constant_buffer: None,
@@ -207,6 +231,7 @@ impl AlkashEngine {
             world: None,
             world_chunk_placeholder_mesh: None,
             altex_mesh_cache: std::collections::HashMap::new(),
+            pending_mesh_copies: Vec::new(),
             altex_parse_cache: AltexParseCache::default(),
             chunk_loader_result_tx,
             chunk_loader_rx,
@@ -255,6 +280,14 @@ impl AlkashEngine {
         self.graphics_settings = settings;
     }
 
+    /// ДОБАВЛЕНО (TAAU): размер, в котором рисуется кадр, — экран, умноженный
+    /// на `GraphicsSettings::render_scale` (с MSAA досборки нет: его resolve
+    /// и TAA с историей другого размера не сочетаются).
+    pub(super) fn render_size(&self) -> (u32, u32) {
+        let s = if self.msaa_samples > 1 { 1.0 } else { self.graphics_settings.render_scale.clamp(0.5, 1.0) };
+        (((self.width as f32 * s).round() as u32).max(1), ((self.height as f32 * s).round() as u32).max(1))
+    }
+
     pub fn init(&mut self) -> Result<()> {
         println!("[ENGINE] Initializing Alkash3D Engine v{}...", VERSION);
 
@@ -283,7 +316,8 @@ impl AlkashEngine {
             }
             println!("[ENGINE] ✓ Fence created");
 
-            let renderer = Renderer::new(self.width, self.height, 2, self.msaa_samples)?;
+            let (rw, rh) = self.render_size();
+            let renderer = Renderer::new(self.width, self.height, rw, rh, 2, self.msaa_samples)?;
             self.renderer = Some(renderer);
             println!("[ENGINE] ✓ Renderer created");
         }
@@ -356,8 +390,14 @@ impl AlkashEngine {
         }
 
         unsafe {
-            ShowWindow(self.hwnd.unwrap(), SW_SHOW);
-            UpdateWindow(self.hwnd.unwrap());
+            // ДОБАВЛЕНО (снимки кадра без окна на экране): ALKASH3D_HIDDEN=1 —
+            // окно не показывается, кадры рисуются как обычно (см. screenshot.rs)
+            if std::env::var("ALKASH3D_HIDDEN").map(|v| v != "0").unwrap_or(false) {
+                ShowWindow(self.hwnd.unwrap(), SW_HIDE);
+            } else {
+                ShowWindow(self.hwnd.unwrap(), SW_SHOW);
+                UpdateWindow(self.hwnd.unwrap());
+            }
         }
 
         self.running = true;
@@ -534,6 +574,9 @@ impl AlkashEngine {
         }
         self.spot_shadow_atlas = None;
         self.point_shadow_atlas = None;
+        self.local_shadow_static = [None, None];
+        self.shadow_restore = None;
+        self.decal_set = None;
         self.spot_shadow_pipeline_state = None;
         self.spot_shadow_matrices_buffer = None;
         self.spot_shadow_constant_buffer = None;

@@ -13,10 +13,15 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
 
-/// Метки: начало кадра, после теней солнца, после теней фонарей, после основного
-/// прохода, после объёмного света, после SSAO, после bloom, конец кадра.
-pub const MARKS: usize = 8;
-pub const LABELS: [&str; MARKS - 1] = ["тени солнца", "тени фонарей", "основной", "объёмный свет", "SSAO", "bloom", "tonemap"];
+/// Метки на границах проходов (см. render_frame.rs), подпись — проход между
+/// меткой i и i+1.
+/// ИСПРАВЛЕНО: подписи врали — «тени фонарей» включали обновление проб DDGI,
+/// «основной» — и прозрачное, и resolve, «SSAO» — ещё лучевые отражения,
+/// TAA и экспонометр. Замеры по ним указывали не туда.
+pub const MARKS: usize = 12;
+pub const LABELS: [&str; MARKS - 1] = [
+    "тени солнца", "тени ламп", "пробы DDGI", "непрозрачное", "прозрачное+resolve", "объёмный свет", "SSAO", "отражения", "TAA+экспонометр", "bloom", "tonemap",
+];
 const SLOTS: usize = 4;
 
 struct Timer {
