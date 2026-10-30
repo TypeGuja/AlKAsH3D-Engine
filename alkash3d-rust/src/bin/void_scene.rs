@@ -13,7 +13,9 @@
 //! оригинале, отодвинуты, подняты и наведены на стол, стоят на штативах со
 //! стрелой (`lamps/lamp 1..4`); ещё два таких же светят на пробковую доску
 //! слева от стола (`lamps/lamp 5..6`, `board`). Узлы лампы — `projector, stand,
-//! glass, light`; когда что горит — скрипт игры.
+//! glass, reflector, back, socket, base, bulb, leads, filament, light, glow`:
+//! в корпусе за прозрачным стеклом — хромированный отражатель, патрон и
+//! лампа накаливания "свеча" с нитью зигзагом; когда что горит — скрипт игры.
 //! Масштаб как у Buckshot: 1 единица ≈ 10 см.
 
 #[path = "buckshot/scene_file.rs"]
@@ -63,6 +65,35 @@ const BOOM: f32 = 3.5;
 /// Стекло: расстояние от центра корпуса по оси (передняя крышка ~2.7) и радиус.
 const GLASS_AT: f32 = 2.85;
 const GLASS_R: f32 = 1.3;
+/// Начинка корпуса, расстояния по оси от его центра (корпус — открытая труба
+/// от -1.8 до 2.7; внутренний радиус ~0.99 на 0.77..1.56, ~1.19 на 1.56..2.02,
+/// кольцо ~0.85 на 2.02). Хромированный полусферический отражатель с нитью
+/// в центре сферы стоит у самого переднего кольца и почти касается стенок:
+/// в отверстии кольца видна его чаша, а край спрятан за кольцом; лампа
+/// видна под углом до ~55° от оси луча.
+const FILAMENT_AT: f32 = 2.0;
+const REFLECTOR_R: f32 = 1.05;
+const BACK_AT: f32 = 0.85;
+/// Доля света, которую отражает хром (видимый диапазон ~0.6).
+const CHROME_REFLECTANCE: f32 = 0.6;
+/// Лампа-свеча (C35, E14): начало стекла, цоколь за ним, профиль колбы
+/// (от начала стекла, радиус) — цилиндр Ø35 мм, кончик пламенем.
+const CANDLE_AT: f32 = FILAMENT_AT - 0.35;
+const CANDLE: [(f32, f32); 10] = [
+    (0.0, 0.075), (0.05, 0.1), (0.12, 0.15), (0.2, 0.172), (0.35, 0.175),
+    (0.47, 0.16), (0.57, 0.12), (0.65, 0.07), (0.71, 0.025), (0.73, 0.0),
+];
+/// Нить как у ретро-ламп: зигзаг по крючкам двух звёздочек держателей
+/// (высота `FILAMENT_H`, радиус `FILAMENT_RING`), видимая толщина спирали
+/// 1.2 мм (сама проволока тоньше, но свернута в спираль).
+const FILAMENT_HOOKS: usize = 8;
+const FILAMENT_H: f32 = 0.13;
+const FILAMENT_RING: f32 = 0.1;
+const FILAMENT_WIRE: f32 = 0.006;
+/// Свет нити внутри корпуса (отражатель, патрон, колба): без тени,
+/// честное 1/d², дальность — чуть больше трубы.
+const GLOW_ENERGY: f32 = 0.6;
+const GLOW_RANGE: f32 = 2.2;
 /// Цвет света — как у ламп над столом в оригинале.
 const LIGHT_COLOR: [f32; 3] = [0.960784, 0.501961, 0.227451];
 /// Дальность света прожекторов стола и доски: друг до друга не достают.
@@ -178,6 +209,88 @@ fn add_disc(s: &mut Surface, m: Mat4, r: f32, h: f32) {
         let (a, b) = (base + j * 2, base + ((j + 1) % SEG as u32) * 2);
         s.indices.extend([a, b + 1, a + 1, a, b, b + 1]);
     }
+}
+
+/// Вершина с нормалью `n` (касательная — любая перпендикулярная).
+fn vert(p: Vec3, n: Vec3, u: f32, v: f32) -> [f32; 12] {
+    let t = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y }.cross(n).normalize_or_zero();
+    [p.x, p.y, p.z, n.x, n.y, n.z, u, v, t.x, t.y, t.z, 1.0]
+}
+
+/// Треугольник; лицевая сторона — по часовой, если смотреть снаружи (как у
+/// `add_box`), "снаружи" — куда смотрят нормали его вершин.
+fn push_tri(s: &mut Surface, t: [u32; 3]) {
+    let v = |k: u32| {
+        let v = &s.vertices[k as usize];
+        (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]))
+    };
+    let ((a, na), (b, nb), (c, nc)) = (v(t[0]), v(t[1]), v(t[2]));
+    if (b - a).cross(c - a).dot(na + nb + nc) > 0.0 {
+        s.indices.extend([t[0], t[2], t[1]]);
+    } else {
+        s.indices.extend(t);
+    }
+}
+
+/// Поверхность из замкнутых колец (точка, нормаль) одинаковой длины: соседние кольца сшиваются.
+fn add_rings(s: &mut Surface, rings: &[Vec<(Vec3, Vec3)>]) {
+    let seg = rings[0].len();
+    let base = s.vertices.len() as u32;
+    for (i, ring) in rings.iter().enumerate() {
+        for (j, &(p, n)) in ring.iter().enumerate() {
+            s.vertices.push(vert(p, n, j as f32 / seg as f32, i as f32 / (rings.len() - 1).max(1) as f32));
+        }
+    }
+    let at = |i: usize, j: usize| base + (i * seg + j % seg) as u32;
+    for i in 0..rings.len() - 1 {
+        for j in 0..seg {
+            push_tri(s, [at(i, j), at(i, j + 1), at(i + 1, j + 1)]);
+            push_tri(s, [at(i, j), at(i + 1, j + 1), at(i + 1, j)]);
+        }
+    }
+}
+
+/// Тело вращения вокруг оси Z системы `m`: профиль (z, r) от задней точки к
+/// передней; `inside` — лицом к оси (внутренняя сторона отражателя).
+fn add_lathe(s: &mut Surface, m: Mat4, profile: &[(f32, f32)], inside: bool) {
+    const SEG: usize = 40;
+    let k = profile.len();
+    let flip = if inside { -1.0 } else { 1.0 };
+    let rings: Vec<Vec<(Vec3, Vec3)>> = (0..k)
+        .map(|i| {
+            let ((z0, r0), (z1, r1)) = (profile[i.saturating_sub(1)], profile[(i + 1).min(k - 1)]);
+            // Нормаль профиля (радиальная, осевая) — перпендикуляр к нему наружу.
+            let (nr, nz) = (z1 - z0, r0 - r1);
+            let (z, r) = profile[i];
+            (0..SEG)
+                .map(|j| {
+                    let (sn, cs) = (j as f32 / SEG as f32 * std::f32::consts::TAU).sin_cos();
+                    let p = m.transform_point3(Vec3::new(cs * r, sn * r, z));
+                    let n = m.transform_vector3(Vec3::new(cs * nr, sn * nr, nz) * flip).normalize_or_zero();
+                    (p, n)
+                })
+                .collect()
+        })
+        .collect();
+    add_rings(s, &rings);
+}
+
+/// Проволока a→b — шестигранная трубка радиуса `r` (чуть длиннее отрезка,
+/// чтобы изломы зигзага не расходились).
+fn add_wire(s: &mut Surface, a: Vec3, b: Vec3, r: f32) {
+    let d = (b - a).normalize();
+    let n = if d.x.abs() < 0.9 { Vec3::X } else { Vec3::Y }.cross(d).normalize();
+    let bn = d.cross(n);
+    let ring = |c: Vec3| -> Vec<(Vec3, Vec3)> {
+        (0..6)
+            .map(|k| {
+                let (sn, cs) = (k as f32 / 6.0 * std::f32::consts::TAU).sin_cos();
+                let o = n * cs + bn * sn;
+                (c + o * r, o)
+            })
+            .collect()
+    };
+    add_rings(s, &[ring(a - d * r), ring(b + d * r)]);
 }
 
 /// Система координат с осью -Z на `dir` (как свет Godot), началом в `at`.
@@ -497,20 +610,41 @@ fn build(world: SceneFile) -> Result<SceneFile, String> {
     ] {
         add_box(&mut s, Mat4::from_translation(c), h);
     }
-    // Мольберт: две передние ноги, задняя, полка под доской.
+    // Мольберт: две передние ноги и задняя — за доской (спереди её не
+    // перечёркивают), полка под доской от ног вперёд.
     let ground = floor_y - board.y;
+    let leg_z = 0.45 + 0.3 + 0.05;
     for x in [-hw * 0.6, hw * 0.6] {
-        add_rod(&mut s, Vec3::new(x * 0.8, hh + 1.5, 0.6), Vec3::new(x, ground, -1.2), 0.3);
+        add_rod(&mut s, Vec3::new(x * 0.8, hh + 1.5, leg_z), Vec3::new(x, ground, leg_z), 0.3);
     }
-    add_rod(&mut s, Vec3::new(0.0, hh + 1.5, 0.7), Vec3::new(0.0, ground, 7.0), 0.3);
-    add_box(&mut s, Mat4::from_translation(Vec3::new(0.0, -hh - f - 0.4, -0.6)), Vec3::new(hw * 0.75, 0.25, 0.9));
+    add_rod(&mut s, Vec3::new(0.0, hh + 1.5, leg_z + 0.1), Vec3::new(0.0, ground, 7.0), 0.3);
+    add_box(&mut s, Mat4::from_translation(Vec3::new(0.0, -hh - f - 0.4, -0.25)), Vec3::new(hw * 0.75, 0.25, 0.85));
     mesh_node(&mut out, "easel", board_node, Mat4::IDENTITY, s, m_wood);
 
     // Прожекторы на штативах (корпуса — копии оригинальных), стекло, свет.
     let m_metal = out.materials.len() as i32;
     out.materials.push(material([0.09, 0.09, 0.1, 1.0], 0.45, 0.8, false));
+    // Прозрачное гладкое стекло (переднее и колба): альфа — доля отражения/
+    // рассеяния, остальное проходит насквозь (режим стекла движка).
     let m_glass = out.materials.len() as i32;
-    out.materials.push(material([1.0, 0.8, 0.6, 1.0], 0.2, 0.0, true));
+    let mut glass = material([0.97, 0.98, 1.0, 0.01], 0.04, 0.0, false);
+    glass.transparency = 1;
+    out.materials.push(glass);
+    // Хром отражателя (F0 хрома), латунный цоколь, керамический патрон,
+    // никелевые вводы. Спираль светится сама: яркость и цвет (температура
+    // нити) — tint из скрипта игры, погасшая — тёмная.
+    let m_chrome = out.materials.len() as i32;
+    // Шероховатость 0.2 — точёный отражатель с хромом (не оптическое
+    // зеркало): блик нити растекается по чаше.
+    out.materials.push(material([CHROME_REFLECTANCE, CHROME_REFLECTANCE * 1.01, CHROME_REFLECTANCE, 1.0], 0.2, 1.0, false));
+    let m_brass = out.materials.len() as i32;
+    out.materials.push(material([0.86, 0.68, 0.38, 1.0], 0.35, 1.0, false));
+    let m_ceramic = out.materials.len() as i32;
+    out.materials.push(material([0.86, 0.84, 0.79, 1.0], 0.55, 0.0, false));
+    let m_wire = out.materials.len() as i32;
+    out.materials.push(material([0.62, 0.62, 0.64, 1.0], 0.3, 1.0, false));
+    let m_filament = out.materials.len() as i32;
+    out.materials.push(material([1.0, 1.0, 1.0, 1.0], 0.5, 0.0, true));
     let lamps_node = out.nodes.len();
     out.nodes.push(node("lamps", Some(0), Kind::Spatial, Mat4::IDENTITY));
     for l in &lamps {
@@ -544,11 +678,89 @@ fn build(world: SceneFile) -> Result<SceneFile, String> {
         add_rod(&mut s, hub - Vec3::Y * 0.6, hub + Vec3::Y * 0.6, 0.55);
         add_rod(&mut s, Vec3::Y * top.y, Vec3::new(top.x, top.y, top.z), 0.25);
         mesh_node(&mut out, "stand", ln, Mat4::IDENTITY, s, m_metal);
-        // Стекло — круглый диск на передней крышке, светится само; яркость — tint из скрипта.
+        // Стекло — прозрачный круглый диск на передней крышке.
         let face = l.head + l.axis * GLASS_AT - l.foot;
         let mut s = surface();
-        add_disc(&mut s, facing(face, l.axis), GLASS_R, 0.05);
+        add_disc(&mut s, facing(face, l.axis), GLASS_R, 0.03);
         mesh_node(&mut out, "glass", ln, Mat4::IDENTITY, s, m_glass);
+        // Начинка корпуса — в системе с осью +Z вдоль луча и началом в центре корпуса.
+        let m = facing(l.head - l.foot, -l.axis);
+        // Отражатель: полусфера с центром в нити, от полюса (там отверстие под
+        // патрон) до экватора; снаружи тот же хром (виден в зазоре до трубы).
+        let hole = (0.12f32 / REFLECTOR_R).asin();
+        let prof: Vec<(f32, f32)> = (0..=24)
+            .map(|i| {
+                let a = hole + (std::f32::consts::FRAC_PI_2 - hole) * i as f32 / 24.0;
+                (FILAMENT_AT - REFLECTOR_R * a.cos(), REFLECTOR_R * a.sin())
+            })
+            .collect();
+        let mut s = surface();
+        add_lathe(&mut s, m, &prof, true);
+        add_lathe(&mut s, m, &prof, false);
+        mesh_node(&mut out, "reflector", ln, Mat4::IDENTITY, s, m_chrome);
+        let mut s = surface();
+        add_disc(&mut s, m * Mat4::from_translation(Vec3::Z * BACK_AT), 0.97, 0.03);
+        mesh_node(&mut out, "back", ln, Mat4::IDENTITY, s, m_metal);
+        // Патрон E14 (керамика) от перегородки сквозь полюс отражателя и
+        // цоколь с резьбой (латунь) до стекла.
+        let pole = FILAMENT_AT - REFLECTOR_R;
+        let mut s = surface();
+        add_lathe(&mut s, m, &[(BACK_AT, 0.0), (BACK_AT, 0.11), (pole + 0.12, 0.11), (pole + 0.12, 0.08)], false);
+        mesh_node(&mut out, "socket", ln, Mat4::IDENTITY, s, m_ceramic);
+        let base_at = pole + 0.1;
+        let n = ((CANDLE_AT - base_at) / 0.012) as usize;
+        let thread: Vec<(f32, f32)> = (0..=n).map(|i| (base_at + i as f32 * 0.012, if i % 2 == 0 { 0.066 } else { 0.074 })).collect();
+        let mut s = surface();
+        add_lathe(&mut s, m, &thread, false);
+        mesh_node(&mut out, "base", ln, Mat4::IDENTITY, s, m_brass);
+        // Колба-свеча; внутри стеклянная ножка-штенгель до верхней звёздочки.
+        let (lo, hi) = (FILAMENT_AT - FILAMENT_H * 0.5, FILAMENT_AT + FILAMENT_H * 0.5);
+        let prof: Vec<(f32, f32)> = CANDLE.iter().map(|&(z, r)| (CANDLE_AT + z, r)).collect();
+        let mut s = surface();
+        add_lathe(&mut s, m, &prof, false);
+        add_lathe(&mut s, m, &[(CANDLE_AT, 0.05), (CANDLE_AT + 0.08, 0.03), (lo, 0.012), (hi + 0.01, 0.012), (hi + 0.016, 0.0)], false);
+        mesh_node(&mut out, "bulb", ln, Mat4::IDENTITY, s, m_glass);
+        // Держатели: из ножки к крючкам нижней и верхней звёздочки; вводы —
+        // от цоколя по ножке к началу и концу нити.
+        let hook = |k: usize, z: f32| {
+            let (sn, cs) = (k as f32 / FILAMENT_HOOKS as f32 * std::f32::consts::TAU).sin_cos();
+            m.transform_point3(Vec3::new(cs * FILAMENT_RING, sn * FILAMENT_RING, z))
+        };
+        let axis_at = |z: f32| m.transform_point3(Vec3::Z * z);
+        let mut s = surface();
+        for k in 0..FILAMENT_HOOKS {
+            let z = if k % 2 == 0 { lo } else { hi };
+            add_wire(&mut s, axis_at(z), hook(k, z), 0.003);
+        }
+        for k in [0, FILAMENT_HOOKS - 1] {
+            let z = if k % 2 == 0 { lo } else { hi };
+            add_wire(&mut s, axis_at(CANDLE_AT + 0.05) + (hook(k, z) - axis_at(z)) * 0.3, hook(k, z), 0.004);
+        }
+        mesh_node(&mut out, "leads", ln, Mat4::IDENTITY, s, m_wire);
+        // Нить: зигзаг низ-верх по крючкам вокруг ножки.
+        let mut s = surface();
+        for k in 0..FILAMENT_HOOKS - 1 {
+            let z = |k: usize| if k % 2 == 0 { lo } else { hi };
+            add_wire(&mut s, hook(k, z(k)), hook(k + 1, z(k + 1)), FILAMENT_WIRE);
+        }
+        mesh_node(&mut out, "filament", ln, Mat4::IDENTITY, s, m_filament);
+        // Изображение нити в сферическом зеркале: нить в центре кривизны
+        // отображается сама в себя, перевёрнутой через центр — зигзаг
+        // изображения ложится между витками нити (ради этого прожекторам и
+        // ставят сферический отражатель). Яркость — доля отражения хрома
+        // (tint из скрипта игры). Это действительное изображение: видно его
+        // везде, где за ним по лучу зрения чаша, то есть из любой точки
+        // перед прожектором.
+        let c = axis_at(FILAMENT_AT);
+        let mut s = surface();
+        for k in 0..FILAMENT_HOOKS - 1 {
+            let z = |k: usize| if k % 2 == 0 { lo } else { hi };
+            add_wire(&mut s, c * 2.0 - hook(k, z(k)), c * 2.0 - hook(k + 1, z(k + 1)), FILAMENT_WIRE);
+        }
+        mesh_node(&mut out, "filament image", ln, Mat4::IDENTITY, s, m_filament);
+        let mut glow = node("glow", Some(ln), Kind::Light, facing(axis_at(FILAMENT_AT), l.axis));
+        glow.light = Some(LightInfo { spot: false, color: LIGHT_COLOR, energy: GLOW_ENERGY, range: GLOW_RANGE, angle: 0.0, attenuation: 2.0, shadow: false });
+        out.nodes.push(glow);
         let mut light = node("light", Some(ln), Kind::Light, facing(face + l.axis * 0.6, l.axis));
         light.light = Some(LightInfo { spot: true, color: LIGHT_COLOR, energy: l.energy, range: l.range, angle: l.angle, attenuation: 1.0, shadow: true });
         out.nodes.push(light);

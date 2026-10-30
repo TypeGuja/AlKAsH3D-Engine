@@ -301,8 +301,10 @@ impl AlkashEngine {
     /// формами) + CBV buffer под SSAOParams. Вызывается ПОСЛЕ создания
     /// `renderer` (нужен `renderer.depth_stencil`).
     pub(super) fn create_ssao_resources(&mut self) -> Result<()> {
-        let ao_width = (self.width / 2).max(1);
-        let ao_height = (self.height / 2).max(1);
+        // ИЗМЕНЕНО (TAAU): от размера кадра, не экрана — SSAO читает его глубину
+        let (rw, rh) = self.render_size();
+        let ao_width = (rw / 2).max(1);
+        let ao_height = (rh / 2).max(1);
 
         let texture = crate::render::RenderTexture::create_hdr_target(ao_width, ao_height, 1, windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_RENDER_TARGET)?;
 

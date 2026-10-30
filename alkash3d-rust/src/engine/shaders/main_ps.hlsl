@@ -87,6 +87,17 @@ Texture2D MetallicRoughnessMap : register(t8);
 Texture2D DetailMap : register(t11);
 // ДОБАВЛЕНО (непрямой свет лучами, DDGI): атласы проб и объём (root-
 // параметр 11) — см. ddgi_common.hlsl (подставляется перед этим файлом).
+// ДОБАВЛЕНО (forward-декали): см. engine/decals.rs и ApplyDecals ниже.
+struct DecalGpu {
+    float4 r0, r1, r2; // мир → коробка (строки аффинной матрицы); в [0] — заголовок сетки
+    float4 uv;         // u0, v0, u1, v1 в атласе
+    float4 color;      // множитель цвета, непрозрачность
+    float4 params;     // xyz — нормаль плоскости декали, w — шероховатость (<0 — не трогать)
+};
+Texture2D DecalAtlas : register(t14);
+StructuredBuffer<DecalGpu> Decals : register(t15);
+StructuredBuffer<uint2> DecalCells : register(t16);
+StructuredBuffer<uint> DecalIndices : register(t17);
 Texture2D GiIrradiance : register(t12);
 Texture2D GiDistance : register(t13);
 cbuffer GiVolumeConstants : register(b3) {
@@ -291,8 +302,20 @@ float ComputeShadowFactor(float3 worldPos, float3 normal, float viewDepth) {
 //
 // PCF-выборки зажаты внутрь своей плитки (минус 1.5 текселя с
 // краёв), иначе фильтр на краю читал бы глубину СОСЕДНЕЙ плитки.
+// ИЗМЕНЕНО (25 FPS в подъезде: PCSS по 32 выборки на лампу на пиксель
+// ~5 мс из 10 основного прохода): выборок вдвое меньше — 8 на поиск
+// заслонителя и 8 на фильтр, по спирали Фогеля (равномерный диск). Поворот
+// диска — хеш мировой точки, а её каждый кадр сдвигает джиттер TAA,
+// так что за несколько кадров TAA добирает ту же гладкость полутени.
+#define PCSS_TAPS 8
+float2 VogelDisk(int i) {
+    float r = sqrt((i + 0.5) / PCSS_TAPS);
+    float a = i * 2.39996323;
+    return float2(cos(a), sin(a)) * r;
+}
+
 float SampleShadowTile(Texture2D atlas, float4x4 viewProj, uint tile, float4 atlasParams, float tanHalfFov,
-                       float3 worldPos, float3 normal, float3 toL, float dist) {
+                       float3 worldPos, float3 normal, float3 toL, float dist, float lightRadius) {
     float tileRes = max(atlasParams.z, 1.0);
     float texelWorld = 2.0 * dist * tanHalfFov / tileRes;
     float ndotl = saturate(dot(normal, toL));
@@ -314,6 +337,60 @@ float SampleShadowTile(Texture2D atlas, float4x4 viewProj, uint tile, float4 atl
     float2 tileMax = (tileOrigin + 1.0) * atlasParams.y - atlasTexel * 1.5;
     float2 atlasUV = (tileOrigin + localUV) * atlasParams.y;
 
+    // ДОБАВЛЕНО (PCSS): у лампы есть размер — тень резкая у заслонителя и
+    // расплывается с расстоянием от него: полутень w = R * (d - d_b) / d_b
+    // (подобные треугольники: край источника, край заслонителя, пол).
+    if (lightRadius > 0.0) {
+        float3 lp = worldPos + toL * dist;
+        // глубина перспективной карты z = A + B / d вдоль этого луча:
+        // A и B — по двум точкам луча (приёмник и вдвое дальше)
+        float d1 = max(length(offsetPos - lp), 1e-3);
+        float4 clip2 = mul(viewProj, float4(lp + (offsetPos - lp) * 2.0, 1.0));
+        float z2 = clip2.z / max(clip2.w, 1e-6);
+        float B = 2.0 * d1 * (ndc.z - z2);
+        float A = ndc.z - B / d1;
+        float2 atlasPixels = tileRes / atlasParams.y;
+        // поворот диска от точки к точке — шум вместо полос
+        float ang = frac(sin(dot(worldPos, float3(12.9898, 78.233, 37.719))) * 43758.5453) * 6.2831853;
+        float2x2 rot = float2x2(cos(ang), -sin(ang), sin(ang), cos(ang));
+        // 1) средняя глубина заслонителей в конусе источника
+        // заслонители ищем в пятне ~ R / (0.3 * тексель): ближе к приёмнику, чем 30% пути, их полутень мала
+        float searchTexels = clamp(lightRadius / max(texelWorld * 0.3, 1e-5), 2.0, 20.0);
+        float blockers = 0.0;
+        float blockerZ = 0.0;
+        [unroll]
+        for (int i = 0; i < PCSS_TAPS; i++) {
+            float2 uv = clamp(atlasUV + mul(rot, VogelDisk(i)) * searchTexels * atlasTexel, tileMin, tileMax);
+            float z = atlas.Load(int3(uv * atlasPixels, 0)).r;
+            if (z < ndc.z) {
+                blockerZ += z;
+                blockers += 1.0;
+            }
+        }
+        if (blockers < 0.5) {
+            return 1.0;
+        }
+        blockerZ /= blockers;
+        float db = clamp(B / min(blockerZ - A, -1e-6), 1e-3, d1);
+        // 2) ширина полутени в текселях на приёмнике и фильтр такой ширины
+        float penumbra = lightRadius * (d1 - db) / db;
+        float filterTexels = clamp(penumbra / max(texelWorld, 1e-6), 1.0, 24.0);
+        // ДОБАВЛЕНО (окно во двор — 17.6 мс): все выборки поиска за
+        // заслонителем, а фильтр не шире поиска — точка в полной тени, второй
+        // проход ничего не изменит. Так почти весь двор для ламп подъезда
+        // (их закрывают стены) и площадки для ламп других этажей (перекрытия).
+        if (blockers > PCSS_TAPS - 0.5 && filterTexels <= searchTexels) {
+            return 0.0;
+        }
+        float lit = 0.0;
+        [unroll]
+        for (int k = 0; k < PCSS_TAPS; k++) {
+            float2 uv = clamp(atlasUV + mul(rot, VogelDisk(k)) * filterTexels * atlasTexel, tileMin, tileMax);
+            lit += atlas.SampleCmpLevelZero(ShadowSampler, uv, ndc.z);
+        }
+        return lit / PCSS_TAPS;
+    }
+
     float sum = 0.0;
     [unroll]
     for (int y = -1; y <= 1; y++) {
@@ -329,7 +406,7 @@ float SampleShadowTile(Texture2D atlas, float4x4 viewProj, uint tile, float4 atl
 float SampleSpotShadow(GPULight light, float3 worldPos, float3 normal, float3 toL, float dist) {
     uint tile = (uint)(light.params.w + 0.5) - 1;
     return SampleShadowTile(SpotShadowAtlas, spotShadowViewProj[tile], tile, spotShadowParams,
-                            tan(light.params.x + 0.05), worldPos, normal, toL, dist);
+                            tan(light.params.x + 0.05), worldPos, normal, toL, dist, 0.0);
 }
 
 // ДОБАВЛЕНО (тени point-фонарей): грань куба выбирается по главной
@@ -351,7 +428,7 @@ float SamplePointShadow(GPULight light, float3 worldPos, float3 normal, float3 t
     }
     uint tile = lightSlot * 6 + face;
     return SampleShadowTile(PointShadowAtlas, pointShadowViewProj[tile], tile, pointShadowParams,
-                            pointShadowParams.w, worldPos, normal, toL, dist);
+                            pointShadowParams.w, worldPos, normal, toL, dist, min(max(-light.params.z, 0.0), 0.5));
 }
 
 // ОБНОВЛЕНО (Фаза 4 плана по реализму/фонарям): раньше Point (0) и
@@ -394,6 +471,12 @@ float3 ComputePointLightContribution(GPULight light, float3 worldPos, float3 nor
         windowFalloff = windowFalloff * windowFalloff;
         float invSquare = 1.0 / max(dist * dist, 0.01);
         attenuation = invSquare * windowFalloff;
+        // ДОБАВЛЕНО (25 FPS в подъезде — PCSS по 32 выборки на лампу на
+        // пиксель): тень не нужна там, где света и так нет — лампа погашена
+        // или поверхность отвёрнута от неё дальше, чем видно светящееся тело
+        // (sin углового радиуса шара; у прожектора тела нет).
+        float sphereSin = lightType < 0.5 ? min(max(-light.params.z, 0.0), 0.5) / max(dist, 0.001) : 0.0;
+        bool shadowWorth = light.color.w > 0.0 && dot(normal, toL) > -sphereSin;
 
         if (lightType > 0.5) {
             // Spot: дополнительный конусный множитель. direction.xyz
@@ -416,10 +499,10 @@ float3 ComputePointLightContribution(GPULight light, float3 worldPos, float3 nor
             // тенеобразующих в этом кадре (params.w > 0) — свет не
             // проходит сквозь машины/стены/столбы. Выборку делаем
             // только если точка вообще освещена конусом.
-            if (light.params.w > 0.5 && attenuation > 0.0) {
+            if (light.params.w > 0.5 && attenuation > 0.0 && shadowWorth) {
                 attenuation *= SampleSpotShadow(light, worldPos, normal, toL, dist);
             }
-        } else if (light.params.w < -0.5 && attenuation > 0.0) {
+        } else if (light.params.w < -0.5 && attenuation > 0.0 && shadowWorth) {
             // ДОБАВЛЕНО (тени point-фонарей): cube-тень, 6 граней.
             attenuation *= SamplePointShadow(light, worldPos, normal, toL, dist);
         }
@@ -518,6 +601,26 @@ float3 FresnelSchlick(float cosTheta, float3 F0) {
 //     Раньше множителя PI не было — блики были в ~3 раза слабее
 //     физически правильных относительно диффуза. Диффуз НЕ менялся,
 //     поэтому яркость существующих сцен (.alfar) остаётся прежней.
+// ДОБАВЛЕНО (компенсация энергии GGX): A, B интеграла env-BRDF (тот же
+// fit Karis, что в EnvBRDFApprox ниже) — E = A + B есть доля энергии,
+// которую однократное отражение от микрограней возвращает при F0 = 1.
+float2 EnvBRDFApproxAB(float roughness, float NdotV) {
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return float2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// Многократное рассеяние между микрогранями (Fdez-Agüera 2019): GGX с
+// одним отражением теряет 1 - E энергии (на шершавом металле до ~60%),
+// а в жизни свет, отразившись от соседней грани, всё равно выходит.
+// Множитель 1 + F0 (1/E - 1) возвращает её, окрашенную F0.
+float3 MultiScatterComp(float3 F0, float roughness, float NdotV) {
+    float2 ab = EnvBRDFApproxAB(roughness, NdotV);
+    return 1.0 + F0 * (1.0 / max(ab.x + ab.y, 1e-3) - 1.0);
+}
+
 float3 ShadeLight(float3 N, float3 V, float3 L, float3 albedo, float metallic, float roughness, float3 radiancePerNdotL) {
     float NdotL = max(dot(N, L), 0.0);
     if (NdotL <= 0.0) {
@@ -529,8 +632,42 @@ float3 ShadeLight(float3 N, float3 V, float3 L, float3 albedo, float metallic, f
     float G = GeometrySmith(N, V, L, roughness);
     float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
     float3 specular = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001);
+    specular *= MultiScatterComp(F0, roughness, saturate(dot(N, V)));
     float3 kD = (1.0 - F) * (1.0 - metallic);
     return (kD * albedo + specular * 3.14159265) * radiancePerNdotL * NdotL;
+}
+
+// ДОБАВЛЕНО (сферические источники, Karis 2013 / UE4): у лампы есть
+// радиус (params.z точечного света, тот же, что у мягких теней) — блик
+// на гладком от неё не точка, а отражение колбы. Направление блика —
+// ближайшая к отражённому лучу точка сферы; лепесток GGX расширяется на
+// угловой размер сферы, нормировка (a/a')^2 сохраняет энергию.
+float3 ShadeSphereLight(float3 N, float3 V, float3 L, float3 Lvec, float radius, float3 albedo, float metallic, float roughness, float3 radiancePerNdotL) {
+    if (radius <= 0.0) {
+        return ShadeLight(N, V, L, albedo, metallic, roughness, radiancePerNdotL);
+    }
+    float NdotL = max(dot(N, L), 0.0);
+    float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    float3 R = reflect(-V, N);
+    float3 c2r = dot(Lvec, R) * R - Lvec;
+    float3 closest = Lvec + c2r * saturate(radius / max(length(c2r), 1e-5));
+    float3 Ls = normalize(closest);
+    float NdotLs = max(dot(N, Ls), 0.0);
+    float a = max(roughness * roughness, 1e-3);
+    float aw = saturate(a + radius / (2.0 * max(length(Lvec), 1e-3)));
+    float norm = (a / aw) * (a / aw);
+    float3 spec = float3(0.0, 0.0, 0.0);
+    float3 F = FresnelSchlick(max(dot(normalize(V + L), V), 0.0), F0);
+    if (NdotLs > 0.0) {
+        float3 H = normalize(V + Ls);
+        float NDF = DistributionGGX(N, H, roughness);
+        float G = GeometrySmith(N, V, Ls, roughness);
+        float3 Fs = FresnelSchlick(max(dot(H, V), 0.0), F0);
+        spec = (NDF * G * Fs) / (4.0 * max(dot(N, V), 0.0) * NdotLs + 0.0001) * norm;
+        spec *= MultiScatterComp(F0, roughness, saturate(dot(N, V)));
+    }
+    float3 kD = (1.0 - F) * (1.0 - metallic);
+    return (kD * albedo * NdotL + spec * 3.14159265 * NdotLs) * radiancePerNdotL;
 }
 
 // ДОБАВЛЕНО (честный PBR — ambient): ambientColor — равномерное
@@ -565,6 +702,43 @@ float3 SRGBToLinear(float3 c) {
     c = saturate(c);
     return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
 }
+
+// ДОБАВЛЕНО (forward-декали): декали ячейки мировой сетки, в которую попала
+// точка; каждая — проекция вдоль своей оси на поверхности, повёрнутые к ней.
+void ApplyDecals(float3 wp, float3 dwx, float3 dwy, float3 n, inout float3 albedo, inout float roughness) {
+    DecalGpu head = Decals[0];
+    uint3 dims = uint3(head.r1.xyz);
+    if (dims.x == 0) {
+        return;
+    }
+    int3 c = int3(floor((wp - head.r0.xyz) / head.r0.w));
+    if (any(c < 0) || any(c >= int3(dims))) {
+        return;
+    }
+    uint2 cell = DecalCells[(c.z * dims.y + c.y) * dims.x + c.x];
+    for (uint i = 0; i < cell.y; i++) {
+        DecalGpu d = Decals[DecalIndices[cell.x + i]];
+        float3 l = float3(dot(d.r0.xyz, wp) + d.r0.w, dot(d.r1.xyz, wp) + d.r1.w, dot(d.r2.xyz, wp) + d.r2.w);
+        if (any(abs(l) > 0.5)) {
+            continue;
+        }
+        // повёрнутые боком к декали поверхности (торец ступени под надписью
+        // на стене) — плавно без неё; к краям коробки по глубине — тоже
+        float facing = saturate((dot(n, d.params.xyz) - 0.25) / 0.35);
+        float depthFade = 1.0 - smoothstep(0.35, 0.5, abs(l.z));
+        float2 span = d.uv.zw - d.uv.xy;
+        float2 uv = d.uv.xy + float2(l.x + 0.5, 0.5 - l.y) * span;
+        float2 gx = float2(dot(d.r0.xyz, dwx), -dot(d.r1.xyz, dwx)) * span;
+        float2 gy = float2(dot(d.r0.xyz, dwy), -dot(d.r1.xyz, dwy)) * span;
+        float4 t = DecalAtlas.SampleGrad(MaterialSampler, uv, gx, gy);
+        float a = saturate(t.a * d.color.a * facing * depthFade);
+        albedo = lerp(albedo, SRGBToLinear(t.rgb) * d.color.rgb, a);
+        if (d.params.w >= 0.0) {
+            roughness = lerp(roughness, d.params.w, a);
+        }
+    }
+}
+
 
 // ДОБАВЛЕНО (воздушная перспектива, порт My Summer Car): однократное
 // рассеяние в воздухе между камерой и точкой. Плотность воздуха падает с
@@ -607,12 +781,71 @@ void ApplyAerialPerspective(float3 worldPos, out float3 transmittance, out float
     inscatter = source * (1.0 - transmittance);
 }
 
+// ДОБАВЛЕНО (рассеяние света фонарей в среде, AlkashEngine::medium):
+// AABB мутного воздуха, sigma (рассеяние = ослабление), g (Хеньи–Гринстейн).
+cbuffer MediumConstants : register(b4) {
+    float4 mediumMin; // xyz, w = sigma
+    float4 mediumMax; // xyz, w = g
+};
+
+// Отрезок луча камера→точка внутри AABB среды: [t0, t1] (t в метрах).
+bool MediumSegment(float3 o, float3 dir, float len, out float t0, out float t1) {
+    float3 inv = 1.0 / (abs(dir) > 1e-6 ? dir : float3(1e-6, 1e-6, 1e-6));
+    float3 a = (mediumMin.xyz - o) * inv;
+    float3 b = (mediumMax.xyz - o) * inv;
+    float3 lo = min(a, b), hi = max(a, b);
+    t0 = max(max(max(lo.x, lo.y), lo.z), 0.0);
+    t1 = min(min(min(hi.x, hi.y), hi.z), len);
+    return t1 > t0;
+}
+
+// Однократное рассеяние света фонарей на отрезке [t0, t1] луча:
+// для точечного источника интеграл I*sigma*p/r^2 по прямой берётся
+// точно: (I*sigma*p/h) * (atan(b/h) - atan(a/h)), h — расстояние от
+// источника до прямой, a, b — концы отрезка от ближайшей к нему точки.
+// Фазовая функция и конус прожектора — в ближайшей точке (приближение),
+// ослабление внутри отрезка — средним множителем. Без теней в воздухе.
+float3 MediumInscatter(float3 o, float3 dir, float t0, float t1) {
+    float sigma = mediumMin.w;
+    float g = mediumMax.w;
+    float3 sum = float3(0.0, 0.0, 0.0);
+    uint n = min(lightCount, 32u);
+    for (uint i = 0; i < n; i++) {
+        GPULight L = Lights[i];
+        if (L.position.w > 1.5 || L.color.w <= 0.0) {
+            continue;
+        }
+        float3 lp = L.position.xyz;
+        float tc = dot(lp - o, dir);
+        float3 pc = o + dir * tc;
+        float h = max(length(lp - pc), 0.02);
+        float a = t0 - tc, b = t1 - tc;
+        float integ = (atan(b / h) - atan(a / h)) / h;
+        float tm = clamp(tc, t0, t1);
+        float3 toL = normalize(lp - (o + dir * tm));
+        float cosT = dot(dir, toL);
+        float phase = (1.0 - g * g) / (4.0 * 3.14159265 * pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5));
+        float cone = 1.0;
+        if (L.position.w > 0.5) {
+            float cosOuter = cos(max(L.params.x, 0.001));
+            float cosInner = cos(max(min(L.params.z, L.params.x), 0.0));
+            cone = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-4), dot(normalize(L.direction.xyz), -toL));
+        }
+        sum += L.color.rgb * L.color.w * sigma * phase * integ * cone;
+    }
+    return sum * exp(-sigma * (t1 - t0) * 0.5);
+}
+
 // ДОБАВЛЕНО (честный SSAO): два выхода — полный HDR-цвет и
 // отдельно ambient-вклад (см. Renderer::ambient_target). Composite
 // затеняет SSAO только ambient-часть.
 struct PS_OUTPUT {
     float4 color : SV_Target0;
     float4 ambient : SV_Target1;
+    // ДОБАВЛЕНО (отражения лучами): вес отражённого окружения + шероховатость
+    // и нормаль — по ним отдельный проход пускает отражённые лучи.
+    float4 spec : SV_Target2;
+    float4 normalOut : SV_Target3;
 };
 
 PS_OUTPUT main(PS_INPUT input) {
@@ -630,7 +863,37 @@ PS_OUTPUT main(PS_INPUT input) {
     // NormalMap.rgb в [0,1] — декодируем в tangent-space вектор
     // [-1,1]. Fallback-текстура (128,128,255) декодируется РОВНО в
     // (0,0,1) — "нормаль не меняется", см. `ensure_flat_normal_texture`.
-    float3 tangentNormal = NormalMap.Sample(MaterialSampler, input.uv).rgb * 2.0 - 1.0;
+    // ДОБАВЛЕНО (рельеф, parallax occlusion mapping): высота — альфа
+    // карты нормалей, глубина — detailParams.w (в единицах U). Луч
+    // взгляда идёт внутрь рельефа слоями, пока не уйдёт под поверхность;
+    // точка пересечения уточняется линейно между двумя слоями. Шов
+    // плитки, носок ступени, стёжка дермантина видны глубокими под углом.
+    float2 uv = input.uv;
+    if (detailParams.w > 0.0) {
+        float3 Vw = normalize(cameraPos.xyz - input.worldPos);
+        float3 Vt = float3(dot(Vw, T), dot(Vw, B), dot(Vw, geomNormal));
+        if (Vt.z > 0.05) {
+            float2 dx = ddx(input.uv), dy = ddy(input.uv);
+            float layers = lerp(32.0, 8.0, saturate(Vt.z));
+            float step = 1.0 / layers;
+            float2 delta = Vt.xy / Vt.z * detailParams.w * step;
+            float layer = 0.0;
+            float depthHere = 1.0 - NormalMap.SampleGrad(MaterialSampler, uv, dx, dy).a;
+            float prevDepth = depthHere;
+            [loop]
+            for (int i = 0; i < 32 && layer < depthHere; i++) {
+                uv -= delta;
+                layer += step;
+                prevDepth = depthHere;
+                depthHere = 1.0 - NormalMap.SampleGrad(MaterialSampler, uv, dx, dy).a;
+            }
+            float after = depthHere - layer;
+            float before = prevDepth - (layer - step);
+            float w = after / min(after - before, -1e-5);
+            uv = lerp(uv, uv + delta, saturate(w));
+        }
+    }
+    float3 tangentNormal = NormalMap.Sample(MaterialSampler, uv).rgb * 2.0 - 1.0;
     float3 normal = normalize(mul(tangentNormal, TBN));
 
     // lightDir хранится как направление "куда светит" (см.
@@ -670,7 +933,7 @@ PS_OUTPUT main(PS_INPUT input) {
     float metallic = rootMetallic;
     float roughness = rootRoughness;
     if (hasMrMap > 0.5) {
-        float2 mr = MetallicRoughnessMap.Sample(MaterialSampler, input.uv).rg;
+        float2 mr = MetallicRoughnessMap.Sample(MaterialSampler, uv).rg;
         metallic = mr.r;
         roughness = mr.g;
     }
@@ -679,7 +942,7 @@ PS_OUTPUT main(PS_INPUT input) {
     // ИЗМЕНЕНО (честный PBR): текстура декодируется из sRGB в
     // линейное пространство (см. SRGBToLinear), цвет вершины —
     // часть альбедо (базовый цвет материала), и ТОЛЬКО здесь.
-    float4 albedoSample = AlbedoMap.Sample(MaterialSampler, input.uv);
+    float4 albedoSample = AlbedoMap.Sample(MaterialSampler, uv);
     if (alphaCutoff > 0.0 && albedoSample.a < alphaCutoff) {
         discard;
     }
@@ -687,7 +950,7 @@ PS_OUTPUT main(PS_INPUT input) {
     // в гамма-пространстве, где их смешивал художник; затем в линейное.
     float3 albedoSrgb = albedoSample.rgb;
     if (detailParams.z > 0.5) {
-        albedoSrgb = saturate(albedoSrgb * DetailMap.Sample(MaterialSampler, input.uv * detailParams.xy).rgb * 2.0);
+        albedoSrgb = saturate(albedoSrgb * DetailMap.Sample(MaterialSampler, uv * detailParams.xy).rgb * 2.0);
     }
     float3 albedoRaw = input.color.rgb * SRGBToLinear(albedoSrgb) * instanceTint.rgb;
     float coverage = saturate(albedoSample.a * input.color.a * instanceTint.a);
@@ -695,12 +958,33 @@ PS_OUTPUT main(PS_INPUT input) {
     if (blendParams.z > 0.5) {
         PS_OUTPUT unlitOut;
         unlitOut.color = float4(albedoRaw, blendParams.x > 0.5 ? coverage : input.color.a);
+        // светящееся (небо, окна, нити) — тоже за мутным воздухом
+        if (mediumMin.w > 0.0) {
+            float3 d = input.worldPos - cameraPos.xyz;
+            float len = length(d);
+            float t0, t1;
+            if (len > 1e-3 && MediumSegment(cameraPos.xyz, d / len, len, t0, t1)) {
+                unlitOut.color.rgb = unlitOut.color.rgb * exp(-mediumMin.w * (t1 - t0)) + MediumInscatter(cameraPos.xyz, d / len, t0, t1);
+            }
+        }
         // Альфа ambient-таргета = 1 — метка "unlit": bloom-extract такие
         // пиксели пропускает. Цвета unlit-объектов (2D-паппеты, текст)
         // закодированы яркостями выше 1 под тонмаппинг, и без метки bloom
         // обводил бы их ореолом, как источники света.
         unlitOut.ambient = float4(0.0, 0.0, 0.0, 1.0);
+        unlitOut.spec = float4(0.0, 0.0, 0.0, 1.0);
+        unlitOut.normalOut = float4(0.0, 0.0, 0.0, 0.0);
         return unlitOut;
+    }
+    // ДОБАВЛЕНО (forward-декали): до освещения — цвет и шероховатость
+    // поверхности под декалью. Производные мировой точки — здесь, вне
+    // ветвлений (внутри цикла неявные производные не определены).
+    {
+        float3 dwx = ddx(input.worldPos);
+        float3 dwy = ddy(input.worldPos);
+        if (blendParams.x < 0.5) {
+            ApplyDecals(input.worldPos, dwx, dwy, geomNormal, albedoRaw, roughness);
+        }
     }
     float3 viewDir = normalize(cameraPos.xyz - input.worldPos);
     // ДОБАВЛЕНО (тонкое стекло): диффузно светит только непрозрачный слой
@@ -727,7 +1011,7 @@ PS_OUTPUT main(PS_INPUT input) {
     // прямого света.
     float3 ambientRadiance = ambientColor.rgb * ambientColor.a;
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedoRaw, metallic);
-    float3 envSpec = EnvBRDFApprox(F0, roughness, NdotV);
+    float3 envSpec = EnvBRDFApprox(F0, roughness, NdotV) * MultiScatterComp(F0, roughness, NdotV);
     // ДОБАВЛЕНО (непрямой свет лучами, DDGI): внутри объёма проб рассеянный
     // свет — не равномерное небо, а то, что реально приходит в эту точку
     // (свет, отражённый от стен/пола/предметов, и небо там, где оно видно).
@@ -739,7 +1023,30 @@ PS_OUTPUT main(PS_INPUT input) {
             diffuseAmbient = gi.rgb;
         }
     }
-    float3 ambientTerm = diffuseAmbient * albedoRaw * (1.0 - envSpec) * (1.0 - metallic) + ambientRadiance * envSpec;
+    // ИЗМЕНЕНО (DDGI): отражённое окружение внутри объёма — тоже из проб,
+    // а не от неба: в комнате блик краски отражает стены и потолок, а не
+    // ночное небо. Приближение: освещённость пробы по нормали вместо
+    // яркости по отражённому лучу — честно для шершавых поверхностей,
+    // для зеркальных размыто.
+    float3 specAmbient = diffuseAmbient;
+    // ДОБАВЛЕНО (25 FPS в подъезде): с отражениями лучами specAmbient не
+    // нужен (ambientSpec ниже = 0) — вторая выборка проб (8 проб с проверкой
+    // видимости на пиксель) считалась впустую.
+    bool rtReflections = blendParams.w > 0.5 && (blendParams.x < 0.5 || isGlass);
+    if (!rtReflections && giVolume.enabled != 0) {
+        float3 R = reflect(-viewDir, normal);
+        float4 giR = DDGISampleIrradiance(input.worldPos, R, viewDir, giVolume, GiIrradiance, GiDistance, MaterialSampler);
+        if (giR.a > 0.5 && DDGIFinite3(giR.rgb)) {
+            specAmbient = lerp(giR.rgb, diffuseAmbient, roughness);
+        }
+    } else if (!rtReflections) {
+        specAmbient = ambientRadiance;
+    }
+    // ДОБАВЛЕНО (отражения лучами, blendParams.w): отражённое окружение
+    // непрозрачных поверхностей прибавит проход лучей (по весу envSpec из
+    // G-буфера) — здесь его не считаем, иначе было бы дважды.
+    float3 ambientSpec = rtReflections ? float3(0.0, 0.0, 0.0) : specAmbient * envSpec;
+    float3 ambientTerm = diffuseAmbient * albedoRaw * (1.0 - envSpec) * (1.0 - metallic) + ambientSpec;
     brightness += ambientTerm;
 
     // ДОБАВЛЕНО (светящиеся плафоны): собственное излучение поверхности —
@@ -785,7 +1092,14 @@ PS_OUTPUT main(PS_INPUT input) {
                 // с бликом и балансом энергии, а не голый Ламберт.
                 float3 toL;
                 float3 lightRadiance = ComputePointLightContribution(light, input.worldPos, normal, toL);
-                brightness += ShadeLight(normal, viewDir, toL, albedoRaw, metallic, roughness, lightRadiance);
+                // радиус светящегося тела точечного света — params.z < 0
+                // (минус радиус; углы прожекторов в том же поле — >= 0)
+                float sphereR = light.position.w < 0.5 ? min(max(-light.params.z, 0.0), 0.5) : 0.0;
+                // ДОБАВЛЕНО (окно во двор): свет не дошёл (в тени, вне конуса,
+                // за дальностью, лампа погашена) — BRDF дал бы ровно 0
+                if (any(lightRadiance > 0.0)) {
+                    brightness += ShadeSphereLight(normal, viewDir, toL, light.position.xyz - input.worldPos, sphereR, albedoRaw, metallic, roughness, lightRadiance);
+                }
                 if (isLightEmitter) {
                     emitted += EmitterRadiance(light, input.worldPos, geomNormal);
                 }
@@ -805,7 +1119,8 @@ PS_OUTPUT main(PS_INPUT input) {
         for (uint i = 0; i < lightCount; i++) {
             float3 toL;
             float3 lightRadiance = ComputePointLightContribution(Lights[i], input.worldPos, normal, toL);
-            brightness += ShadeLight(normal, viewDir, toL, albedoRaw, metallic, roughness, lightRadiance);
+            float sphereR = Lights[i].position.w < 0.5 ? min(max(-Lights[i].params.z, 0.0), 0.5) : 0.0;
+            brightness += ShadeSphereLight(normal, viewDir, toL, Lights[i].position.xyz - input.worldPos, sphereR, albedoRaw, metallic, roughness, lightRadiance);
             if (isLightEmitter) {
                 emitted += EmitterRadiance(Lights[i], input.worldPos, geomNormal);
             }
@@ -821,12 +1136,26 @@ PS_OUTPUT main(PS_INPUT input) {
     float3 fogT;
     float3 fogL;
     ApplyAerialPerspective(input.worldPos, fogT, fogL);
+    // ДОБАВЛЕНО (рассеяние света фонарей в среде): ослабление и свечение
+    // воздуха складываются с воздушной перспективой.
+    if (mediumMin.w > 0.0) {
+        float3 d = input.worldPos - cameraPos.xyz;
+        float len = length(d);
+        float t0, t1;
+        if (len > 1e-3 && MediumSegment(cameraPos.xyz, d / len, len, t0, t1)) {
+            float T = exp(-mediumMin.w * (t1 - t0));
+            fogL = fogL * T + MediumInscatter(cameraPos.xyz, d / len, t0, t1);
+            fogT *= T;
+        }
+    }
 
     PS_OUTPUT output;
     // brightness уже содержит ambientTerm; отдельно он идёт во второй target
     // только для SSAO (composite вычитает затенённую часть).
     output.color = float4((brightness + emitted) * fogT + fogL, input.color.a);
     output.ambient = float4(ambientTerm * fogT, 0.0);
+    output.spec = float4(envSpec * fogT, roughness);
+    output.normalOut = float4(normal * 0.5 + 0.5, length(cameraPos.xyz - input.worldPos));
     if (blendParams.x > 0.5) {
         // ИСПРАВЛЕНО: раньше здесь прибавлялся ambientTerm второй раз.
         output.color = float4((brightness + emitted) * fogT + fogL, coverage);
@@ -836,7 +1165,9 @@ PS_OUTPUT main(PS_INPUT input) {
             // плюс отражённая Френелем часть остального; цвет делим на неё.
             // Ограничение 6e4 — предел half-float HDR-таргета (блик солнца).
             float reflectance = dot(envSpec, float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0));
-            float a = saturate(coverage + (1.0 - coverage) * reflectance);
+            // с отражениями лучами отражённое прибавит их проход (по G-буферу),
+            // здесь стекло только пропускает и рассеивает своим слоем
+            float a = rtReflections ? coverage : saturate(coverage + (1.0 - coverage) * reflectance);
             float3 premul = (brightness + emitted) * fogT + fogL * a;
             output.color = float4(min(premul / max(a, 1e-3), 60000.0), a);
         }

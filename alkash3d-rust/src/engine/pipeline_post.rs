@@ -75,9 +75,11 @@ impl AlkashEngine {
         // слот 3).
         // ИЗМЕНЕНО (честный SSAO): +t4 — ambient-вклад основного прохода
         // (renderer::AMBIENT_SRV_SLOT).
+        // ИЗМЕНЕНО (локальная экспозиция): +t5 — сетка средней яркости;
+        // читается, только когда она включена (иначе слот может быть пуст).
         let srv_range = D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-            NumDescriptors: crate::render::AMBIENT_SRV_SLOT + 1,
+            NumDescriptors: crate::render::DEPTH_SRV_SLOT + 1,
             BaseShaderRegister: 0,
             RegisterSpace: 0,
             OffsetInDescriptorsFromTableStart: 0,

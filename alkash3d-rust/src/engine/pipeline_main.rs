@@ -70,6 +70,14 @@ impl AlkashEngine {
                 RegisterSpace: 0,
                 OffsetInDescriptorsFromTableStart: GI_IRRADIANCE_SLOT as u32,
             },
+            // ДОБАВЛЕНО (forward-декали): атлас t14 и буферы t15..t17
+            D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                NumDescriptors: 4,
+                BaseShaderRegister: 14,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: super::decals::DECAL_ATLAS_SLOT as u32,
+            },
         ];
 
         let material_srv_range = D3D12_DESCRIPTOR_RANGE {
@@ -129,12 +137,18 @@ impl AlkashEngine {
         // не по числу текселей на пиксель, а по числу samples ПРИ
         // сэмплировании под углом — на прямой взгляд сверху вниз (как у
         // MinLOD/MaxLOD выше) практически бесплатно.
+        // ДОБАВЛЕНО (TAAU): кадр меньше экрана выбирал бы мип по своему
+        // размеру — текстуры мягче, чем на экране. Сдвиг log2(кадр/экран)
+        // (−0.42 при 0.75) берёт мип размера экрана; рябь от более
+        // детального мипа усредняет TAA.
+        let (rw, _) = self.render_size();
+        let lod_bias = (rw as f32 / self.width.max(1) as f32).log2().min(0.0);
         let material_sampler = D3D12_STATIC_SAMPLER_DESC {
             Filter: D3D12_FILTER_ANISOTROPIC,
             AddressU: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
             AddressV: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
             AddressW: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-            MipLODBias: 0.0,
+            MipLODBias: lod_bias,
             MaxAnisotropy: 16,
             ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
             BorderColor: D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
@@ -279,6 +293,19 @@ impl AlkashEngine {
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
             },
+            // ДОБАВЛЕНО (рассеяние света фонарей в среде): root-параметр 12 —
+            // объём среды (b4, 8 значений; sigma = 0 — выключено).
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Constants: D3D12_ROOT_CONSTANTS {
+                        ShaderRegister: 4,
+                        RegisterSpace: 0,
+                        Num32BitValues: 8,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
         ];
 
         let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
@@ -339,6 +366,9 @@ impl AlkashEngine {
             &[
                 windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
                 windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                // ДОБАВЛЕНО (отражения лучами): G-буфер — вес блика и нормаль.
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
             ],
             windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
             self.msaa_samples,
@@ -355,11 +385,49 @@ impl AlkashEngine {
             &[
                 windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
                 windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                // ДОБАВЛЕНО (отражения лучами): G-буфер — вес блика и нормаль.
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
             ],
             windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
             self.msaa_samples,
         )?;
         self.transparent_pipeline_state = Some(transparent);
+
+        // ДОБАВЛЕНО (отражения лучами в стекле): см. PipelineState::create_graphics_glass.
+        let glass = PipelineState::create_graphics_glass(
+            vs, ps, root_sig,
+            Vertex::STRIDE,
+            &[
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+            ],
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
+            self.msaa_samples,
+        )?;
+        self.glass_pipeline_state = Some(glass);
+
+        // ДОБАВЛЕНО (предпроход глубины): см. PipelineState::create_depth_prepass.
+        self.prepass_pipeline_state = Some(PipelineState::create_depth_prepass(
+            vs, ps, root_sig,
+            Vertex::STRIDE,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
+            self.msaa_samples,
+        )?);
+        self.after_prepass_pipeline_state = Some(PipelineState::create_graphics_after_prepass(
+            vs, ps, root_sig,
+            Vertex::STRIDE,
+            &[
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+            ],
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_D32_FLOAT,
+            self.msaa_samples,
+        )?);
         println!("[ENGINE] ✓ Pipeline state created (RTV format = R16G16B16A16_FLOAT, matches HDR target, {}x MSAA)", self.msaa_samples);
         Ok(())
     }

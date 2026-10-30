@@ -335,8 +335,10 @@ impl AlkashEngine {
     }
 
     pub(super) fn create_volumetric_resources(&mut self) -> Result<()> {
-        let vol_width = (self.width / 2).max(1);
-        let vol_height = (self.height / 2).max(1);
+        // ИЗМЕНЕНО (TAAU): от размера кадра, не экрана — читает его глубину
+        let (rw, rh) = self.render_size();
+        let vol_width = (rw / 2).max(1);
+        let vol_height = (rh / 2).max(1);
 
         // ИЗМЕНЕНО (максимальная графика — MSAA, см. `create_hdr_target` в
         // render.rs): volumetric-таргет — одноимпловый обычный render

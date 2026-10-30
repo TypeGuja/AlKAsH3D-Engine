@@ -45,6 +45,7 @@ struct PerfAcc {
     wait_ms: f64,
     record_ms: f64,
     present_ms: f64,
+    late_frames: u32,
     main_draws: u64,
     main_tris: u64,
     csm_draws: u64,
@@ -67,6 +68,12 @@ struct LocalShadowCache {
     spot_keys: Vec<(i64, i64, i64)>,
     point_keys: Vec<(i64, i64, i64)>,
     tile_hash: std::collections::HashMap<(usize, u32), u64>,
+    /// Отпечатки плиток без движущихся мешей — для атласов в режиме кэша статики.
+    static_hash: std::collections::HashMap<(usize, u32), u64>,
+    /// Атлас [spot, point] перешёл в режим кэша статики (в нём бывал `Mesh::moving`).
+    moving_mode: [bool; 2],
+    /// Плитки, где в атласе сейчас нарисовано движущееся поверх статики.
+    has_moving: std::collections::HashSet<(usize, u32)>,
 }
 
 thread_local! {
@@ -138,7 +145,53 @@ fn no_vsync() -> bool {
     *ON.get_or_init(|| !env_flag("ALKASH3D_VSYNC"))
 }
 
-fn perf_frame(wait_ms: f64, record_ms: f64, present_ms: f64, main_draws: usize, main_tris: u64, csm_draws: usize, local_draws: usize) {
+/// ДОБАВЛЕНО (адаптивный vsync — подъезд на 1080p: кадр GPU ~15 мс, часть
+/// кадров всё же опаздывает к обновлению экрана, и vsync держит их ещё
+/// период — рывок до 30 FPS): период обновления основного монитора, с.
+/// `None` — частоту не узнать (тогда обычный vsync).
+fn refresh_period() -> Option<f64> {
+    static P: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    *P.get_or_init(|| {
+        use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+        let mut dm = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+        let ok = unsafe { EnumDisplaySettingsW(PCWSTR::null(), ENUM_CURRENT_SETTINGS, &mut dm) }.as_bool();
+        // 0 и 1 — «частота по умолчанию железа», не число герц
+        (ok && dm.dmDisplayFrequency > 1).then(|| 1.0 / dm.dmDisplayFrequency as f64)
+    })
+}
+
+/// Не успевает ли игра к обновлению экрана: средний интервал между Present
+/// больше периода монитора. Тогда vsync держал бы каждый кадр ещё период
+/// (16.6 мс на 60 Гц) — показываем сразу, с разрывом, как адаптивный vsync
+/// у NVIDIA. Успевающая игра идёт с vsync как раньше.
+/// ALKASH3D_VSYNC_ADAPTIVE=0 — выкл.
+/// ИСПРАВЛЕНО: решение по одному интервалу срабатывало ложно — интервал на
+/// CPU дрожит на ±1 мс и при ровных 60 Гц, и половина кадров рвалась зря.
+/// Среднее (экспоненциальное, ~10 кадров) дрожание гасит: при ровных 60 Гц
+/// оно ровно период, а с разрывами — время кадра GPU, так что с быстрой
+/// сцены игра сама возвращается к vsync.
+fn present_late(now: Instant) -> bool {
+    thread_local! {
+        static LAST: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+        static AVG: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let last = LAST.with(|l| l.replace(Some(now)));
+    if !*ON.get_or_init(|| std::env::var("ALKASH3D_VSYNC_ADAPTIVE").map(|v| v != "0").unwrap_or(true)) || !crate::swap_chain::tearing_supported() {
+        return false;
+    }
+    let (Some(last), Some(period)) = (last, refresh_period()) else { return false };
+    // паузы (загрузка, сворачивание окна) в среднее не берём
+    let dt = (now - last).as_secs_f64().min(period * 3.0);
+    let avg = AVG.with(|a| {
+        let v = if a.get() == 0.0 { dt } else { a.get() + (dt - a.get()) * 0.1 };
+        a.set(v);
+        v
+    });
+    avg > period * 1.02
+}
+
+fn perf_frame(wait_ms: f64, record_ms: f64, present_ms: f64, late: bool, main_draws: usize, main_tris: u64, csm_draws: usize, local_draws: usize) {
     let mut g = PERF.lock().unwrap();
     let a = g.get_or_insert_with(PerfAcc::default);
     let now = Instant::now();
@@ -147,6 +200,7 @@ fn perf_frame(wait_ms: f64, record_ms: f64, present_ms: f64, main_draws: usize, 
     a.wait_ms += wait_ms;
     a.record_ms += record_ms;
     a.present_ms += present_ms;
+    a.late_frames += late as u32;
     a.main_draws += main_draws as u64;
     a.main_tris += main_tris;
     a.csm_draws += csm_draws as u64;
@@ -155,8 +209,8 @@ fn perf_frame(wait_ms: f64, record_ms: f64, present_ms: f64, main_draws: usize, 
     if el >= 1.0 {
         let n = a.frames as f64;
         println!(
-            "[PERF] {:.1} FPS | кадр {:.1} мс: запись CPU {:.1}, ожидание GPU {:.1} (fence) + {:.1} (Present) | основной: {:.0} draw, {:.2} млн тр. | тени солнца: {:.0} draw | тени фонарей: {:.0} draw",
-            n / el, el * 1000.0 / n, a.record_ms / n, a.wait_ms / n, a.present_ms / n,
+            "[PERF] {:.1} FPS | кадр {:.1} мс: запись CPU {:.1}, ожидание GPU {:.1} (fence) + {:.1} (Present), опоздавших к vsync {} | основной: {:.0} draw, {:.2} млн тр. | тени солнца: {:.0} draw | тени фонарей: {:.0} draw",
+            n / el, el * 1000.0 / n, a.record_ms / n, a.wait_ms / n, a.present_ms / n, a.late_frames,
             a.main_draws as f64 / n, a.main_tris as f64 / n / 1e6, a.csm_draws as f64 / n, a.local_shadow_draws as f64 / n
         );
         if let Some(gpu) = super::gpu_timer::report() {
@@ -605,6 +659,9 @@ impl AlkashEngine {
             eprintln!("[ENGINE] ERROR: render_frame() called but renderer is not initialized");
             Error::from_hresult(HRESULT(1))
         })?;
+        // ДОБАВЛЕНО (TAAU): размер кадра и экрана — копии, без заимствования renderer
+        let (render_w, render_h) = (renderer.render_width, renderer.render_height);
+        let upscaling = renderer.hdr_upscaled.is_some();
 
         let real_back_buffer_index = {
             let state = STATE.lock().unwrap();
@@ -661,6 +718,7 @@ impl AlkashEngine {
 
         let rtv_handle = renderer.hdr_rtv;
         let ambient_rtv = renderer.ambient_rtv;
+        let rtv_size = renderer.rtv_size;
         let dsv_handle = renderer.depth_stencil_view;
 
         // ДОБАВЛЕНО (максимальная графика — LOD для мешей): считаем ОДИН
@@ -915,7 +973,23 @@ impl AlkashEngine {
             .collect();
         // кэш: атлас пересоздан (ресайз) — всё заново; иначе перерисовываются только плитки
         // с изменившимся отпечатком
-        let tile_dirty: Vec<bool> = {
+        // ДОБАВЛЕНО (25 FPS в подъезде: тело игрока попадало в кубы теней ламп,
+        // и плитка перерисовывалась целиком, со всем подъездом, каждый кадр —
+        // 7.5 мс): движущиеся меши (`Mesh::moving`) рисуются поверх кэша статики.
+        // У атласа, где они появились, есть копия «только статика»
+        // (`local_shadow_static`). Плитка, где сменилось только движущееся,
+        // восстанавливается из неё (shadow_restore.rs — переносится одна
+        // плитка, а не атлас целиком) и движущееся дорисовывается; где
+        // сменилась статика — статика перерисовывается, и копия обновляется
+        // (тогда же восстанавливаются плитки с движущимся, чтобы оно не попало
+        // в копию). Атлас, где движущегося не бывало, — как раньше.
+        if self.shadow_restore.is_none() {
+            self.shadow_restore = Some(super::shadow_restore::ShadowRestore::new().map_err(|e| eprintln!("[ENGINE] WARNING: перенос кэша теней недоступен: {:?}", e)));
+        }
+        let restore_ok = matches!(self.shadow_restore, Some(Ok(_)));
+        let is_moving = |job: usize| self.meshes[shadow_jobs[job].0].moving;
+        let tile_moving: Vec<bool> = tile_jobs.iter().map(|jobs| restore_ok && jobs.iter().any(|&j| is_moving(j))).collect();
+        let (tile_dirty, tile_static_dirty, moving_mode): (Vec<bool>, Vec<bool>, [bool; 2]) = {
             use windows::core::Interface;
             let ids = (
                 self.spot_shadow_atlas.as_ref().map(|a| a.resource.as_raw() as usize).unwrap_or(0),
@@ -926,21 +1000,80 @@ impl AlkashEngine {
                 if c.atlas_ids != ids {
                     c.atlas_ids = ids;
                     c.tile_hash.clear();
+                    c.static_hash.clear();
+                    c.has_moving.clear();
                 }
-                shadow_tiles
-                    .iter()
-                    .zip(tile_jobs.iter())
-                    .map(|((kind, tx, ty, _r, vp), jobs)| {
-                        let key = (*kind, (tx << 16) | ty);
-                        let fp = tile_fingerprint(vp, jobs, &shadow_jobs);
-                        let dirty = c.tile_hash.get(&key) != Some(&fp);
-                        c.tile_hash.insert(key, fp);
-                        dirty
-                    })
-                    .collect()
+                for kind in 0..2usize {
+                    if !c.moving_mode[kind] && shadow_tiles.iter().zip(&tile_moving).any(|((k, ..), m)| *k == kind && *m) {
+                        // копия статики ещё пуста — первый раз статика рисуется во всех плитках
+                        c.moving_mode[kind] = true;
+                        c.static_hash.retain(|(k, _), _| *k != kind);
+                        c.tile_hash.retain(|(k, _), _| *k != kind);
+                        c.has_moving.retain(|(k, _)| *k != kind);
+                    }
+                }
+                let mut dirty = Vec::with_capacity(shadow_tiles.len());
+                let mut static_dirty = Vec::with_capacity(shadow_tiles.len());
+                for ((kind, tx, ty, _r, vp), jobs) in shadow_tiles.iter().zip(tile_jobs.iter()) {
+                    let key = (*kind, (tx << 16) | ty);
+                    let fp = tile_fingerprint(vp, jobs, &shadow_jobs);
+                    dirty.push(c.tile_hash.insert(key, fp) != Some(fp));
+                    static_dirty.push(c.moving_mode[*kind] && {
+                        let statics: Vec<usize> = jobs.iter().copied().filter(|&j| !is_moving(j)).collect();
+                        let sfp = tile_fingerprint(vp, &statics, &shadow_jobs);
+                        c.static_hash.insert(key, sfp) != Some(sfp)
+                    });
+                }
+                (dirty, static_dirty, c.moving_mode)
             })
         };
-        let total_local_shadow_draws: usize = tile_jobs.iter().zip(tile_dirty.iter()).filter(|(_, d)| **d).map(|(j, _)| j.len()).sum();
+        // по атласу: обновить копию статики (в атласе сменилась статика)
+        let copy_out: [bool; 2] = std::array::from_fn(|kind| moving_mode[kind] && shadow_tiles.iter().zip(&tile_static_dirty).any(|((k, ..), d)| *k == kind && *d));
+        // по плитке: (восстановить из копии; очистить и нарисовать статику до
+        // обновления копии; дорисовать движущееся после)
+        let tile_draws: Vec<(bool, Option<Vec<usize>>, Vec<usize>)> = LOCAL_SHADOW_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            shadow_tiles
+                .iter()
+                .enumerate()
+                .map(|(t, (kind, tx, ty, ..))| {
+                    let jobs = &tile_jobs[t];
+                    if !moving_mode[*kind] {
+                        return (false, tile_dirty[t].then(|| jobs.clone()), Vec::new());
+                    }
+                    let key = (*kind, (tx << 16) | ty);
+                    let restore = !tile_static_dirty[t] && (tile_dirty[t] || (copy_out[*kind] && c.has_moving.contains(&key)));
+                    let statics = tile_static_dirty[t].then(|| jobs.iter().copied().filter(|&j| !is_moving(j)).collect());
+                    let moving: Vec<usize> = if restore || tile_static_dirty[t] { jobs.iter().copied().filter(|&j| is_moving(j)).collect() } else { Vec::new() };
+                    if restore || tile_static_dirty[t] {
+                        if moving.is_empty() {
+                            c.has_moving.remove(&key);
+                        } else {
+                            c.has_moving.insert(key);
+                        }
+                    }
+                    (restore, statics, moving)
+                })
+                .collect()
+        });
+        for kind in 0..2usize {
+            if moving_mode[kind] && self.local_shadow_static[kind].is_none() {
+                let res = if kind == 0 { super::SPOT_SHADOW_ATLAS_RESOLUTION } else { super::POINT_SHADOW_ATLAS_RESOLUTION };
+                match crate::render::RenderTexture::create_shadow_map(res) {
+                    Ok(t) => unsafe {
+                        // между кадрами — в PIXEL_SHADER_RESOURCE: её читает перенос плиток
+                        let barriers = [Self::transition_barrier(&t.resource, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)];
+                        cmd_list.ResourceBarrier(&barriers);
+                        for b in barriers {
+                            Self::drop_transition_barrier(b);
+                        }
+                        self.local_shadow_static[kind] = Some(t.resource.clone());
+                    },
+                    Err(e) => eprintln!("[ENGINE] WARNING: кэш статики теней фонарей не создан: {:?}", e),
+                }
+            }
+        }
+        let total_local_shadow_draws: usize = tile_draws.iter().map(|(_, a, b)| a.as_ref().map_or(0, |a| a.len()) + b.len()).sum();
         let can_draw_local_shadows = total_local_shadow_draws > 0
             && self.spot_shadow_pipeline_state.is_some()
             && self.shadow_root_signature.is_some()
@@ -954,21 +1087,52 @@ impl AlkashEngine {
 
         unsafe {
             let mut draw_k = 0usize;
-            for atlas_kind in 0..2usize {
-                let (dsv, has_atlas) = if atlas_kind == 0 {
-                    (self.spot_shadow_dsv, self.spot_shadow_atlas.is_some())
-                } else {
-                    (self.point_shadow_dsv, self.point_shadow_atlas.is_some())
-                };
-                if !has_atlas {
-                    continue;
+            // копия глубины целиком: dst <- src, оба возвращаются в свои состояния
+            let copy = |dst: &ID3D12Resource, dst_state: D3D12_RESOURCE_STATES, src: &ID3D12Resource, src_state: D3D12_RESOURCE_STATES| {
+                let mut to = vec![Self::transition_barrier(dst, dst_state, D3D12_RESOURCE_STATE_COPY_DEST)];
+                if src_state != D3D12_RESOURCE_STATE_COPY_SOURCE {
+                    to.push(Self::transition_barrier(src, src_state, D3D12_RESOURCE_STATE_COPY_SOURCE));
                 }
+                cmd_list.ResourceBarrier(&to);
+                for b in to {
+                    Self::drop_transition_barrier(b);
+                }
+                cmd_list.CopyResource(dst, src);
+                let mut back = vec![Self::transition_barrier(dst, D3D12_RESOURCE_STATE_COPY_DEST, dst_state)];
+                if src_state != D3D12_RESOURCE_STATE_COPY_SOURCE {
+                    back.push(Self::transition_barrier(src, D3D12_RESOURCE_STATE_COPY_SOURCE, src_state));
+                }
+                cmd_list.ResourceBarrier(&back);
+                for b in back {
+                    Self::drop_transition_barrier(b);
+                }
+            };
+            for atlas_kind in 0..2usize {
+                let (dsv, atlas_res) = if atlas_kind == 0 {
+                    (self.spot_shadow_dsv, self.spot_shadow_atlas.as_ref().map(|a| a.resource.clone()))
+                } else {
+                    (self.point_shadow_dsv, self.point_shadow_atlas.as_ref().map(|a| a.resource.clone()))
+                };
+                let Some(atlas_res) = atlas_res else { continue };
+                let static_res = self.local_shadow_static[atlas_kind].clone();
+                let use_cache = moving_mode[atlas_kind] && can_draw_local_shadows && static_res.is_some();
                 cmd_list.OMSetRenderTargets(0, None, false, Some(&dsv));
+                if use_cache {
+                    let restore: Vec<RECT> = shadow_tiles
+                        .iter()
+                        .zip(tile_draws.iter())
+                        .filter(|((kind, ..), (r, ..))| *kind == atlas_kind && *r)
+                        .map(|((_, tx, ty, r, _), _)| RECT { left: *tx as i32, top: *ty as i32, right: (*tx + *r) as i32, bottom: (*ty + *r) as i32 })
+                        .collect();
+                    if let Some(Ok(sr)) = self.shadow_restore.as_mut() {
+                        sr.record(&cmd_list, atlas_kind, static_res.as_ref().unwrap(), &restore);
+                    }
+                }
                 // очищаем только перерисовываемые плитки — остальные хранят верную глубину
                 let rects: Vec<RECT> = shadow_tiles
                     .iter()
-                    .zip(tile_dirty.iter())
-                    .filter(|((kind, ..), d)| *kind == atlas_kind && **d)
+                    .zip(tile_draws.iter())
+                    .filter(|((kind, ..), (_, before, _))| *kind == atlas_kind && before.is_some())
                     .map(|((_, tx, ty, r, _), _)| RECT { left: *tx as i32, top: *ty as i32, right: (*tx + *r) as i32, bottom: (*ty + *r) as i32 })
                     .collect();
                 if !rects.is_empty() {
@@ -987,10 +1151,7 @@ impl AlkashEngine {
                 }
                 let mut cutout_on = false;
 
-                for (((kind, tx, ty, tile_res, tile_vp), jobs), dirty) in shadow_tiles.iter().zip(tile_jobs.iter()).zip(tile_dirty.iter()) {
-                    if *kind != atlas_kind || !*dirty {
-                        continue;
-                    }
+                let mut draw_tile = |(_, tx, ty, tile_res, tile_vp): &(usize, u32, u32, u32, Mat4), jobs: &[usize], cutout_on: &mut bool| {
                     cmd_list.RSSetViewports(&[D3D12_VIEWPORT {
                         TopLeftX: *tx as f32,
                         TopLeftY: *ty as f32,
@@ -1019,8 +1180,22 @@ impl AlkashEngine {
                         }
                         let gpu_addr = crate::constant_buffer::ShadowConstants::gpu_address_for_slot(local_cb, slot);
                         cmd_list.SetGraphicsRootConstantBufferView(0, gpu_addr);
-                        self.shadow_bind_material(&cmd_list, &self.meshes[*mesh_index], self.spot_shadow_pipeline_state.as_ref().unwrap(), self.spot_shadow_cutout_pipeline_state.as_ref(), &mut cutout_on, srv_descriptor_size);
+                        self.shadow_bind_material(&cmd_list, &self.meshes[*mesh_index], self.spot_shadow_pipeline_state.as_ref().unwrap(), self.spot_shadow_cutout_pipeline_state.as_ref(), cutout_on, srv_descriptor_size);
                         Self::record_depth_only_draw(&cmd_list, &self.meshes[*mesh_index]);
+                    }
+                };
+
+                for (tile, (_, before, _)) in shadow_tiles.iter().zip(tile_draws.iter()) {
+                    if let (Some(jobs), true) = (before, tile.0 == atlas_kind) {
+                        draw_tile(tile, jobs, &mut cutout_on);
+                    }
+                }
+                if use_cache && copy_out[atlas_kind] {
+                    copy(static_res.as_ref().unwrap(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &atlas_res, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                }
+                for (tile, (_, _, after)) in shadow_tiles.iter().zip(tile_draws.iter()) {
+                    if tile.0 == atlas_kind && !after.is_empty() {
+                        draw_tile(tile, after, &mut cutout_on);
                     }
                 }
             }
@@ -1055,19 +1230,26 @@ impl AlkashEngine {
         }
 
         cmd_list = self.maybe_flush_for_warm_up(cmd_list, &allocator, "shadow")?;
+        if perf_enabled() {
+            super::gpu_timer::mark(&cmd_list, frame_index, 2);
+        }
 
         // ДОБАВЛЕНО (непрямой свет лучами, DDGI): пробы обновляются до
         // основного прохода — он читает их освещённость вместо ambient.
-        if self.gi.as_ref().is_some_and(|g| g.atlases().is_some()) {
+        if !self.gi_paused && self.gi.as_ref().is_some_and(|g| g.atlases().is_some()) {
             let mut draws = Vec::with_capacity(self.mesh_instances.len());
+            // ИСПРАВЛЕНО: как и в тенях, лучи не видят светящееся (unlit) и
+            // прозрачное — иначе колба вокруг лампы заслоняет её от всех
+            // точек, и непрямой свет от ламп выходит нулевым.
+            let blocks = |m: &super::Mesh, tint: [f32; 4]| !m.unlit && !m.blend && !m.shadow_only && tint[3] >= 0.999;
             for instance in &self.mesh_instances {
-                if instance.mesh_index < self.meshes.len() {
+                if instance.mesh_index < self.meshes.len() && blocks(&self.meshes[instance.mesh_index], instance.tint) {
                     let albedo = self.mesh_albedo(&self.meshes[instance.mesh_index]);
                     draws.push(super::gi::RtDraw { mesh: instance.mesh_index, world: instance.transform_matrix(), tint: instance.tint, albedo });
                 }
             }
             for (mesh_index, world) in self.scene.collect_renderables() {
-                if mesh_index < self.meshes.len() {
+                if mesh_index < self.meshes.len() && blocks(&self.meshes[mesh_index], [1.0; 4]) {
                     let albedo = self.mesh_albedo(&self.meshes[mesh_index]);
                     draws.push(super::gi::RtDraw { mesh: mesh_index, world, tint: [1.0; 4], albedo });
                 }
@@ -1089,18 +1271,23 @@ impl AlkashEngine {
             // (renderer.ambient_rtv лежит в том же RTV-хипе сразу за
             // hdr_rtv, поэтому RTsSingleHandleToDescriptorRange = true).
             if perf_enabled() {
-                super::gpu_timer::mark(&cmd_list, frame_index, 2);
+                super::gpu_timer::mark(&cmd_list, frame_index, 3);
             }
-            cmd_list.OMSetRenderTargets(2, Some(&rtv_handle), true, Some(&dsv_handle));
+            // ИЗМЕНЕНО (отражения лучами): + G-буфер (слоты 2, 3 того же хипа).
+            cmd_list.OMSetRenderTargets(4, Some(&rtv_handle), true, Some(&dsv_handle));
             cmd_list.ClearRenderTargetView(rtv_handle, &self.clear_color, None);
             cmd_list.ClearRenderTargetView(ambient_rtv, &[0.0, 0.0, 0.0, 0.0], None);
+            for k in 2..4 {
+                let h = D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv_handle.ptr + (k * rtv_size) as usize };
+                cmd_list.ClearRenderTargetView(h, &[0.0, 0.0, 0.0, 0.0], None);
+            }
             cmd_list.ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
 
             let viewport = D3D12_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
-                Width: self.width as f32,
-                Height: self.height as f32,
+                Width: render_w as f32,
+                Height: render_h as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
@@ -1109,8 +1296,8 @@ impl AlkashEngine {
             let scissor = RECT {
                 left: 0,
                 top: 0,
-                right: self.width as i32,
-                bottom: self.height as i32,
+                right: render_w as i32,
+                bottom: render_h as i32,
             };
             cmd_list.RSSetScissorRects(&[scissor]);
 
@@ -1151,6 +1338,10 @@ impl AlkashEngine {
             // ДОБАВЛЕНО (DDGI): объём проб (root-параметр 11), enabled = 0 — без GI.
             let gi_volume = self.gi.as_ref().map(|g| g.volume_gpu()).unwrap_or_default();
             cmd_list.SetGraphicsRoot32BitConstants(11, 16, &gi_volume as *const _ as *const _, 0);
+            // ДОБАВЛЕНО (рассеяние света фонарей в среде): объём среды (параметр 12).
+            let m = self.medium.unwrap_or_default();
+            let medium: [f32; 8] = [m.min[0], m.min[1], m.min[2], m.scattering, m.max[0], m.max[1], m.max[2], m.anisotropy];
+            cmd_list.SetGraphicsRoot32BitConstants(12, 8, medium.as_ptr() as *const _, 0);
 
             // ДОБАВЛЕНО (тени фонарей): матрицы плиток spot-атласа (b2).
             // Биндится всегда (root CBV должен быть валиден при любом
@@ -1332,10 +1523,38 @@ impl AlkashEngine {
             }
 
             let view = self.camera.view_matrix();
-            let proj = self.camera.projection_matrix();
+            let mut proj = self.camera.projection_matrix();
+            // ДОБАВЛЕНО (TAA): проекция со сдвигом этого кадра на долю пикселя.
+            // ИЗМЕНЕНО (TAAU): кадр меньше экрана собирает только TAA — тогда он
+            // работает и при выключенном `self.taa`.
+            if (self.taa || upscaling) && !self.taa_unavailable {
+                let msaa = self.msaa_samples > 1;
+                if !self.taa_state.as_ref().is_some_and(|t| t.matches(render_w, render_h, self.width, self.height, msaa)) {
+                    // старую историю может ещё читать кадр в полёте (ресайз окна)
+                    if self.taa_state.is_some() {
+                        self.wait_for_all_frames_idle_before_realloc();
+                    }
+                    self.taa_state = None;
+                    match super::taa::Taa::new(render_w, render_h, self.width, self.height, msaa) {
+                        Ok(t) => self.taa_state = Some(t),
+                        Err(e) => {
+                            eprintln!("[TAA] недоступно: {:?}", e);
+                            self.taa_unavailable = true;
+                        }
+                    }
+                }
+                if let Some(t) = &self.taa_state {
+                    proj = t.jittered(proj);
+                }
+            }
+            self.taa_view_proj = proj * view;
+            // ДОБАВЛЕНО (отражения лучами): только при работающем DDGI (его TLAS).
+            let rt_reflections_active = self.rt_reflections && self.gi.as_ref().is_some_and(|g| g.atlases().is_some());
             let id_matrix = identity();
 
             let frustum = crate::math::Frustum::from_view_proj(&(proj * view));
+            // ДОБАВЛЕНО (тень игрока): только-тень меши в основной проход не идут.
+            jobs.retain(|job| !self.meshes[job.mesh_index].shadow_only);
             jobs.retain(|job| match &job.transform {
                 DrawTransform::Camera(model) => {
                     let mesh = &self.meshes[job.mesh_index];
@@ -1400,15 +1619,55 @@ impl AlkashEngine {
 
             self.ensure_constant_buffer_capacity(jobs.len())?;
 
+            // ИЗМЕНЕНО (отражения лучами в стекле): в прозрачной части PSO
+            // выбирается по мешу — стекло пишет G-буфер, остальное нет.
+            let mut glass_bound: Option<bool> = None;
+            // ДОБАВЛЕНО (предпроход глубины): проход 0 — только глубина
+            // непрозрачного (без альфа-выреза: без PS его не отбросить), проход
+            // 1 — как раньше, непрозрачное из предпрохода — поверх готовой
+            // глубины, дорогой шейдер один раз на пиксель. Константы
+            // преобразования пишутся в тот же слот, что и в проходе 1.
+            let prepass_on = self.depth_prepass && self.prepass_pipeline_state.is_some() && self.after_prepass_pipeline_state.is_some();
+            let prepassed = |mesh: &super::Mesh| mesh.alpha_cutoff <= 0.0;
+            for pass in 0..2 {
+            if pass == 0 && !prepass_on {
+                continue;
+            }
+            // какой PSO непрозрачного сейчас стоит: 0 — предпроход, 1 — поверх него, 2 — обычный
+            let mut opaque_bound: Option<u8> = None;
             for (i, job) in jobs.iter().enumerate() {
                 let mesh = &self.meshes[job.mesh_index];
-                if i == first_transparent {
-                    if let Some(pso) = self.transparent_pipeline_state.as_ref() {
-                        cmd_list.SetPipelineState(Some(pso));
+                if pass == 0 {
+                    if i >= first_transparent || !prepassed(mesh) {
+                        continue;
+                    }
+                    if opaque_bound != Some(0) {
+                        cmd_list.SetPipelineState(self.prepass_pipeline_state.as_ref());
+                        opaque_bound = Some(0);
+                    }
+                } else if i < first_transparent && prepass_on {
+                    let want = if prepassed(mesh) { 1 } else { 2 };
+                    if opaque_bound != Some(want) {
+                        let pso = if want == 1 { self.after_prepass_pipeline_state.as_ref() } else { self.pipeline_state.as_ref() };
+                        cmd_list.SetPipelineState(pso);
+                        opaque_bound = Some(want);
+                    }
+                }
+                if pass == 1 && i == first_transparent && perf_enabled() {
+                    super::gpu_timer::mark(&cmd_list, frame_index, 4);
+                }
+                if pass == 1 && i >= first_transparent {
+                    let want_glass = mesh.glass && rt_reflections_active && self.glass_pipeline_state.is_some();
+                    if glass_bound != Some(want_glass) {
+                        let pso = if want_glass { self.glass_pipeline_state.as_ref() } else { self.transparent_pipeline_state.as_ref() };
+                        if let Some(pso) = pso {
+                            cmd_list.SetPipelineState(Some(pso));
+                        }
+                        glass_bound = Some(want_glass);
                     }
                 }
 
-                if let Some(shadow_srv_heap) = self.shadow_srv_heap.as_ref() {
+                if let (1, Some(shadow_srv_heap)) = (pass, self.shadow_srv_heap.as_ref()) {
                     let albedo_slot = mesh.albedo_srv_index.or(white_texture_srv_fallback);
                     if let Some(albedo_slot) = albedo_slot {
                         let gpu_handle = crate::heap::DescriptorHeap::get_gpu_handle(shadow_srv_heap, albedo_slot, cbv_srv_uav_size_materials);
@@ -1446,10 +1705,12 @@ impl AlkashEngine {
                     mesh.material_metallic, mesh.material_roughness, has_mr_map, mesh.light_emitter_area,
                     e[0], e[1], e[2], mesh.alpha_cutoff,
                     t[0], t[1], t[2], t[3],
-                    blended, flag(mesh.glass && blended > 0.5), flag(mesh.unlit), 0.0,
-                    mesh.detail_uv_scale[0], mesh.detail_uv_scale[1], flag(mesh.detail_srv_index.is_some()), 0.0,
+                    blended, flag(mesh.glass && blended > 0.5), flag(mesh.unlit), flag(rt_reflections_active),
+                    mesh.detail_uv_scale[0], mesh.detail_uv_scale[1], flag(mesh.detail_srv_index.is_some()), if mesh.normal_srv_index.is_some() { mesh.parallax_depth } else { 0.0 },
                 ];
-                cmd_list.SetGraphicsRoot32BitConstants(8, 20, material_constants.as_ptr() as *const _, 0);
+                if pass == 1 {
+                    cmd_list.SetGraphicsRoot32BitConstants(8, 20, material_constants.as_ptr() as *const _, 0);
+                }
 
                 match &job.transform {
                     DrawTransform::Camera(model) => {
@@ -1505,6 +1766,11 @@ impl AlkashEngine {
                 } else {
                     cmd_list.DrawInstanced(mesh.vertex_count, 1, 0, 0);
                 }
+            }
+            }
+            // прозрачного в кадре нет — метка «конец непрозрачного» всё равно нужна
+            if first_transparent == jobs.len() && perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 4);
             }
 
             cmd_list = self.maybe_flush_for_warm_up(cmd_list, &allocator, "main")?;
@@ -1631,6 +1897,34 @@ impl AlkashEngine {
                 for b in after_resolve {
                     Self::drop_transition_barrier(b);
                 }
+
+                // ДОБАВЛЕНО (отражения лучами): G-буфер — тем же путём.
+                let gbuf = [(&renderer.spec_target, &renderer.spec_resolved), (&renderer.normal_target, &renderer.normal_resolved)];
+                let mut before = Vec::new();
+                for (t, r) in gbuf {
+                    before.push(Self::transition_barrier(&t.resource, D3D12_RESOURCE_STATE_RENDER_TARGET, src_state_before));
+                    before.push(Self::transition_barrier(&r.resource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, dst_state_before));
+                }
+                cmd_list.ResourceBarrier(&before);
+                for b in before {
+                    Self::drop_transition_barrier(b);
+                }
+                for (t, r) in gbuf {
+                    if msaa_on {
+                        cmd_list.ResolveSubresource(&r.resource, 0, &t.resource, 0, windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    } else {
+                        cmd_list.CopyResource(&r.resource, &t.resource);
+                    }
+                }
+                let mut after = Vec::new();
+                for (t, r) in gbuf {
+                    after.push(Self::transition_barrier(&t.resource, src_state_before, D3D12_RESOURCE_STATE_RENDER_TARGET));
+                    after.push(Self::transition_barrier(&r.resource, dst_state_before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+                }
+                cmd_list.ResourceBarrier(&after);
+                for b in after {
+                    Self::drop_transition_barrier(b);
+                }
             }
 
             // ДОБАВЛЕНО (по прямому запросу пользователя — переключаемые
@@ -1643,7 +1937,7 @@ impl AlkashEngine {
             // ресурс. Ресурс остаётся живым, пропускается только сам
             // проход (реальная экономия GPU-времени всё равно есть).
             if perf_enabled() {
-                super::gpu_timer::mark(&cmd_list, frame_index, 3);
+                super::gpu_timer::mark(&cmd_list, frame_index, 5);
             }
             if self.graphics_settings.volumetric { if let (Some(volumetric_texture), Some(volumetric_srv_heap), Some(volumetric_cb)) = (
                 &self.volumetric_texture,
@@ -1831,7 +2125,7 @@ impl AlkashEngine {
             // штатного переключения) — иначе SRV этой текстуры в t3
             // tonemap-composite указывала бы на уничтоженный ресурс.
             if perf_enabled() {
-                super::gpu_timer::mark(&cmd_list, frame_index, 4);
+                super::gpu_timer::mark(&cmd_list, frame_index, 6);
             }
             if self.graphics_settings.ssao { if let (Some(ssao_texture), Some(ssao_depth_srv_heap), Some(ssao_cb)) = (
                 &self.ssao_texture,
@@ -1907,9 +2201,9 @@ impl AlkashEngine {
                     view_proj: view_proj.to_cols_array_2d(),
                     inv_view_proj: inv_view_proj.to_cols_array_2d(),
                     camera_pos: [self.camera.position.x, self.camera.position.y, self.camera.position.z],
-                    radius: 0.5,
+                    radius: self.ssao_radius,
                     bias: 0.02,
-                    strength: 1.2,
+                    strength: self.ssao_strength,
                     _padding0: [0.0, 0.0],
                 };
                 let bytes = std::slice::from_raw_parts(
@@ -2093,21 +2387,74 @@ impl AlkashEngine {
                 self.ssao_is_srv = true;
             }
 
-            // Оба прохода выше (volumetric/SSAO) закончили читать depth —
-            // возвращаем его в DEPTH_WRITE ОДИН раз (а не дважды за кадр),
-            // если он реально был переведён в SRV хотя бы одним из них.
-            if self.depth_stencil_is_srv {
-                let depth_back = [Self::transition_barrier(
-                    &renderer.depth_stencil.resource,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                )];
-                cmd_list.ResourceBarrier(&depth_back);
-                for b in depth_back {
-                    Self::drop_transition_barrier(b);
-                }
-                self.depth_stencil_is_srv = false;
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 7);
             }
+            // ДОБАВЛЕНО (отражения лучами): до TAA — он и усредняет один луч на пиксель.
+            if self.rt_reflections {
+                if let Some(gi) = self.gi.as_mut() {
+                    let size = [renderer.hdr_resolved.width, renderer.hdr_resolved.height];
+                    let cam = self.camera.position;
+                    if let Err(e) = gi.record_reflections(&cmd_list, frame_index, &renderer.spec_resolved.resource, &renderer.normal_resolved.resource, &renderer.hdr_resolved.resource, size, self.taa_view_proj.inverse(), cam, 0.55) {
+                        eprintln!("[GI] отражения не записаны: {:?}", e);
+                    }
+                }
+            }
+
+            if perf_enabled() {
+                super::gpu_timer::mark(&cmd_list, frame_index, 8);
+            }
+            // ДОБАВЛЕНО (TAA): после SSAO/volumetric (они читают глубину и
+            // кадр этого же кадра), до bloom/tonemap — те берут уже сглаженный.
+            // ИЗМЕНЕНО (TAAU): SSAO вычитается в TAA, в разрешении кадра (см.
+            // taa_cs.hlsl) — tonemap тогда его не трогает (ao_in_taa).
+            let mut ao_in_taa = false;
+            if self.taa || upscaling {
+                if let Some(t) = self.taa_state.as_mut() {
+                    let depth_state = if self.depth_stencil_is_srv { D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } else { D3D12_RESOURCE_STATE_DEPTH_WRITE };
+                    let ao = match (&self.ssao_texture, self.graphics_settings.ssao && self.ssao_is_srv) {
+                        (Some(ssao), true) => Some((&renderer.ambient_resolved.resource, &ssao.resource)),
+                        _ => None,
+                    };
+                    ao_in_taa = ao.is_some();
+                    t.record(&cmd_list, &renderer.hdr_resolved.resource, &renderer.depth_stencil, depth_state, self.taa_view_proj, ao, &renderer.post_hdr().resource);
+                }
+            } else if let Some(t) = self.taa_state.as_mut() {
+                t.reset();
+            }
+            // ДОБАВЛЕНО (замер экспозиции): по готовому (сглаженному) HDR-кадру.
+            if self.metering {
+                if self.metering_state.is_none() {
+                    match super::metering::Metering::new() {
+                        Ok(m) => self.metering_state = Some(m),
+                        Err(e) => {
+                            eprintln!("[METER] недоступен: {:?}", e);
+                            self.metering = false;
+                        }
+                    }
+                }
+                if let Some(m) = self.metering_state.as_mut() {
+                    let post = renderer.post_hdr();
+                    m.record(&cmd_list, frame_index, &post.resource, post.width, post.height);
+                }
+            }
+            // ДОБАВЛЕНО (локальная экспозиция): сетка яркости по готовому кадру.
+            if self.lens.local_exposure > 0.0 && !self.local_exposure_unavailable {
+                if self.local_exposure_state.is_none() {
+                    match super::local_exposure::LocalExposure::new() {
+                        Ok(l) => self.local_exposure_state = Some(l),
+                        Err(e) => {
+                            eprintln!("[LOCALEXP] недоступна: {:?}", e);
+                            self.local_exposure_unavailable = true;
+                        }
+                    }
+                }
+                if let Some(l) = self.local_exposure_state.as_mut() {
+                    let post = renderer.post_hdr();
+                    l.record(&cmd_list, &post.resource, post.width, post.height, &renderer.srv_uav_heap);
+                }
+            }
+
 
             // ДОБАВЛЕНО (по прямому запросу пользователя — переключаемые
             // графические настройки): та же причина, что у SSAO/volumetric
@@ -2118,7 +2465,7 @@ impl AlkashEngine {
             // БЕЗУСЛОВНО каждый кадр читает tonemap composite (t1),
             // указывала бы на уничтоженный ресурс.
             if perf_enabled() {
-                super::gpu_timer::mark(&cmd_list, frame_index, 5);
+                super::gpu_timer::mark(&cmd_list, frame_index, 9);
             }
             // ИЗМЕНЕНО (bloom цепочкой уровней, Jimenez 2014): яркое
             // выделяется сразу с понижением до half-res (уровень 0), затем
@@ -2246,7 +2593,7 @@ impl AlkashEngine {
             // после resolve-шага в начале кадра, независимо от того, бежал
             // ли bloom.
             if perf_enabled() {
-                super::gpu_timer::mark(&cmd_list, frame_index, 6);
+                super::gpu_timer::mark(&cmd_list, frame_index, 10);
             }
             let back_buffer_resource = &renderer.back_buffers[real_back_buffer_index].resource;
 
@@ -2289,8 +2636,36 @@ impl AlkashEngine {
 
             if let Some(settings) = &self.light_global_settings {
                 if let Some(cb) = &self.tonemap_constant_buffer {
-                    let tonemap_data: [f32; 4] = [settings.exposure, settings.bloom_intensity, 0.0, 0.0];
-                    let bytes = std::slice::from_raw_parts(tonemap_data.as_ptr() as *const u8, 16);
+                    // ДОБАВЛЕНО (хроматическая адаптация): строки матрицы 3x3 в b0 после exposure/bloom.
+                    self.lens_frame = self.lens_frame.wrapping_add(1);
+                    let a = chromatic_adaptation(self.white_point);
+                    let (vignette, aspect) = if self.lens.vignetting { ((self.camera.fov * 0.5).tan(), self.camera.aspect) } else { (0.0, 1.0) };
+                    // локальная экспозиция: к чему подтягивать — средняя яркость
+                    // кадра после экспозиции (по замеру), без замера — средне-серый
+                    let local_on = self.lens.local_exposure > 0.0 && self.local_exposure_state.is_some();
+                    let local_key = self.metering_state.as_ref().and_then(|m| m.last).map(|l| l * settings.exposure).unwrap_or(0.18);
+                    // размытие в движении: матрицы кадра и прошлого, обе без сдвига TAA
+                    let mb_vp = self.camera.projection_matrix() * self.camera.view_matrix();
+                    let mb_prev = self.motion_prev_view_proj.unwrap_or(mb_vp);
+                    self.motion_prev_view_proj = Some(mb_vp);
+                    let mb_on = self.lens.motion_blur > 0.0 && renderer.depth_stencil.sample_count == 1 && self.depth_stencil_is_srv;
+                    let tonemap_data: [f32; 60] = [
+                        settings.exposure, settings.bloom_intensity, vignette, aspect,
+                        a[0][0], a[0][1], a[0][2], self.lens.sensor_noise,
+                        a[1][0], a[1][1], a[1][2], (self.lens_frame % 4096) as f32,
+                        a[2][0], a[2][1], a[2][2], if self.lens.aces_full { 1.0 } else { 0.0 },
+                        self.lens.vision_cd_per_unit, self.lens.distortion, self.lens.chromatic_aberration, 0.0,
+                        if local_on { self.lens.local_exposure } else { 0.0 }, local_key, if ao_in_taa { 1.0 } else { 0.0 }, 0.0,
+                        // mbInvViewProj, mbPrevViewProj (по столбцам — как у остальных
+                        // матриц движка), mbParams
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        if mb_on { self.lens.motion_blur } else { 0.0 }, 0.05, 0.0, 0.0,
+                    ];
+                    let mut tonemap_data = tonemap_data;
+                    tonemap_data[24..40].copy_from_slice(&mb_vp.inverse().to_cols_array());
+                    tonemap_data[40..56].copy_from_slice(&mb_prev.to_cols_array());
+                    let bytes = std::slice::from_raw_parts(tonemap_data.as_ptr() as *const u8, 240);
                     if let Err(e) = cb.update_constant_buffer(bytes) {
                         eprintln!("[ENGINE] WARNING: не удалось обновить tonemap_constant_buffer: {:?}", e);
                     }
@@ -2311,6 +2686,23 @@ impl AlkashEngine {
             // PIXEL_SHADER_RESOURCE после resolve-шага (и не должна —
             // именно в этом состоянии её ожидает начало СЛЕДУЮЩЕГО
             // кадра).
+            // ИЗМЕНЕНО (размытие в движении): возврат перенесён в конец кадра —
+            // глубину читает и tonemap.
+            // Оба прохода выше (volumetric/SSAO) закончили читать depth —
+            // возвращаем его в DEPTH_WRITE ОДИН раз (а не дважды за кадр),
+            // если он реально был переведён в SRV хотя бы одним из них.
+            if self.depth_stencil_is_srv {
+                let depth_back = [Self::transition_barrier(
+                    &renderer.depth_stencil.resource,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                )];
+                cmd_list.ResourceBarrier(&depth_back);
+                for b in depth_back {
+                    Self::drop_transition_barrier(b);
+                }
+                self.depth_stencil_is_srv = false;
+            }
             let mut barriers_after = vec![
                 Self::transition_barrier(
                     back_buffer_resource,
@@ -2351,8 +2743,9 @@ impl AlkashEngine {
                 }
             }
             cmd_list.ResourceBarrier(&barriers_after);
+            super::screenshot::record(&cmd_list, back_buffer_resource);
             if perf_enabled() {
-                super::gpu_timer::mark(&cmd_list, frame_index, 7);
+                super::gpu_timer::mark(&cmd_list, frame_index, 11);
                 super::gpu_timer::end(&cmd_list, frame_index);
             }
             for b in barriers_after {
@@ -2377,11 +2770,14 @@ impl AlkashEngine {
         let swap_chain = crate::get_swap_chain()?;
 
         let perf_t_present = Instant::now();
+        let late = !no_vsync() && present_late(perf_t_present);
         unsafe {
             // без vsync и с поддержкой tearing — Present не ждёт монитор (см. swap_chain.rs)
             let hr = if no_vsync() {
                 let flags = if crate::swap_chain::tearing_supported() { windows::Win32::Graphics::Dxgi::DXGI_PRESENT_ALLOW_TEARING } else { DXGI_PRESENT(0) };
                 swap_chain.Present(0, flags)
+            } else if late {
+                swap_chain.Present(0, windows::Win32::Graphics::Dxgi::DXGI_PRESENT_ALLOW_TEARING)
             } else {
                 swap_chain.Present(1, DXGI_PRESENT(0))
             };
@@ -2424,6 +2820,7 @@ impl AlkashEngine {
         if frame_index < self.frame_fence_values.len() {
             self.frame_fence_values[frame_index] = fence_value;
         }
+        super::screenshot::save(&fence, fence_value);
 
         {
             let mut state = STATE.lock().unwrap();
@@ -2433,7 +2830,7 @@ impl AlkashEngine {
         }
 
         if perf_enabled() {
-            perf_frame(perf_wait_ms, perf_record_ms, perf_t_present.elapsed().as_secs_f64() * 1000.0,
+            perf_frame(perf_wait_ms, perf_record_ms, perf_t_present.elapsed().as_secs_f64() * 1000.0, late,
                        perf_main_draws, perf_main_tris, perf_csm_draws, total_local_shadow_draws);
         }
         Ok(true)
@@ -2472,4 +2869,29 @@ mod local_shadow_cache_tests {
         assert_ne!(a, tile_fingerprint(&vp, &[0, 1], &moved));
         assert_ne!(a, tile_fingerprint(&vp, &[0], &jobs));
     }
+}
+
+/// ДОБАВЛЕНО (хроматическая адаптация): матрица (строки), переводящая цвет
+/// при освещении белым `white` (линейный sRGB) в то, каким его видит
+/// привыкший к этому свету глаз: sRGB -> XYZ -> LMS по Брэдфорду, деление
+/// на отклик колбочек на `white`, умножение на отклик на D65, обратно.
+pub(crate) fn chromatic_adaptation(white: [f32; 3]) -> [[f32; 3]; 3] {
+    use crate::math::{Mat3, Vec3};
+    // столбцами: glam хранит матрицы по столбцам
+    let srgb_to_xyz = Mat3::from_cols(
+        Vec3::new(0.4124564, 0.2126729, 0.0193339),
+        Vec3::new(0.3575761, 0.7151522, 0.1191920),
+        Vec3::new(0.1804375, 0.0721750, 0.9503041),
+    );
+    let bradford = Mat3::from_cols(
+        Vec3::new(0.8951, -0.7502, 0.0389),
+        Vec3::new(0.2664, 1.7135, -0.0685),
+        Vec3::new(-0.1614, 0.0367, 1.0296),
+    );
+    let m = bradford * srgb_to_xyz;
+    let w = Vec3::from(white).max(Vec3::splat(1e-4));
+    let gain = (m * Vec3::ONE) / (m * w);
+    let a = m.inverse() * Mat3::from_diagonal(gain) * m;
+    let r = a.transpose();
+    [r.x_axis.to_array(), r.y_axis.to_array(), r.z_axis.to_array()]
 }
