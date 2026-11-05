@@ -78,6 +78,14 @@ impl AlkashEngine {
                 RegisterSpace: 0,
                 OffsetInDescriptorsFromTableStart: super::decals::DECAL_ATLAS_SLOT as u32,
             },
+            // ДОБАВЛЕНО (внешняя сетка проб): её атласы, t18 и t19.
+            D3D12_DESCRIPTOR_RANGE {
+                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+                NumDescriptors: 2,
+                BaseShaderRegister: 18,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: super::GI_OUTER_IRRADIANCE_SLOT as u32,
+            },
         ];
 
         let material_srv_range = D3D12_DESCRIPTOR_RANGE {
@@ -302,6 +310,19 @@ impl AlkashEngine {
                         ShaderRegister: 4,
                         RegisterSpace: 0,
                         Num32BitValues: 8,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+            // ДОБАВЛЕНО (внешняя сетка проб): root-параметр 13 — её объём и номер
+            // кадра (b5). Буфером, а не константами: подпись и так у предела
+            // в 64 слова (занято 61).
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR {
+                        ShaderRegister: 5,
+                        RegisterSpace: 0,
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,

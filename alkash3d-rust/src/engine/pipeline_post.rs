@@ -309,6 +309,7 @@ impl AlkashEngine {
         self.bloom_blur_ps = Some(ShaderBlob::compile(blur_source, "ps_5_0", "main")?);
         self.bloom_down_ps = Some(ShaderBlob::compile(include_str!("shaders/bloom_down_ps.hlsl"), "ps_5_0", "main")?);
         self.bloom_up_ps = Some(ShaderBlob::compile(include_str!("shaders/bloom_up_ps.hlsl"), "ps_5_0", "main")?);
+        self.bloom_streak_ps = Some(ShaderBlob::compile(include_str!("shaders/bloom_streak_ps.hlsl"), "ps_5_0", "main")?);
 
         println!("[ENGINE] ✓ Bloom shaders compiled (extract + down/up chain + separable blur for SSAO)");
         Ok(())
@@ -375,7 +376,8 @@ impl AlkashEngine {
                     Constants: D3D12_ROOT_CONSTANTS {
                         ShaderRegister: 0,
                         RegisterSpace: 0,
-                        Num32BitValues: 4,
+                        // пятое — предел яркости (extract) или лучи, шестое — лучи
+                        Num32BitValues: 6,
                     },
                 },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
@@ -525,6 +527,7 @@ impl AlkashEngine {
             (self.bloom_blur_ps.as_ref().unwrap(), blur_sig, blend_desc),
             (self.bloom_down_ps.as_ref().unwrap(), chain_sig, blend_desc),
             (self.bloom_up_ps.as_ref().unwrap(), chain_sig, additive),
+            (self.bloom_streak_ps.as_ref().unwrap(), chain_sig, additive),
         ];
         let mut psos = Vec::with_capacity(passes.len());
         for (target_ps, sig, blend) in passes {
@@ -573,6 +576,7 @@ impl AlkashEngine {
         self.bloom_blur_pipeline_state = psos.next();
         self.bloom_down_pipeline_state = psos.next();
         self.bloom_up_pipeline_state = psos.next();
+        self.bloom_streak_pipeline_state = psos.next();
 
         println!("[ENGINE] ✓ Bloom pipeline states created (extract + blur + down + up)");
         Ok(())
@@ -620,7 +624,8 @@ impl AlkashEngine {
             .collect::<Result<Vec<_>>>()?;
 
         let rtv_heap = crate::heap::DescriptorHeap::create_rtv_heap(textures.len() as u32)?;
-        let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(textures.len() as u32)?;
+        // на один SRV больше: копия выделенного яркого для лучей
+        let srv_heap = crate::heap::DescriptorHeap::create_cbv_srv_uav_heap(textures.len() as u32 + 1)?;
 
         let rtv_size = {
             let state = STATE.lock().unwrap();
@@ -630,6 +635,12 @@ impl AlkashEngine {
             let state = STATE.lock().unwrap();
             state.cbv_srv_uav_descriptor_size
         };
+
+        let streak_slot = textures.len() as u32;
+        let streak_src = crate::render::RenderTexture::create_hdr_target(bloom_width, bloom_height, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)?;
+        streak_src.create_srv(crate::heap::DescriptorHeap::get_cpu_handle(&srv_heap, streak_slot, cbv_srv_uav_size))?;
+        self.bloom_streak_srv_gpu = crate::heap::DescriptorHeap::get_gpu_handle(&srv_heap, streak_slot, cbv_srv_uav_size);
+        self.bloom_streak_src = Some(streak_src);
 
         let mut levels = Vec::with_capacity(textures.len());
         for (i, texture) in textures.into_iter().enumerate() {

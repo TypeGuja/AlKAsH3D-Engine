@@ -103,6 +103,32 @@ Texture2D GiDistance : register(t13);
 cbuffer GiVolumeConstants : register(b3) {
     DDGIVolume giVolume;
 };
+// ДОБАВЛЕНО (внешняя сетка проб, AlkashEngine::set_gi_outer_volume): грубая
+// сетка на всю сцену — там, где точной нет (enabled = 0 — её нет вовсе).
+Texture2D GiOuterIrradiance : register(t18);
+Texture2D GiOuterDistance : register(t19);
+cbuffer GiOuterConstants : register(b5) {
+    DDGIVolume giOuter;
+    float4 mediumParams; // x = номер кадра (сдвиг шагов вдоль луча в среде)
+    float4 lightProfiles[36]; // кривые силы света, по 9 строк на кривую
+};
+
+// ДОБАВЛЕНО (кривая силы света, engine/light_profile.rs): доля силы света в
+// направлении с косинусом cosTheta от оси. y — params.y прожектора: минус
+// (номер кривой + радиус тела), номер 0 — без кривой.
+float LightProfileAt(float y, float cosTheta) {
+    uint id = y < 0.0 ? (uint)(-y) : 0u;
+    if (id == 0u || id > 4u) {
+        return 1.0;
+    }
+    float x = acos(clamp(cosTheta, -1.0, 1.0)) / 3.14159265 * 32.0;
+    uint k = min((uint)x, 31u);
+    uint row = (id - 1u) * 9u;
+    float a = lightProfiles[row + k / 4u][k % 4u];
+    float b = lightProfiles[row + (k + 1u) / 4u][(k + 1u) % 4u];
+    return lerp(a, b, saturate(x - k));
+}
+
 
 // ДОБАВЛЕНО (Задача #15, normal mapping): root constants (root-
 // параметр 8, register b1). `rootMetallic`/`rootRoughness` —
@@ -405,8 +431,10 @@ float SampleShadowTile(Texture2D atlas, float4x4 viewProj, uint tile, float4 atl
 
 float SampleSpotShadow(GPULight light, float3 worldPos, float3 normal, float3 toL, float dist) {
     uint tile = (uint)(light.params.w + 0.5) - 1;
+    // ДОБАВЛЕНО (мягкие тени прожекторов): дробная часть -params.y — радиус
+    // светящегося тела, м (иначе тень с краем в тексель)
     return SampleShadowTile(SpotShadowAtlas, spotShadowViewProj[tile], tile, spotShadowParams,
-                            tan(light.params.x + 0.05), worldPos, normal, toL, dist, 0.0);
+                            tan(light.params.x + 0.05), worldPos, normal, toL, dist, light.params.y < 0.0 ? min(frac(-light.params.y), 0.5) : 0.0);
 }
 
 // ДОБАВЛЕНО (тени point-фонарей): грань куба выбирается по главной
@@ -494,7 +522,7 @@ float3 ComputePointLightContribution(GPULight light, float3 worldPos, float3 nor
             // даёт корректный резкий, но не мусорный переход, а не
             // NaN/деление на 0.
             float coneFactor = smoothstep(cosOuter, max(cosInner, cosOuter + 0.0001), cosAngle);
-            attenuation *= coneFactor;
+            attenuation *= coneFactor * LightProfileAt(light.params.y, cosAngle);
             // ДОБАВЛЕНО (тени фонарей): фонарь из числа
             // тенеобразующих в этом кадре (params.w > 0) — свет не
             // проходит сквозь машины/стены/столбы. Выборку делаем
@@ -799,17 +827,64 @@ bool MediumSegment(float3 o, float3 dir, float len, out float t0, out float t1) 
     return t1 > t0;
 }
 
-// Однократное рассеяние света фонарей на отрезке [t0, t1] луча:
-// для точечного источника интеграл I*sigma*p/r^2 по прямой берётся
-// точно: (I*sigma*p/h) * (atan(b/h) - atan(a/h)), h — расстояние от
-// источника до прямой, a, b — концы отрезка от ближайшей к нему точки.
-// Фазовая функция и конус прожектора — в ближайшей точке (приближение),
-// ослабление внутри отрезка — средним множителем. Без теней в воздухе.
-float3 MediumInscatter(float3 o, float3 dir, float t0, float t1) {
+// Видит ли точка воздуха фонарь: одна выборка карты теней без смещений (в
+// воздухе нет поверхности и нечему затенять самого себя).
+float MediumShadowTap(Texture2D atlas, float4x4 viewProj, uint tile, float4 atlasParams, float3 P) {
+    float4 clip = mul(viewProj, float4(P, 1.0));
+    if (clip.w <= 0.0001) {
+        return 1.0;
+    }
+    float3 ndc = clip.xyz / clip.w;
+    if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) {
+        return 1.0;
+    }
+    float2 localUV = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    uint perRow = (uint)atlasParams.x;
+    float2 tileOrigin = float2(tile % perRow, tile / perRow);
+    float atlasTexel = atlasParams.y / max(atlasParams.z, 1.0);
+    float2 uv = clamp((tileOrigin + localUV) * atlasParams.y, tileOrigin * atlasParams.y + atlasTexel * 1.5, (tileOrigin + 1.0) * atlasParams.y - atlasTexel * 1.5);
+    return atlas.SampleCmpLevelZero(ShadowSampler, uv, ndc.z);
+}
+
+float MediumShadow(GPULight L, float3 P) {
+    if (L.params.w > 0.5) {
+        uint tile = (uint)(L.params.w + 0.5) - 1;
+        return MediumShadowTap(SpotShadowAtlas, spotShadowViewProj[tile], tile, spotShadowParams, P);
+    }
+    if (L.params.w < -0.5) {
+        uint slot = (uint)(-L.params.w + 0.5) - 1;
+        float3 v = P - L.position.xyz;
+        float3 a = abs(v);
+        uint face;
+        if (a.x >= a.y && a.x >= a.z) {
+            face = v.x > 0.0 ? 0 : 1;
+        } else if (a.y >= a.z) {
+            face = v.y > 0.0 ? 2 : 3;
+        } else {
+            face = v.z > 0.0 ? 4 : 5;
+        }
+        uint tile = slot * 6 + face;
+        return MediumShadowTap(PointShadowAtlas, pointShadowViewProj[tile], tile, pointShadowParams, P);
+    }
+    return 1.0;
+}
+
+// ИЗМЕНЕНО (свет в воздухе с тенями): однократное рассеяние на отрезке
+// [t0, t1] — численно, по шагам вдоль луча, а не формулой с конусом и фазой
+// в одной точке (она давала резкий край конуса и свет сквозь столб).
+// Шаги — равноугольные (Kulla, Fajardo 2012): чаще там, где луч ближе к
+// лампе. Вес такого шага убирает 1/r²: интеграл I*sigma*p*V*T/r² dt равен
+// I*sigma*(B-A)/h на среднее p*V*T по шагам, где h — расстояние от лампы до
+// прямой, A и B — углы концов отрезка. Сдвиг шагов — свой у каждого пикселя
+// и кадра, остаток шума усредняет TAA.
+static const uint MEDIUM_STEPS = 6;
+float3 MediumInscatter(float3 o, float3 dir, float t0, float t1, float2 pixel) {
     float sigma = mediumMin.w;
     float g = mediumMax.w;
     float3 sum = float3(0.0, 0.0, 0.0);
+    float jitter = frac(52.9829189 * frac(dot(pixel + 5.588238 * mediumParams.x, float2(0.06711056, 0.00583715))));
     uint n = min(lightCount, 32u);
+    [loop]
     for (uint i = 0; i < n; i++) {
         GPULight L = Lights[i];
         if (L.position.w > 1.5 || L.color.w <= 0.0) {
@@ -817,23 +892,43 @@ float3 MediumInscatter(float3 o, float3 dir, float t0, float t1) {
         }
         float3 lp = L.position.xyz;
         float tc = dot(lp - o, dir);
-        float3 pc = o + dir * tc;
-        float h = max(length(lp - pc), 0.02);
-        float a = t0 - tc, b = t1 - tc;
-        float integ = (atan(b / h) - atan(a / h)) / h;
-        float tm = clamp(tc, t0, t1);
-        float3 toL = normalize(lp - (o + dir * tm));
-        float cosT = dot(dir, toL);
-        float phase = (1.0 - g * g) / (4.0 * 3.14159265 * pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5));
-        float cone = 1.0;
-        if (L.position.w > 0.5) {
-            float cosOuter = cos(max(L.params.x, 0.001));
-            float cosInner = cos(max(min(L.params.z, L.params.x), 0.0));
-            cone = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-4), dot(normalize(L.direction.xyz), -toL));
+        float h = max(length(lp - (o + dir * tc)), 0.02);
+        float range = max(L.direction.w, 0.001);
+        if (h >= range) {
+            continue;
         }
-        sum += L.color.rgb * L.color.w * sigma * phase * integ * cone;
+        float A = atan((t0 - tc) / h), B = atan((t1 - tc) / h);
+        float3 I = L.color.rgb * L.color.w * sigma * (B - A) / h;
+        // лампа, чей вклад в этот пиксель заведомо не виден, — без шагов
+        if (max(I.r, max(I.g, I.b)) * 0.8 < 1e-3) {
+            continue;
+        }
+        float avg = 0.0;
+        [loop]
+        for (uint k = 0; k < MEDIUM_STEPS; k++) {
+            float t = tc + h * tan(lerp(A, B, (k + jitter) / MEDIUM_STEPS));
+            float3 P = o + dir * t;
+            float3 v = lp - P;
+            float r = length(v);
+            float3 toL = v / max(r, 1e-4);
+            float ratio = saturate(r / range);
+            float window = 1.0 - ratio * ratio;
+            float cosT = dot(dir, toL);
+            float w = window * window * (1.0 - g * g) / (4.0 * 3.14159265 * pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5));
+            if (L.position.w > 0.5) {
+                float cosOuter = cos(max(L.params.x, 0.001));
+                float cosInner = cos(max(min(L.params.z, L.params.x), 0.0));
+                float cosAxis = dot(normalize(L.direction.xyz), -toL);
+                w *= smoothstep(cosOuter, max(cosInner, cosOuter + 1e-4), cosAxis) * LightProfileAt(L.params.y, cosAxis);
+            }
+            if (w > 0.0) {
+                // ослабление: от лампы до точки и от точки до камеры
+                avg += w * exp(-sigma * (r + t - t0)) * MediumShadow(L, P);
+            }
+        }
+        sum += I * avg / MEDIUM_STEPS;
     }
-    return sum * exp(-sigma * (t1 - t0) * 0.5);
+    return sum;
 }
 
 // ДОБАВЛЕНО (честный SSAO): два выхода — полный HDR-цвет и
@@ -847,6 +942,18 @@ struct PS_OUTPUT {
     float4 spec : SV_Target2;
     float4 normalOut : SV_Target3;
 };
+
+// Рассеянный свет в точке: точная сетка проб, вне её — внешняя.
+float4 GiSample(float3 P, float3 n, float3 V) {
+    float4 g = float4(0.0, 0.0, 0.0, 0.0);
+    if (giVolume.enabled != 0) {
+        g = DDGISampleIrradiance(P, n, V, giVolume, GiIrradiance, GiDistance, MaterialSampler);
+    }
+    if (g.a <= 0.5 && giOuter.enabled != 0) {
+        g = DDGISampleIrradiance(P, n, V, giOuter, GiOuterIrradiance, GiOuterDistance, MaterialSampler);
+    }
+    return g;
+}
 
 PS_OUTPUT main(PS_INPUT input) {
     float3 geomNormal = normalize(input.normal);
@@ -964,14 +1071,16 @@ PS_OUTPUT main(PS_INPUT input) {
             float len = length(d);
             float t0, t1;
             if (len > 1e-3 && MediumSegment(cameraPos.xyz, d / len, len, t0, t1)) {
-                unlitOut.color.rgb = unlitOut.color.rgb * exp(-mediumMin.w * (t1 - t0)) + MediumInscatter(cameraPos.xyz, d / len, t0, t1);
+                unlitOut.color.rgb = unlitOut.color.rgb * exp(-mediumMin.w * (t1 - t0)) + MediumInscatter(cameraPos.xyz, d / len, t0, t1, input.pos.xy);
             }
         }
         // Альфа ambient-таргета = 1 — метка "unlit": bloom-extract такие
         // пиксели пропускает. Цвета unlit-объектов (2D-паппеты, текст)
         // закодированы яркостями выше 1 под тонмаппинг, и без метки bloom
-        // обводил бы их ореолом, как источники света.
-        unlitOut.ambient = float4(0.0, 0.0, 0.0, 1.0);
+        // обводил бы их ореолом, как источники света. Настоящие источники
+        // (Mesh::glow, blendParams.z = 2) метки не получают: у них альфа —
+        // минус расстояние от камеры (дальние лампы дают больше лучей).
+        unlitOut.ambient = float4(0.0, 0.0, 0.0, blendParams.z > 1.5 ? -length(cameraPos.xyz - input.worldPos) : 1.0);
         unlitOut.spec = float4(0.0, 0.0, 0.0, 1.0);
         unlitOut.normalOut = float4(0.0, 0.0, 0.0, 0.0);
         return unlitOut;
@@ -1017,8 +1126,8 @@ PS_OUTPUT main(PS_INPUT input) {
     // (свет, отражённый от стен/пола/предметов, и небо там, где оно видно).
     // Отражения окружения (envSpec) пока остаются от неба.
     float3 diffuseAmbient = ambientRadiance;
-    if (giVolume.enabled != 0) {
-        float4 gi = DDGISampleIrradiance(input.worldPos, normal, viewDir, giVolume, GiIrradiance, GiDistance, MaterialSampler);
+    if (giVolume.enabled != 0 || giOuter.enabled != 0) {
+        float4 gi = GiSample(input.worldPos, normal, viewDir);
         if (gi.a > 0.5 && DDGIFinite3(gi.rgb)) {
             diffuseAmbient = gi.rgb;
         }
@@ -1033,9 +1142,9 @@ PS_OUTPUT main(PS_INPUT input) {
     // нужен (ambientSpec ниже = 0) — вторая выборка проб (8 проб с проверкой
     // видимости на пиксель) считалась впустую.
     bool rtReflections = blendParams.w > 0.5 && (blendParams.x < 0.5 || isGlass);
-    if (!rtReflections && giVolume.enabled != 0) {
+    if (!rtReflections && (giVolume.enabled != 0 || giOuter.enabled != 0)) {
         float3 R = reflect(-viewDir, normal);
-        float4 giR = DDGISampleIrradiance(input.worldPos, R, viewDir, giVolume, GiIrradiance, GiDistance, MaterialSampler);
+        float4 giR = GiSample(input.worldPos, R, viewDir);
         if (giR.a > 0.5 && DDGIFinite3(giR.rgb)) {
             specAmbient = lerp(giR.rgb, diffuseAmbient, roughness);
         }
@@ -1144,7 +1253,7 @@ PS_OUTPUT main(PS_INPUT input) {
         float t0, t1;
         if (len > 1e-3 && MediumSegment(cameraPos.xyz, d / len, len, t0, t1)) {
             float T = exp(-mediumMin.w * (t1 - t0));
-            fogL = fogL * T + MediumInscatter(cameraPos.xyz, d / len, t0, t1);
+            fogL = fogL * T + MediumInscatter(cameraPos.xyz, d / len, t0, t1, input.pos.xy);
             fogT *= T;
         }
     }

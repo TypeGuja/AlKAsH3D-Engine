@@ -12,6 +12,7 @@ pub use scripting::{ScriptHandle, pack_entity_id};
 mod mesh;
 pub use mesh::{Vertex, Mesh, MeshInstance};
 pub use gi::GiVolume;
+pub use light_profile::{spot_params_y, LightProfile};
 pub use self::Medium as ParticipatingMedium; // имя для игр (Medium в движке)
 
 // ВЫНЕСЕНО (Фаза 1 архитектурного рефакторинга): цикл дня/ночи — см.
@@ -93,6 +94,7 @@ mod decals;
 pub use decals::Decal;
 // ДОБАВЛЕНО (непрямой свет лучами, DDGI): сетка проб, см. engine/gi.rs.
 mod gi;
+mod light_profile;
 // ДОБАВЛЕНО (временное сглаживание): см. engine/taa.rs.
 mod taa;
 // ДОБАВЛЕНО (замер экспозиции по кадру): см. engine/metering.rs.
@@ -264,6 +266,39 @@ pub struct Medium {
     pub anisotropy: f32,
 }
 
+impl AlkashEngine {
+    /// ДОБАВЛЕНО (кривая силы света): задать кривую номер `id` (1..=4).
+    /// Прожектор выбирает её через `params[1] = spot_params_y(id, радиус)`.
+    /// Сила света прожектора — в максимуме кривой.
+    pub fn set_light_profile(&mut self, id: u32, profile: &LightProfile) -> bool {
+        if id == 0 || id as usize > light_profile::MAX_PROFILES {
+            return false;
+        }
+        light_profile::write_profile(&mut self.light_profiles, id as usize, profile);
+        true
+    }
+}
+
+/// ДОБАВЛЕНО (лучи от ламп): один луч через источник. Идёт вместе с bloom и
+/// умножается на его интенсивность.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LensStreak {
+    /// Доля света источника, ушедшая в луч. 0 — луча нет.
+    pub strength: f32,
+    /// Наклон к горизонту на экране, радианы: положительный — вправо вверх.
+    pub angle: f32,
+    /// Длина в каждую сторону от источника, доля ширины кадра.
+    pub length: f32,
+    /// Луч появляется у источников дальше `from_dist` метров и в полную силу
+    /// идёт дальше `to_dist`. Расстояние известно только у `Mesh::glow`;
+    /// `to_dist` = 0 — луч у всего яркого, без учёта расстояния.
+    pub from_dist: f32,
+    pub to_dist: f32,
+    /// Усиление луча у дальних источников: (расстояние / 10 м) ^ это, ближе
+    /// 10 м — без усиления. 0 — выключено. Расстояние — только у `Mesh::glow`.
+    pub far_gain: f32,
+}
+
 /// ДОБАВЛЕНО (камера): то, что делает с кадром настоящая камера. По
 /// умолчанию всё выключено — кадр как раньше.
 #[derive(Clone, Copy, Debug, Default)]
@@ -296,6 +331,12 @@ pub struct Lens {
     /// нет быстрых подвижных тел, а поворот головы — главный признак игры,
     /// когда каждый кадр идеально резкий.
     pub motion_blur: f32,
+    /// ДОБАВЛЕНО (лучи от ламп): прямые лучи через яркие источники, как от
+    /// царапин на стекле перед объективом.
+    pub streaks: [LensStreak; 3],
+    /// Предел яркости пикселя на входе bloom: ореол у очень ярких источников
+    /// (нить, колба) не разрастается на полкадра. 0 — без предела.
+    pub bloom_cap: f32,
 }
 
 /// ДОБАВЛЕНО (bloom цепочкой уровней): один уровень ниже half-res.
@@ -559,6 +600,11 @@ pub struct AlkashEngine {
     pub gi_paused: bool,
     /// SSAO: радиус поиска преград, м, и сила затенения рассеянного света
     /// (в углах, стыках, под предметами).
+    /// ДОБАВЛЕНО (AO лучами): считать затенение лучами по геометрии вместо
+    /// экранного SSAO (нужен объём GI; радиус — `ssao_radius`). `rtao_power` —
+    /// степень результата: 1 — как есть, больше — плотнее.
+    pub rtao: bool,
+    pub rtao_power: f32,
     pub ssao_radius: f32,
     pub ssao_strength: f32,
     taa_state: Option<taa::Taa>,
@@ -609,6 +655,10 @@ pub struct AlkashEngine {
     /// обновляется из `.alfar` GlobalLightSettings.exposure при загрузке
     /// сцены (см. `load_lights_from_alfar` — light_global_settings).
     tonemap_constant_buffer: Option<Buffer>,
+    /// Объём внешней сетки проб и номер кадра для основного прохода (b5).
+    gi_outer_constant_buffer: Option<Buffer>,
+    /// Кривые силы света, заданные `set_light_profile`.
+    light_profiles: light_profile::ProfileTable,
 
     bloom_extract_ps: Option<ShaderBlob>,
     /// Разделимый гауссов блюр — теперь только для SSAO (см.
@@ -618,6 +668,8 @@ pub struct AlkashEngine {
     /// тент-повышение со сложением (Jimenez 2014).
     bloom_down_ps: Option<ShaderBlob>,
     bloom_up_ps: Option<ShaderBlob>,
+    /// Луч от ярких источников (`Lens::streak`).
+    bloom_streak_ps: Option<ShaderBlob>,
     /// Root signature блюра SSAO: один SRV (t0) + point-сэмплер + CBV (b0)
     /// с параметрами (форма BloomParams старого блюра).
     bloom_root_signature: Option<ID3D12RootSignature>,
@@ -631,6 +683,12 @@ pub struct AlkashEngine {
     bloom_down_pipeline_state: Option<ID3D12PipelineState>,
     /// Со смешиванием ONE/ONE — прибавляет уровень к следующему по размеру.
     bloom_up_pipeline_state: Option<ID3D12PipelineState>,
+    /// Тоже ONE/ONE: прибавляет луч к уровню 1.
+    bloom_streak_pipeline_state: Option<ID3D12PipelineState>,
+    /// Копия выделенного яркого для лучей (`Lens::streaks`), размер уровня 0,
+    /// вне кадра — PIXEL_SHADER_RESOURCE.
+    bloom_streak_src: Option<crate::render::RenderTexture>,
+    bloom_streak_srv_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
     /// Half-res уровень 0 bloom (его читает tonemap) — хранится вне
     /// `Renderer` (в отличие от `hdr_target`), т.к. это внутренняя деталь
     /// именно bloom-прохода, а не что-то, что нужно основному 3D draw pass'у.
@@ -1232,7 +1290,10 @@ pub const POINT_SHADOW_ATLAS_SLOT: usize = NUM_CASCADES + 1;
 pub const GI_IRRADIANCE_SLOT: usize = NUM_CASCADES + 2;
 pub const GI_DISTANCE_SLOT: usize = NUM_CASCADES + 3;
 /// ДОБАВЛЕНО (forward-декали): ещё 4 слота — атлас и буферы (engine/decals.rs).
-pub const SHADOW_TABLE_SLOTS: usize = NUM_CASCADES + 8;
+/// ДОБАВЛЕНО (внешняя сетка проб): её атласы, t18 и t19.
+pub const GI_OUTER_IRRADIANCE_SLOT: usize = NUM_CASCADES + 8;
+pub const GI_OUTER_DISTANCE_SLOT: usize = NUM_CASCADES + 9;
+pub const SHADOW_TABLE_SLOTS: usize = NUM_CASCADES + 10;
 
 /// tan половины угла обзора грани cube-тени (см. POINT_SHADOW_FACE_MARGIN_TEXELS):
 /// граница 90°-грани — tan=1, расширяем на margin текселей из tile/2.

@@ -46,7 +46,29 @@ cbuffer GIConstants : register(b0) {
     uint probeOffset;
     uint probeBudget;
     uint2 _pad2;
+    // ДОБАВЛЕНО (внешняя сетка): вторая сетка проб — точка попадания луча
+    // вне своей сетки берёт многократные отскоки из неё (enabled = 0 — нет).
+    DDGIVolume otherVolume;
+    float4 lightProfiles[36]; // кривые силы света, как в main_ps
 };
+
+// Та же функция, что в main_ps.hlsl.
+float LightProfileAt(float y, float cosTheta) {
+    uint id = y < 0.0 ? (uint)(-y) : 0u;
+    if (id == 0u || id > 4u) {
+        return 1.0;
+    }
+    float x = acos(clamp(cosTheta, -1.0, 1.0)) / 3.14159265 * 32.0;
+    uint k = min((uint)x, 31u);
+    uint row = (id - 1u) * 9u;
+    float a = lightProfiles[row + k / 4u][k % 4u];
+    float b = lightProfiles[row + (k + 1u) / 4u][(k + 1u) % 4u];
+    return lerp(a, b, saturate(x - k));
+}
+
+
+// Рассеянный свет в точке: из своей сетки, вне её — из другой.
+float4 SampleProbes(float3 P, float3 n, float3 V);
 
 uint ProbeOfSlot(uint slot) {
     uint total = volume.counts.x * volume.counts.y * volume.counts.z;
@@ -59,6 +81,8 @@ StructuredBuffer<GPULight> Lights : register(t2);
 Texture2D<float4> IrradianceSrv : register(t3);
 Texture2D<float4> DistanceSrv : register(t4);
 Texture2D<float4> RayDataSrv : register(t5);
+Texture2D<float4> OtherIrradiance : register(t10);
+Texture2D<float4> OtherDistance : register(t11);
 RWTexture2D<float4> RayData : register(u0);
 RWTexture2D<float4> Irradiance : register(u1);
 RWTexture2D<float4> Distance : register(u2);
@@ -78,6 +102,14 @@ float3 SphericalFibonacci(float i, float n) {
 
 float3 RayDirection(uint i) {
     return normalize(mul((float3x3)rayRotation, SphericalFibonacci((float)i, (float)raysPerProbe)));
+}
+
+float4 SampleProbes(float3 P, float3 n, float3 V) {
+    float4 g = DDGISampleIrradiance(P, n, V, volume, IrradianceSrv, DistanceSrv, LinearClamp);
+    if (g.a <= 0.5 && otherVolume.enabled != 0) {
+        g = DDGISampleIrradiance(P, n, V, otherVolume, OtherIrradiance, OtherDistance, LinearClamp);
+    }
+    return g;
 }
 
 bool Visible(float3 from, float3 dir, float maxT) {
@@ -113,7 +145,7 @@ float3 LightIncoming(GPULight light, float3 P, float3 n, out float3 toL, out flo
             float cosAngle = dot(normalize(light.direction.xyz), -toL);
             float cosOuter = cos(max(light.params.x, 0.001));
             float cosInner = cos(max(min(light.params.z, light.params.x), 0.0));
-            attenuation *= smoothstep(cosOuter, max(cosInner, cosOuter + 0.0001), cosAngle);
+            attenuation *= smoothstep(cosOuter, max(cosInner, cosOuter + 0.0001), cosAngle) * LightProfileAt(light.params.y, cosAngle);
         }
     }
     return light.color.rgb * light.color.w * attenuation;
@@ -180,7 +212,7 @@ bool ShadeHit(uint instanceId, uint prim, float2 bary, float3x3 worldToObject, f
         }
     }
     // Многократные отскоки: освещённость в точке попадания из проб.
-    float4 indirect = DDGISampleIrradiance(P, n, -dir, volume, IrradianceSrv, DistanceSrv, LinearClamp);
+    float4 indirect = SampleProbes(P, n, -dir);
     float3 ambient = indirect.a > 0.5 ? indirect.rgb : skyRadiance.rgb * skyRadiance.a;
     radiance += diffuse * ambient;
 
@@ -356,9 +388,10 @@ cbuffer ReflConstants : register(b1) {
     float3 reflCamPos;
     uint reflFrame;
     float2 reflSize;
-    float reflMaxRoughness;
-    float _reflPad;
+    float reflMaxRoughness; // в проходе AO — радиус, м
+    float reflAo;           // отражения: 1 — AO этого кадра есть (t12); AO: степень
 };
+Texture2D<float4> AoTex : register(t12);
 
 float Hash1(uint3 v) {
     uint h = v.x * 1973u + v.y * 9277u + v.z * 26699u;
@@ -391,8 +424,8 @@ void ReflSurface(int2 p, float4 nd, out float3 P, out float3 N, out float3 V) {
 /// Шершавое: отражение целиком из проб (малая дисперсия, луч не нужен).
 float3 ReflFromProbes(float3 P, float3 N, float3 V, float rough) {
     float3 R = reflect(-V, N);
-    float4 probesN = DDGISampleIrradiance(P, N, V, volume, IrradianceSrv, DistanceSrv, LinearClamp);
-    float4 probesR = DDGISampleIrradiance(P, R, V, volume, IrradianceSrv, DistanceSrv, LinearClamp);
+    float4 probesN = SampleProbes(P, N, V);
+    float4 probesR = SampleProbes(P, R, V);
     float3 a = probesR.a > 0.5 ? probesR.rgb : skyRadiance.rgb * skyRadiance.a;
     float3 b = probesN.a > 0.5 ? probesN.rgb : a;
     return lerp(a, b, rough);
@@ -466,8 +499,8 @@ void TraceReflections(uint3 id : SV_DispatchThreadID) {
     // пробам (малая дисперсия, но размыто): чем шире лепесток GGX, тем
     // больше доля проб — как у Lumen. И гасим «светлячков» — лучи,
     // попавшие в редкое яркое пятно, сильнее всего шумят.
-    float4 probesN = DDGISampleIrradiance(P, N, V, volume, IrradianceSrv, DistanceSrv, LinearClamp);
-    float4 probesR = DDGISampleIrradiance(P, R, V, volume, IrradianceSrv, DistanceSrv, LinearClamp);
+    float4 probesN = SampleProbes(P, N, V);
+    float4 probesR = SampleProbes(P, R, V);
     float3 pr = probesR.a > 0.5 ? probesR.rgb : (probesN.a > 0.5 ? probesN.rgb : L);
     float lumP = dot(pr, float3(0.2126, 0.7152, 0.0722));
     float lumL = dot(L, float3(0.2126, 0.7152, 0.0722));
@@ -529,5 +562,96 @@ void ResolveReflections(uint3 id : SV_DispatchThreadID) {
         // рядом нет похожей поверхности с лучом (тонкая деталь) — из проб
         L = wsum > 1e-3 ? sum / wsum : ReflFromProbes(P, N, V, rough);
     }
+    // ДОБАВЛЕНО (затенение отражений): пробы не видят мелких щелей и контактов,
+    // шершавая часть отражения гасится по AO (Lagarde, de Rousiers 2014). Луч
+    // зеркальной части препятствие видит сам.
+    if (reflAo > 0.5) {
+        float ao = AoTex.SampleLevel(LinearClamp, (float2(p) + 0.5) / reflSize, 0).r;
+        float nv = saturate(dot(N, V));
+        float so = saturate(pow(abs(nv + ao), pow(2.0, -16.0 * rough - 1.0)) - 1.0 + ao);
+        L *= lerp(1.0, so, smoothstep(0.12, reflMaxRoughness, rough));
+    }
     ReflOut[p] = float4(color.rgb + sp.rgb * L, color.a);
+}
+
+// ДОБАВЛЕНО (AO лучами, AlkashEngine::rtao): какая доля полусферы над точкой
+// открыта в радиусе reflMaxRoughness — по настоящей геометрии, а не по глубине
+// на экране (видит то, что за краем кадра и за предметом). Один луч на блок 2x2,
+// разный каждый кадр; шум убирают BlurAO и TAA. Вне основной сетки проб радиус
+// втрое больше: там пробы реже и мелких затенений сами не дают.
+[numthreads(8, 8, 1)]
+void TraceAO(uint3 id : SV_DispatchThreadID) {
+    uint w, h;
+    ReflHalf.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) {
+        return;
+    }
+    int2 block = int2(id.xy);
+    int2 p = ReflTracedPixel(block);
+    float4 nd = NormalTex.Load(int3(p, 0));
+    if (nd.a <= 0.0) {
+        ReflHalf[block] = float4(1.0, 1.0, 1.0, -1.0);
+        return;
+    }
+    float3 P, N, V;
+    ReflSurface(p, nd, P, N, V);
+    float3 cell = (P - volume.origin) / volume.spacing;
+    bool outside = any(cell < 0.0) || any(cell > float3(volume.counts) - 1.0);
+    float radius = reflMaxRoughness * (outside ? 3.0 : 1.0);
+    // направление по косинусу вокруг нормали
+    float u1 = Hash1(uint3(p, reflFrame));
+    float u2 = Hash1(uint3(p.yx + 11, reflFrame * 5u + 3u));
+    float phi = 2.0 * PI * u2;
+    float sinT = sqrt(u1);
+    float3 up = abs(N.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    float3 T = normalize(cross(up, N));
+    float3 B = cross(N, T);
+    float3 dir = normalize(T * (sinT * cos(phi)) + B * (sinT * sin(phi)) + N * sqrt(saturate(1.0 - u1)));
+    RayDesc ray;
+    // сдвиг от поверхности растёт с расстоянием: точность точки из G-буфера падает
+    ray.Origin = P + N * (0.01 + nd.a * 0.001) + V * 0.005;
+    ray.Direction = dir;
+    ray.TMin = 0.005;
+    ray.TMax = radius;
+    RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+    q.TraceRayInline(Scene, RAY_FLAG_NONE, 0xFF, ray);
+    q.Proceed();
+    float vis = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? saturate(q.CommittedRayT() / radius) : 1.0;
+    ReflHalf[block] = float4(vis, vis, vis, nd.a);
+}
+
+// Сглаживание 5x5 с учётом нормали и расстояния: через край предмета не течёт.
+[numthreads(8, 8, 1)]
+void BlurAO(uint3 id : SV_DispatchThreadID) {
+    uint w, h;
+    ReflOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) {
+        return;
+    }
+    int2 b0 = int2(id.xy);
+    float4 center = ReflHalfTex.Load(int3(b0, 0));
+    if (center.a < 0.0) {
+        ReflOut[b0] = float4(1.0, 1.0, 1.0, 1.0);
+        return;
+    }
+    float3 Nc = normalize(NormalTex.Load(int3(ReflTracedPixel(b0), 0)).rgb * 2.0 - 1.0);
+    float sum = 0.0, wsum = 0.0;
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            int2 b = b0 + int2(x, y);
+            if (any(b < 0) || b.x >= (int)w || b.y >= (int)h) {
+                continue;
+            }
+            float4 t = ReflHalfTex.Load(int3(b, 0));
+            if (t.a < 0.0) {
+                continue;
+            }
+            float3 Nq = normalize(NormalTex.Load(int3(ReflTracedPixel(b), 0)).rgb * 2.0 - 1.0);
+            float k = exp(-float(x * x + y * y) * 0.25) * pow(saturate(abs(dot(Nc, Nq))), 16.0) * exp(-abs(t.a - center.a) / (0.02 * center.a + 0.01));
+            sum += t.r * k;
+            wsum += k;
+        }
+    }
+    float ao = pow(saturate(wsum > 1e-4 ? sum / wsum : center.r), reflAo);
+    ReflOut[b0] = float4(ao, ao, ao, 1.0);
 }

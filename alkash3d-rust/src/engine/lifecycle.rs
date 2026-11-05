@@ -103,6 +103,8 @@ impl AlkashEngine {
             local_exposure_unavailable: false,
             rt_reflections: false,
             gi_paused: false,
+            rtao: false,
+            rtao_power: 1.0,
             ssao_radius: 0.5,
             ssao_strength: 1.2,
             taa_state: None,
@@ -120,10 +122,13 @@ impl AlkashEngine {
             tonemap_root_signature: None,
             tonemap_pipeline_state: None,
             tonemap_constant_buffer: None,
+            gi_outer_constant_buffer: None,
+            light_profiles: [[0.0; 4]; 36],
             bloom_extract_ps: None,
             bloom_blur_ps: None,
             bloom_down_ps: None,
             bloom_up_ps: None,
+            bloom_streak_ps: None,
             bloom_root_signature: None,
             bloom_extract_root_signature: None,
             bloom_chain_root_signature: None,
@@ -131,6 +136,9 @@ impl AlkashEngine {
             bloom_blur_pipeline_state: None,
             bloom_down_pipeline_state: None,
             bloom_up_pipeline_state: None,
+            bloom_streak_pipeline_state: None,
+            bloom_streak_src: None,
+            bloom_streak_srv_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
             bloom_texture_a: None,
             bloom_rtv_a: D3D12_CPU_DESCRIPTOR_HANDLE::default(),
             bloom_srv_a_gpu: D3D12_GPU_DESCRIPTOR_HANDLE::default(),
@@ -342,6 +350,7 @@ impl AlkashEngine {
         };
         tonemap_cb.update_constant_buffer(bytes)?;
         self.tonemap_constant_buffer = Some(tonemap_cb);
+        self.gi_outer_constant_buffer = Some(Buffer::create_constant_buffer(1024)?);
         println!("[ENGINE] ✓ Tonemap constant buffer created (exposure=1.0, bloomIntensity=1.0 по умолчанию)");
 
         self.compile_bloom_shaders()?;
@@ -547,6 +556,7 @@ impl AlkashEngine {
         self.root_signature = None;
         self.renderer = None;
 
+        self.bloom_streak_src = None;
         self.bloom_texture_a = None;
         self.bloom_mips.clear();
         self.bloom_rtv_heap = None;
@@ -555,6 +565,7 @@ impl AlkashEngine {
         self.bloom_blur_ps = None;
         self.bloom_down_ps = None;
         self.bloom_up_ps = None;
+        self.bloom_streak_ps = None;
         self.bloom_root_signature = None;
         self.bloom_extract_root_signature = None;
         self.bloom_chain_root_signature = None;
@@ -562,12 +573,14 @@ impl AlkashEngine {
         self.bloom_blur_pipeline_state = None;
         self.bloom_down_pipeline_state = None;
         self.bloom_up_pipeline_state = None;
+        self.bloom_streak_pipeline_state = None;
 
         self.tonemap_vs = None;
         self.tonemap_ps = None;
         self.tonemap_root_signature = None;
         self.tonemap_pipeline_state = None;
         self.tonemap_constant_buffer = None;
+        self.gi_outer_constant_buffer = None;
 
         for slot in self.shadow_maps.iter_mut() {
             *slot = None;

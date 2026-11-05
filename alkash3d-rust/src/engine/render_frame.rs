@@ -1236,7 +1236,7 @@ impl AlkashEngine {
 
         // ДОБАВЛЕНО (непрямой свет лучами, DDGI): пробы обновляются до
         // основного прохода — он читает их освещённость вместо ambient.
-        if !self.gi_paused && self.gi.as_ref().is_some_and(|g| g.atlases().is_some()) {
+        if self.gi.as_ref().is_some_and(|g| g.atlases().is_some() && (!self.gi_paused || g.outer_atlases().is_some())) {
             let mut draws = Vec::with_capacity(self.mesh_instances.len());
             // ИСПРАВЛЕНО: как и в тенях, лучи не видят светящееся (unlit) и
             // прозрачное — иначе колба вокруг лампы заслоняет её от всех
@@ -1259,9 +1259,10 @@ impl AlkashEngine {
                 sun_dir: self.transform_constants.light_dir,
                 sun_color: self.transform_constants.light_color,
                 sky: self.transform_constants.ambient_color,
+                light_profiles: self.light_profiles,
                 lights: &lights,
             };
-            if let Err(e) = self.gi.as_mut().unwrap().record(&cmd_list, frame_index, &self.meshes, &draws, &lighting) {
+            if let Err(e) = self.gi.as_mut().unwrap().record(&cmd_list, frame_index, &self.meshes, &draws, &lighting, self.gi_paused) {
                 eprintln!("[GI] обновление проб не записано: {:?}", e);
             }
         }
@@ -1338,6 +1339,16 @@ impl AlkashEngine {
             // ДОБАВЛЕНО (DDGI): объём проб (root-параметр 11), enabled = 0 — без GI.
             let gi_volume = self.gi.as_ref().map(|g| g.volume_gpu()).unwrap_or_default();
             cmd_list.SetGraphicsRoot32BitConstants(11, 16, &gi_volume as *const _ as *const _, 0);
+            let gi_outer = self.gi.as_ref().map(|g| g.outer_volume_gpu()).unwrap_or_default();
+            if let Some(cb) = &self.gi_outer_constant_buffer {
+                let frame = [(self.lens_frame % 4096) as f32, 0.0, 0.0, 0.0];
+                let mut bytes = [0u8; 656];
+                bytes[..64].copy_from_slice(std::slice::from_raw_parts(&gi_outer as *const _ as *const u8, 64));
+                bytes[64..80].copy_from_slice(std::slice::from_raw_parts(frame.as_ptr() as *const u8, 16));
+                bytes[80..].copy_from_slice(std::slice::from_raw_parts(self.light_profiles.as_ptr() as *const u8, 576));
+                let _ = cb.update_constant_buffer(&bytes);
+                cmd_list.SetGraphicsRootConstantBufferView(13, cb.resource.GetGPUVirtualAddress());
+            }
             // ДОБАВЛЕНО (рассеяние света фонарей в среде): объём среды (параметр 12).
             let m = self.medium.unwrap_or_default();
             let medium: [f32; 8] = [m.min[0], m.min[1], m.min[2], m.scattering, m.max[0], m.max[1], m.max[2], m.anisotropy];
@@ -1705,7 +1716,8 @@ impl AlkashEngine {
                     mesh.material_metallic, mesh.material_roughness, has_mr_map, mesh.light_emitter_area,
                     e[0], e[1], e[2], mesh.alpha_cutoff,
                     t[0], t[1], t[2], t[3],
-                    blended, flag(mesh.glass && blended > 0.5), flag(mesh.unlit), flag(rt_reflections_active),
+                    // unlit: 0 — нет, 1 — да, 2 — да и идёт в bloom (Mesh::glow)
+                    blended, flag(mesh.glass && blended > 0.5), flag(mesh.unlit) + flag(mesh.unlit && mesh.glow), flag(rt_reflections_active),
                     mesh.detail_uv_scale[0], mesh.detail_uv_scale[1], flag(mesh.detail_srv_index.is_some()), if mesh.normal_srv_index.is_some() { mesh.parallax_depth } else { 0.0 },
                 ];
                 if pass == 1 {
@@ -2127,7 +2139,23 @@ impl AlkashEngine {
             if perf_enabled() {
                 super::gpu_timer::mark(&cmd_list, frame_index, 6);
             }
-            if self.graphics_settings.ssao { if let (Some(ssao_texture), Some(ssao_depth_srv_heap), Some(ssao_cb)) = (
+            // ДОБАВЛЕНО (AO лучами): вместо экранного прохода, в ту же текстуру.
+            let mut rtao_done = false;
+            if self.rtao && self.graphics_settings.ssao {
+                if let (Some(gi), Some(ssao_texture)) = (self.gi.as_mut(), &self.ssao_texture) {
+                    let state = if self.ssao_is_srv { D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } else { D3D12_RESOURCE_STATE_RENDER_TARGET };
+                    let full = [renderer.hdr_resolved.width, renderer.hdr_resolved.height];
+                    let ao = [ssao_texture.width, ssao_texture.height];
+                    match gi.record_ao(&cmd_list, frame_index, &renderer.normal_resolved.resource, &ssao_texture.resource, state, full, ao, self.taa_view_proj.inverse(), self.camera.position, self.ssao_radius, self.rtao_power) {
+                        Ok(done) => rtao_done = done,
+                        Err(e) => eprintln!("[GI] AO не записан: {:?}", e),
+                    }
+                    if rtao_done {
+                        self.ssao_is_srv = true;
+                    }
+                }
+            }
+            if self.graphics_settings.ssao && !rtao_done { if let (Some(ssao_texture), Some(ssao_depth_srv_heap), Some(ssao_cb)) = (
                 &self.ssao_texture,
                 &self.ssao_depth_srv_heap,
                 &self.ssao_constant_buffer,
@@ -2347,7 +2375,7 @@ impl AlkashEngine {
                     // ssao_texture то же самое (PIXEL_SHADER_RESOURCE), что
                     // и без блюра, только что записанное чуть выше.
                 }
-            } } else if let Some(ssao_texture) = &self.ssao_texture {
+            } } else if let Some(ssao_texture) = self.ssao_texture.as_ref().filter(|_| !rtao_done) {
                 // ИСПРАВЛЕНО (баг, найденный пользователем: "при all false
                 // нету изображения"): SSAO выключен — сам проход НИКОГДА не
                 // рисует в `ssao_texture`, а D3D12 НЕ гарантирует
@@ -2521,7 +2549,8 @@ impl AlkashEngine {
                 let hdr_heap = [Some(renderer.srv_uav_heap.clone())];
                 cmd_list.SetDescriptorHeaps(&hdr_heap);
                 cmd_list.SetGraphicsRootDescriptorTable(0, renderer.hdr_srv_gpu);
-                constants([1.0 / self.width.max(1) as f32, 1.0 / self.height.max(1) as f32, 1.0, 1.0 / levels.len() as f32]);
+                let extract_params = [1.0 / self.width.max(1) as f32, 1.0 / self.height.max(1) as f32, 1.0, 1.0 / levels.len() as f32, self.lens.bloom_cap];
+                cmd_list.SetGraphicsRoot32BitConstants(1, 5, extract_params.as_ptr() as *const _, 0);
                 cmd_list.DrawInstanced(3, 1, 0, 0);
                 set_state(&mut is_srv, 0, true);
 
@@ -2537,6 +2566,35 @@ impl AlkashEngine {
                     constants([1.0 / w as f32, 1.0 / h as f32, 0.0, 0.0]);
                     cmd_list.DrawInstanced(3, 1, 0, 0);
                     set_state(&mut is_srv, k + 1, true);
+                }
+                // Лучи от ярких источников: из копии уровня 0 (пока в нём только
+                // выделенное яркое) в него же. Уровни ниже уже понижены — в ореол
+                // сами лучи не попадают.
+                if let Some(src) = self.bloom_streak_src.as_ref().filter(|_| self.lens.streaks.iter().any(|s| s.strength > 0.0)) {
+                    let srv = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                    let to_copy = [Self::transition_barrier(&levels[0].0, srv, D3D12_RESOURCE_STATE_COPY_SOURCE), Self::transition_barrier(&src.resource, srv, D3D12_RESOURCE_STATE_COPY_DEST)];
+                    cmd_list.ResourceBarrier(&to_copy);
+                    for b in to_copy {
+                        Self::drop_transition_barrier(b);
+                    }
+                    cmd_list.CopyResource(&src.resource, &levels[0].0);
+                    let back = [Self::transition_barrier(&levels[0].0, D3D12_RESOURCE_STATE_COPY_SOURCE, srv), Self::transition_barrier(&src.resource, D3D12_RESOURCE_STATE_COPY_DEST, srv)];
+                    cmd_list.ResourceBarrier(&back);
+                    for b in back {
+                        Self::drop_transition_barrier(b);
+                    }
+                    target(&mut is_srv, 0);
+                    cmd_list.SetPipelineState(Some(self.bloom_streak_pipeline_state.as_ref().unwrap()));
+                    cmd_list.SetGraphicsRootDescriptorTable(0, self.bloom_streak_srv_gpu);
+                    for s in self.lens.streaks.iter().filter(|s| s.strength > 0.0) {
+                        let (sin, cos) = s.angle.sin_cos();
+                        // длина — в долях ширины, поэтому по v умножается на w/h;
+                        // v растёт вниз, отсюда минус
+                        let params = [s.length * cos, -s.length * sin * self.width as f32 / self.height.max(1) as f32, s.strength, s.from_dist, s.to_dist, s.far_gain];
+                        cmd_list.SetGraphicsRoot32BitConstants(1, 6, params.as_ptr() as *const _, 0);
+                        cmd_list.DrawInstanced(3, 1, 0, 0);
+                    }
+                    set_state(&mut is_srv, 0, true);
                 }
                 // Вверх: k+1 прибавляется к k.
                 cmd_list.SetPipelineState(Some(self.bloom_up_pipeline_state.as_ref().unwrap()));

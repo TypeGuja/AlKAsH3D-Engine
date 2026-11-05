@@ -33,7 +33,7 @@ pub(super) fn main_ps_source() -> String {
 }
 
 /// Точки входа ddgi.hlsl (порядок = индексы `Gi::psos`).
-pub(super) const DDGI_KERNELS: [&str; 8] = ["TraceRays", "UpdateIrradiance", "UpdateDistance", "BorderIrradiance", "BorderDistance", "ClearAtlases", "TraceReflections", "ResolveReflections"];
+pub(super) const DDGI_KERNELS: [&str; 10] = ["TraceRays", "UpdateIrradiance", "UpdateDistance", "BorderIrradiance", "BorderDistance", "ClearAtlases", "TraceReflections", "ResolveReflections", "TraceAO", "BlurAO"];
 const K_TRACE: usize = 0;
 const K_IRR: usize = 1;
 const K_DIST: usize = 2;
@@ -42,10 +42,19 @@ const K_BORDER_DIST: usize = 4;
 const K_CLEAR: usize = 5;
 const K_REFL: usize = 6;
 const K_REFL_RESOLVE: usize = 7;
+const K_AO: usize = 8;
+const K_AO_BLUR: usize = 9;
 /// ДОБАВЛЕНО (отражения лучами): дескрипторы прохода отражений в конце
 /// хипа — t6 вес/шероховатость, t7 нормаль/расстояние, t8 цвет,
 /// t9 лучи половинного разрешения (SRV), u3 выход, u4 лучи (UAV).
 const REFL_SLOT: u32 = HEAP_FIXED + 2 * MAX_RT_MESHES;
+/// ДОБАВЛЕНО (внешняя сетка): её шесть дескрипторов — в том же порядке, что
+/// первые шесть у основной (UAV лучей/освещённости/расстояний, SRV тех же).
+const OUTER_SLOT: u32 = REFL_SLOT + 6;
+/// ДОБАВЛЕНО (AO лучами): своя таблица той же формы, что у отражений: t6 — готовый
+/// AO (его же читают отражения, t12), t7 нормаль/расстояние, t9 сырые лучи,
+/// u3 выход, u4 сырые лучи.
+const AO_SLOT: u32 = OUTER_SLOT + 6;
 
 /// Как cbuffer ReflConstants (b1) в ddgi.hlsl.
 #[repr(C)]
@@ -56,7 +65,7 @@ struct ReflConstants {
     frame: u32,
     size: [f32; 2],
     max_roughness: f32,
-    _pad: f32,
+    ao: f32,
 }
 
 /// Внутренняя часть плитки пробы (как DDGI_IRR_N / DDGI_DIST_N в HLSL).
@@ -130,6 +139,8 @@ struct Constants {
     probe_offset: u32,
     probe_budget: u32,
     _pad: [u32; 2],
+    other: VolumeGpu,
+    light_profiles: super::light_profile::ProfileTable,
 }
 
 /// Как RtInstance в ddgi.hlsl.
@@ -158,6 +169,7 @@ pub(super) struct RtLighting<'a> {
     pub sun_dir: [f32; 4],
     pub sun_color: [f32; 4],
     pub sky: [f32; 4],
+    pub light_profiles: super::light_profile::ProfileTable,
     pub lights: &'a [GPULight],
 }
 
@@ -173,6 +185,7 @@ struct Frame {
     instances: Grow,
     materials: Grow,
     constants: Grow,
+    constants_outer: Grow,
     lights: Grow,
     tlas: Grow,
     tlas_scratch: Grow,
@@ -191,6 +204,10 @@ struct Probes {
     cleared: bool,
     /// Атласы сейчас в ALL_SHADER_RESOURCE (иначе UNORDERED_ACCESS).
     atlases_srv: bool,
+    /// Первая проба следующей порции обновления.
+    next_probe: u32,
+    /// Первый дескриптор сетки в хипе.
+    slot: u32,
 }
 
 pub(crate) struct Gi {
@@ -202,9 +219,10 @@ pub(crate) struct Gi {
     blas: Vec<Option<ID3D12Resource>>,
     frames: [Frame; FRAMES],
     probes: Option<Probes>,
+    /// ДОБАВЛЕНО (внешняя сетка): грубая сетка на всю сцену, работает там,
+    /// где нет основной. Без основной не обновляется.
+    outer: Option<Probes>,
     frame_counter: u64,
-    /// Первая проба следующей порции обновления.
-    next_probe: u32,
     /// Отладка: показывать только рассеянный свет с этим усилением (0 — выкл).
     pub(super) debug_gain: f32,
     /// ДОБАВЛЕНО (отражения лучами): выход прохода (UAV) и его размер.
@@ -213,6 +231,19 @@ pub(crate) struct Gi {
     refl_half: Option<ID3D12Resource>,
     /// Ресурсы, на которые записаны SRV t6..t8 (пересоздаются при ресайзе).
     refl_srcs: [usize; 3],
+    /// ДОБАВЛЕНО (AO лучами): выход, сырые лучи, их размер.
+    ao: Option<AoTargets>,
+    /// AO записан в этом кадре — отражения могут его читать.
+    ao_ready: bool,
+}
+
+struct AoTargets {
+    out: ID3D12Resource,
+    raw: ID3D12Resource,
+    size: [u32; 2],
+    normal: usize,
+    /// `out` сейчас в NON_PIXEL_SHADER_RESOURCE (иначе UNORDERED_ACCESS).
+    out_srv: bool,
 }
 
 fn buffer(device: &ID3D12Device5, size: u64, heap: D3D12_HEAP_TYPE, flags: D3D12_RESOURCE_FLAGS, state: D3D12_RESOURCE_STATES) -> Result<ID3D12Resource> {
@@ -379,7 +410,7 @@ impl Gi {
         let heap: ID3D12DescriptorHeap = unsafe {
             device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
                 Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: HEAP_FIXED + 2 * MAX_RT_MESHES + 6,
+                NumDescriptors: AO_SLOT + 6,
                 Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 NodeMask: 0,
             })
@@ -387,11 +418,18 @@ impl Gi {
         .map_err(|e| format!("descriptor heap: {}", e))?;
         let inc = unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) };
         println!("[GI] ✓ DDGI готов (DXR 1.1, {} ядер)", psos.len());
-        Ok(Gi { device, root, psos, heap, inc, blas: Vec::new(), frames: Default::default(), probes: None, frame_counter: 0, next_probe: 0, debug_gain: 0.0, refl_out: None, refl_half: None, refl_srcs: [0; 3] })
+        let gi = Gi { device, root, psos, heap, inc, blas: Vec::new(), frames: Default::default(), probes: None, outer: None, frame_counter: 0, debug_gain: 0.0, refl_out: None, refl_half: None, refl_srcs: [0; 3], ao: None, ao_ready: false };
+        if let Ok(device) = gi.device.cast::<ID3D12Device>() {
+            texture_srv(&device, None, DXGI_FORMAT_R16G16B16A16_FLOAT, gi.cpu(AO_SLOT));
+        }
+        gi.clear_outer_srvs();
+        Ok(gi)
     }
 
     fn root_signature(device: &ID3D12Device5) -> Result<ID3D12RootSignature> {
         let srv_atlases = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NumDescriptors: 3, BaseShaderRegister: 3, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 0 };
+        let srv_ao = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NumDescriptors: 1, BaseShaderRegister: 12, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 0 };
+        let srv_other = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NumDescriptors: 2, BaseShaderRegister: 10, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 0 };
         let uavs = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV, NumDescriptors: 3, BaseShaderRegister: 0, RegisterSpace: 0, OffsetInDescriptorsFromTableStart: 0 };
         let buffers = D3D12_DESCRIPTOR_RANGE { RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV, NumDescriptors: 2 * MAX_RT_MESHES, BaseShaderRegister: 0, RegisterSpace: 1, OffsetInDescriptorsFromTableStart: 0 };
         let refl = [
@@ -429,6 +467,10 @@ impl Gi {
                 Anonymous: D3D12_ROOT_PARAMETER_0 { Constants: D3D12_ROOT_CONSTANTS { ShaderRegister: 1, RegisterSpace: 0, Num32BitValues: (std::mem::size_of::<ReflConstants>() / 4) as u32 } },
                 ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
             },
+            // 9 — t10, t11: атласы другой сетки
+            table(&srv_other),
+            // 10 — t12: AO этого кадра для отражений
+            table(&srv_ao),
         ];
         let sampler = D3D12_STATIC_SAMPLER_DESC {
             Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -471,13 +513,44 @@ impl Gi {
             self.probes = None;
             return Ok(());
         };
-        let counts = v.counts();
         if let Some(p) = self.probes.as_mut() {
-            if p.counts == counts {
+            if p.counts == v.counts() {
                 p.volume = v;
                 return Ok(());
             }
         }
+        self.probes = Some(self.make_probes(v, 0)?);
+        Ok(())
+    }
+
+    /// ДОБАВЛЕНО (внешняя сетка): то же для внешней сетки. Вызывать там же.
+    pub(super) fn set_outer_volume(&mut self, volume: Option<GiVolume>) -> Result<()> {
+        let Some(v) = volume else {
+            self.outer = None;
+            self.clear_outer_srvs();
+            return Ok(());
+        };
+        if let Some(p) = self.outer.as_mut() {
+            if p.counts == v.counts() {
+                p.volume = v;
+                return Ok(());
+            }
+        }
+        self.outer = Some(self.make_probes(v, OUTER_SLOT)?);
+        Ok(())
+    }
+
+    /// Пустые SRV внешней сетки: таблица t10, t11 привязана всегда.
+    fn clear_outer_srvs(&self) {
+        if let Ok(device) = self.device.cast::<ID3D12Device>() {
+            texture_srv(&device, None, IRR_FORMAT, self.cpu(OUTER_SLOT + 3));
+            texture_srv(&device, None, DIST_FORMAT, self.cpu(OUTER_SLOT + 4));
+        }
+    }
+
+    /// Атласы и дескрипторы сетки, начиная со слота `slot`.
+    fn make_probes(&self, v: GiVolume, slot: u32) -> Result<Probes> {
+        let counts = v.counts();
         let probes = counts[0] * counts[1] * counts[2];
         if probes > MAX_PROBES {
             eprintln!("[GI] слишком много проб ({}), максимум {} — увеличь шаг сетки", probes, MAX_PROBES);
@@ -491,19 +564,18 @@ impl Gi {
         let irr = texture(&self.device, irr_size[0], irr_size[1], IRR_FORMAT)?;
         let dist = texture(&self.device, dist_size[0], dist_size[1], DIST_FORMAT)?;
         // Таблица: 0..2 — UAV лучей/освещённости/расстояний, 3..5 — SRV освещённости/расстояний/лучей.
-        texture_uav(&self.device, &ray_data, RAY_FORMAT, self.cpu(0));
-        texture_uav(&self.device, &irr, IRR_FORMAT, self.cpu(1));
-        texture_uav(&self.device, &dist, DIST_FORMAT, self.cpu(2));
+        texture_uav(&self.device, &ray_data, RAY_FORMAT, self.cpu(slot));
+        texture_uav(&self.device, &irr, IRR_FORMAT, self.cpu(slot + 1));
+        texture_uav(&self.device, &dist, DIST_FORMAT, self.cpu(slot + 2));
         let device: ID3D12Device = self.device.cast()?;
-        texture_srv(&device, Some(&irr), IRR_FORMAT, self.cpu(3));
-        texture_srv(&device, Some(&dist), DIST_FORMAT, self.cpu(4));
-        texture_srv(&device, Some(&ray_data), RAY_FORMAT, self.cpu(5));
+        texture_srv(&device, Some(&irr), IRR_FORMAT, self.cpu(slot + 3));
+        texture_srv(&device, Some(&dist), DIST_FORMAT, self.cpu(slot + 4));
+        texture_srv(&device, Some(&ray_data), RAY_FORMAT, self.cpu(slot + 5));
         println!(
             "[GI] сетка {}x{}x{} = {} проб, шаг {}, {} лучей на пробу, атласы {}x{} и {}x{}",
             counts[0], counts[1], counts[2], probes, v.spacing, rays, irr_size[0], irr_size[1], dist_size[0], dist_size[1]
         );
-        self.probes = Some(Probes { volume: GiVolume { rays_per_probe: rays, ..v }, counts, ray_data, irr, dist, irr_size, dist_size, cleared: false, atlases_srv: false });
-        Ok(())
+        Ok(Probes { volume: GiVolume { rays_per_probe: rays, ..v }, counts, ray_data, irr, dist, irr_size, dist_size, cleared: false, atlases_srv: false, next_probe: 0, slot })
     }
 
     /// Атласы для основного прохода (None — объёма нет).
@@ -511,11 +583,24 @@ impl Gi {
         self.probes.as_ref().map(|p| (&p.irr, &p.dist))
     }
 
+    /// Атласы внешней сетки для основного прохода.
+    pub(super) fn outer_atlases(&self) -> Option<(&ID3D12Resource, &ID3D12Resource)> {
+        self.outer.as_ref().map(|p| (&p.irr, &p.dist))
+    }
+
     /// Параметры объёма для основного прохода (enabled = 0, если проб нет
     /// или атласы ещё не готовы к чтению).
     pub(super) fn volume_gpu(&self) -> VolumeGpu {
         match &self.probes {
             Some(p) if p.atlases_srv => VolumeGpu { _pad: [(self.debug_gain > 0.0) as u32 as f32, self.debug_gain], ..Self::volume_of(p) },
+            _ => VolumeGpu::default(),
+        }
+    }
+
+    /// То же для внешней сетки.
+    pub(super) fn outer_volume_gpu(&self) -> VolumeGpu {
+        match &self.outer {
+            Some(p) if p.atlases_srv => Self::volume_of(p),
             _ => VolumeGpu::default(),
         }
     }
@@ -605,8 +690,9 @@ impl Gi {
 
     /// Записать обновление проб в `list` (кадр `frame`). Ничего не делает,
     /// если объём не задан.
-    pub(super) fn record(&mut self, list: &ID3D12GraphicsCommandList, frame: usize, meshes: &[Mesh], draws: &[RtDraw], lighting: &RtLighting) -> Result<()> {
+    pub(super) fn record(&mut self, list: &ID3D12GraphicsCommandList, frame: usize, meshes: &[Mesh], draws: &[RtDraw], lighting: &RtLighting, inner_paused: bool) -> Result<()> {
         self.frames[frame].garbage.clear();
+        self.ao_ready = false;
         if self.probes.is_none() {
             return Ok(());
         }
@@ -704,86 +790,110 @@ impl Gi {
         }
         uav_barrier(&list, Some(&tlas));
 
-        // Константы кадра: случайный поворот сферы лучей (разные направления
-        // каждый кадр — со временем пробы видят всю сферу, а не 128 точек).
+        // Случайный поворот сферы лучей (разные направления каждый кадр — со
+        // временем пробы видят всю сферу, а не 128 точек).
         self.frame_counter += 1;
-        let p = self.probes.as_ref().unwrap();
-        let total = p.counts[0] * p.counts[1] * p.counts[2];
-        let budget = p.volume.probes_per_frame.clamp(1, total);
-        let offset = self.next_probe % total;
-        self.next_probe = (offset + budget) % total;
         let rotation = random_rotation(self.frame_counter);
-        let extent = (p.volume.max - p.volume.min).length();
-        let constants = Constants {
-            volume: Self::volume_of(p),
-            ray_rotation: Mat4::from_quat(rotation).to_cols_array(),
-            sun_dir: lighting.sun_dir,
-            sun_color: lighting.sun_color,
-            sky: lighting.sky,
-            rays: p.volume.rays_per_probe,
-            light_count: lighting.lights.len() as u32,
-            hysteresis: p.volume.hysteresis.clamp(0.0, 0.999),
-            // Лучи дальше объёма с запасом — до дальних стен/потолка.
-            max_distance: extent * 2.0 + p.volume.spacing * 4.0,
-            probe_offset: offset,
-            probe_budget: budget,
-            _pad: [0; 2],
-        };
-        let f = &mut self.frames[frame];
-        let cb = ensure(&device, &mut f.constants, 256, upload, none, read)?;
-        write(&cb, std::slice::from_ref(&constants))?;
-
-        // Порция проб этого кадра.
-        let probe_count = budget;
-        let rays = p.volume.rays_per_probe;
-        let (ray_data, irr, dist) = (p.ray_data.clone(), p.irr.clone(), p.dist.clone());
-        let (irr_size, dist_size) = (p.irr_size, p.dist_size);
-        let (cleared, atlases_srv) = (p.cleared, p.atlases_srv);
-
+        let all_srv = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        let ua = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         unsafe {
             list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
             list.SetComputeRootSignature(&self.root);
-            list.SetComputeRootConstantBufferView(0, cb.GetGPUVirtualAddress());
             list.SetComputeRootShaderResourceView(1, tlas.GetGPUVirtualAddress());
             list.SetComputeRootShaderResourceView(2, material_buf.GetGPUVirtualAddress());
             list.SetComputeRootShaderResourceView(3, lights_buf.GetGPUVirtualAddress());
-            list.SetComputeRootDescriptorTable(4, self.gpu(3));
-            list.SetComputeRootDescriptorTable(5, self.gpu(0));
             list.SetComputeRootDescriptorTable(6, self.gpu(HEAP_FIXED));
-
-            let all_srv = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-            let ua = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            if !cleared {
-                // Атласы ещё в UNORDERED_ACCESS (как созданы).
-                list.SetPipelineState(&self.psos[K_CLEAR]);
-                let w = irr_size[0].max(dist_size[0]);
-                let h = irr_size[1].max(dist_size[1]);
-                list.Dispatch(w.div_ceil(8), h.div_ceil(8), 1);
-                uav_barrier(&list, None);
-            }
-            // Трассировка читает атласы прошлого кадра.
-            if !atlases_srv {
-                transitions(&list, &[(&irr, ua, all_srv), (&dist, ua, all_srv)]);
-            }
-            list.SetPipelineState(&self.psos[K_TRACE]);
-            list.Dispatch(rays.div_ceil(32), probe_count, 1);
-
-            transitions(&list, &[(&ray_data, ua, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE), (&irr, all_srv, ua), (&dist, all_srv, ua)]);
-            list.SetPipelineState(&self.psos[K_IRR]);
-            list.Dispatch(probe_count, 1, 1);
-            list.SetPipelineState(&self.psos[K_DIST]);
-            list.Dispatch(probe_count, 1, 1);
-            uav_barrier(&list, None);
-            list.SetPipelineState(&self.psos[K_BORDER_IRR]);
-            list.Dispatch(probe_count, 1, 1);
-            list.SetPipelineState(&self.psos[K_BORDER_DIST]);
-            list.Dispatch(probe_count, 1, 1);
-            uav_barrier(&list, None);
-            transitions(&list, &[(&ray_data, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, ua), (&irr, ua, all_srv), (&dist, ua, all_srv)]);
         }
-        let p = self.probes.as_mut().unwrap();
-        p.cleared = true;
-        p.atlases_srv = true;
+        // Сначала обе сетки готовы к чтению: трассировка каждой читает атласы
+        // прошлого кадра — и свои, и другой сетки.
+        for outer in [false, true] {
+            let gpu0 = self.gpu(if outer { OUTER_SLOT } else { 0 });
+            let Some(p) = (if outer { self.outer.as_mut() } else { self.probes.as_mut() }) else { continue };
+            unsafe {
+                if !p.cleared {
+                    // Атласы ещё в UNORDERED_ACCESS (как созданы).
+                    list.SetComputeRootDescriptorTable(5, gpu0);
+                    list.SetPipelineState(&self.psos[K_CLEAR]);
+                    let w = p.irr_size[0].max(p.dist_size[0]);
+                    let h = p.irr_size[1].max(p.dist_size[1]);
+                    list.Dispatch(w.div_ceil(8), h.div_ceil(8), 1);
+                    uav_barrier(&list, None);
+                    p.cleared = true;
+                }
+                if !p.atlases_srv {
+                    transitions(&list, &[(&p.irr, ua, all_srv), (&p.dist, ua, all_srv)]);
+                    p.atlases_srv = true;
+                }
+            }
+        }
+        for outer in [false, true] {
+            let (p, o) = if outer { (self.outer.as_mut(), self.probes.as_ref()) } else { (self.probes.as_mut(), self.outer.as_ref()) };
+            let Some(p) = p else { continue };
+            let other = o.map(Self::volume_of).unwrap_or_default();
+            let other_slot = o.map(|o| o.slot).unwrap_or(OUTER_SLOT);
+            let total = p.counts[0] * p.counts[1] * p.counts[2];
+            let budget = p.volume.probes_per_frame.clamp(1, total);
+            let offset = p.next_probe % total;
+            p.next_probe = (offset + budget) % total;
+            let p = &*p;
+            let extent = (p.volume.max - p.volume.min).length();
+            let constants = Constants {
+                volume: Self::volume_of(p),
+                ray_rotation: Mat4::from_quat(rotation).to_cols_array(),
+                sun_dir: lighting.sun_dir,
+                sun_color: lighting.sun_color,
+                sky: lighting.sky,
+                rays: p.volume.rays_per_probe,
+                light_count: lighting.lights.len() as u32,
+                hysteresis: p.volume.hysteresis.clamp(0.0, 0.999),
+                // Лучи дальше объёма с запасом — до дальних стен/потолка.
+                max_distance: extent * 2.0 + p.volume.spacing * 4.0,
+                probe_offset: offset,
+                probe_budget: budget,
+                _pad: [0; 2],
+                other,
+                light_profiles: lighting.light_profiles,
+            };
+            let f = &mut self.frames[frame];
+            let cb = ensure(&device, if outer { &mut f.constants_outer } else { &mut f.constants }, 1024, upload, none, read)?;
+            write(&cb, std::slice::from_ref(&constants))?;
+            // основная сетка на паузе (игрок снаружи): её пробы не обновляем,
+            // константы нужны проходу отражений
+            if !outer && inner_paused {
+                continue;
+            }
+
+            // Порция проб этого кадра.
+            let probe_count = budget;
+            let rays = p.volume.rays_per_probe;
+            let (ray_data, irr, dist) = (&p.ray_data, &p.irr, &p.dist);
+            let base = |slot: u32| {
+                let start = unsafe { self.heap.GetGPUDescriptorHandleForHeapStart() };
+                D3D12_GPU_DESCRIPTOR_HANDLE { ptr: start.ptr + (slot * self.inc) as u64 }
+            };
+            unsafe {
+                list.SetComputeRootConstantBufferView(0, cb.GetGPUVirtualAddress());
+                list.SetComputeRootDescriptorTable(4, base(p.slot + 3));
+                list.SetComputeRootDescriptorTable(5, base(p.slot));
+                list.SetComputeRootDescriptorTable(9, base(other_slot + 3));
+
+                list.SetPipelineState(&self.psos[K_TRACE]);
+                list.Dispatch(rays.div_ceil(32), probe_count, 1);
+
+                transitions(&list, &[(ray_data, ua, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE), (irr, all_srv, ua), (dist, all_srv, ua)]);
+                list.SetPipelineState(&self.psos[K_IRR]);
+                list.Dispatch(probe_count, 1, 1);
+                list.SetPipelineState(&self.psos[K_DIST]);
+                list.Dispatch(probe_count, 1, 1);
+                uav_barrier(&list, None);
+                list.SetPipelineState(&self.psos[K_BORDER_IRR]);
+                list.Dispatch(probe_count, 1, 1);
+                list.SetPipelineState(&self.psos[K_BORDER_DIST]);
+                list.Dispatch(probe_count, 1, 1);
+                uav_barrier(&list, None);
+                transitions(&list, &[(ray_data, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, ua), (irr, ua, all_srv), (dist, ua, all_srv)]);
+            }
+        }
         Ok(())
     }
 }
@@ -838,7 +948,7 @@ impl Gi {
             frame: self.frame_counter as u32,
             size: [w as f32, h as f32],
             max_roughness,
-            _pad: 0.0,
+            ao: if self.ao_ready { 1.0 } else { 0.0 },
         };
         transitions(&list4, &[(spec, pixel, all_srv), (normal, pixel, all_srv), (color, pixel, all_srv)]);
         unsafe {
@@ -852,6 +962,8 @@ impl Gi {
             list.SetComputeRootDescriptorTable(5, self.gpu(0));
             list.SetComputeRootDescriptorTable(6, self.gpu(HEAP_FIXED));
             list.SetComputeRootDescriptorTable(7, self.gpu(REFL_SLOT));
+            list.SetComputeRootDescriptorTable(9, self.gpu(OUTER_SLOT + 3));
+            list.SetComputeRootDescriptorTable(10, self.gpu(AO_SLOT));
             list.SetComputeRoot32BitConstants(8, (std::mem::size_of::<ReflConstants>() / 4) as u32, &c as *const _ as *const _, 0);
             list.SetPipelineState(&self.psos[K_REFL]);
             list.Dispatch(w.div_ceil(2).div_ceil(8), h.div_ceil(2).div_ceil(8), 1);
@@ -865,6 +977,91 @@ impl Gi {
         transitions(&list4, &[(&out, ua, D3D12_RESOURCE_STATE_COPY_SOURCE), (color, all_srv, D3D12_RESOURCE_STATE_COPY_DEST), (spec, all_srv, pixel), (normal, all_srv, pixel)]);
         unsafe { list.CopyResource(color, &out) };
         transitions(&list4, &[(&out, D3D12_RESOURCE_STATE_COPY_SOURCE, ua), (color, D3D12_RESOURCE_STATE_COPY_DEST, pixel)]);
+        Ok(true)
+    }
+}
+
+impl Gi {
+    /// ДОБАВЛЕНО (AO лучами): затенение по настоящей геометрии вместо экранного.
+    /// `normal` — G-буфер кадра (PIXEL_SHADER_RESOURCE), `dest` — куда положить
+    /// результат (та же текстура и формат, что читают TAA и tonemap), её размер —
+    /// половина кадра. После вызова `dest` в PIXEL_SHADER_RESOURCE. Нужны TLAS и
+    /// константы `record` этого кадра; без них — false, ничего не тронуто.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_ao(&mut self, list: &ID3D12GraphicsCommandList, frame: usize, normal: &ID3D12Resource, dest: &ID3D12Resource, dest_state: D3D12_RESOURCE_STATES, full_size: [u32; 2], ao_size: [u32; 2], inv_view_proj: Mat4, cam_pos: Vec3, radius: f32, power: f32) -> Result<bool> {
+        if self.probes.is_none() {
+            return Ok(false);
+        }
+        let f = &self.frames[frame];
+        let (Some(cb), Some(tlas), Some(materials), Some(lights)) = (f.constants.resource.clone(), f.tlas.resource.clone(), f.materials.resource.clone(), f.lights.resource.clone()) else {
+            return Ok(false);
+        };
+        let format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        if !self.ao.as_ref().is_some_and(|a| a.size == ao_size) {
+            let out = texture(&self.device, ao_size[0], ao_size[1], format)?;
+            let raw = texture(&self.device, ao_size[0], ao_size[1], format)?;
+            let device: ID3D12Device = self.device.cast()?;
+            texture_srv(&device, Some(&out), format, self.cpu(AO_SLOT));
+            texture_srv(&device, Some(&raw), format, self.cpu(AO_SLOT + 3));
+            texture_uav(&self.device, &out, format, self.cpu(AO_SLOT + 4));
+            texture_uav(&self.device, &raw, format, self.cpu(AO_SLOT + 5));
+            texture_srv(&device, None, format, self.cpu(AO_SLOT + 2));
+            // прежние может читать кадр в полёте — освободятся с мусором этого слота
+            if let Some(old) = self.ao.replace(AoTargets { out, raw, size: ao_size, normal: 0, out_srv: false }) {
+                self.frames[frame].garbage.push(old.out);
+                self.frames[frame].garbage.push(old.raw);
+            }
+        }
+        let normal_ptr = normal.as_raw() as usize;
+        if self.ao.as_ref().unwrap().normal != normal_ptr {
+            texture_srv(&self.device, Some(normal), format, self.cpu(AO_SLOT + 1));
+            self.ao.as_mut().unwrap().normal = normal_ptr;
+        }
+        let list4: ID3D12GraphicsCommandList4 = list.cast()?;
+        let a = self.ao.as_ref().unwrap();
+        let (out, raw, out_srv) = (a.out.clone(), a.raw.clone(), a.out_srv);
+        let pixel = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        let non_pixel = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        let all_srv = pixel | non_pixel;
+        let ua = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        let copy_src = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        let copy_dst = D3D12_RESOURCE_STATE_COPY_DEST;
+        let c = ReflConstants {
+            inv_view_proj: inv_view_proj.to_cols_array(),
+            cam_pos: cam_pos.to_array(),
+            frame: self.frame_counter as u32,
+            size: [full_size[0] as f32, full_size[1] as f32],
+            max_roughness: radius,
+            ao: power,
+        };
+        transitions(&list4, &[(normal, pixel, all_srv)]);
+        if out_srv {
+            transitions(&list4, &[(&out, non_pixel, ua)]);
+        }
+        unsafe {
+            list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
+            list.SetComputeRootSignature(&self.root);
+            list.SetComputeRootConstantBufferView(0, cb.GetGPUVirtualAddress());
+            list.SetComputeRootShaderResourceView(1, tlas.GetGPUVirtualAddress());
+            list.SetComputeRootShaderResourceView(2, materials.GetGPUVirtualAddress());
+            list.SetComputeRootShaderResourceView(3, lights.GetGPUVirtualAddress());
+            list.SetComputeRootDescriptorTable(6, self.gpu(HEAP_FIXED));
+            list.SetComputeRootDescriptorTable(7, self.gpu(AO_SLOT));
+            list.SetComputeRoot32BitConstants(8, (std::mem::size_of::<ReflConstants>() / 4) as u32, &c as *const _ as *const _, 0);
+            list.SetPipelineState(&self.psos[K_AO]);
+            list.Dispatch(ao_size[0].div_ceil(8), ao_size[1].div_ceil(8), 1);
+        }
+        transitions(&list4, &[(&raw, ua, non_pixel)]);
+        unsafe {
+            list.SetPipelineState(&self.psos[K_AO_BLUR]);
+            list.Dispatch(ao_size[0].div_ceil(8), ao_size[1].div_ceil(8), 1);
+        }
+        transitions(&list4, &[(&raw, non_pixel, ua), (&out, ua, copy_src), (dest, dest_state, copy_dst), (normal, all_srv, pixel)]);
+        unsafe { list.CopyResource(dest, &out) };
+        transitions(&list4, &[(&out, copy_src, non_pixel), (dest, copy_dst, pixel)]);
+        let a = self.ao.as_mut().unwrap();
+        a.out_srv = true;
+        self.ao_ready = true;
         Ok(true)
     }
 }
@@ -908,6 +1105,20 @@ impl super::AlkashEngine {
         ok && volume.is_some()
     }
 
+    /// ДОБАВЛЕНО (внешняя сетка): грубая сетка проб на всю сцену — непрямой
+    /// свет там, куда не достаёт основная (`set_gi_volume`, задать её раньше):
+    /// свет, отражённый снегом и стенами двора, а не равномерный ambient.
+    /// Основная сетка, если точка внутри неё, важнее. None — выключить.
+    pub fn set_gi_outer_volume(&mut self, volume: Option<GiVolume>) -> bool {
+        if self.gi.is_none() {
+            return false;
+        }
+        self.wait_for_all_frames_idle_before_realloc();
+        let ok = self.gi.as_mut().unwrap().set_outer_volume(volume).is_ok();
+        self.write_gi_srvs();
+        ok && volume.is_some()
+    }
+
     /// SRV атласов проб в таблице основного прохода (слоты GI_*_SLOT
     /// shadow_srv_heap); без объёма — пустые SRV (шейдер их не читает,
     /// но таблица должна быть целиком валидной).
@@ -918,6 +1129,9 @@ impl super::AlkashEngine {
         let slot = |s: usize| crate::heap::DescriptorHeap::get_cpu_handle(heap, s as u32, size);
         texture_srv(&device, atlases.map(|a| a.0), IRR_FORMAT, slot(super::GI_IRRADIANCE_SLOT));
         texture_srv(&device, atlases.map(|a| a.1), DIST_FORMAT, slot(super::GI_DISTANCE_SLOT));
+        let outer = self.gi.as_ref().and_then(|g| g.outer_atlases());
+        texture_srv(&device, outer.map(|a| a.0), IRR_FORMAT, slot(super::GI_OUTER_IRRADIANCE_SLOT));
+        texture_srv(&device, outer.map(|a| a.1), DIST_FORMAT, slot(super::GI_OUTER_DISTANCE_SLOT));
         // ДОБАВЛЕНО (forward-декали): их слоты в той же таблице — после
         // перевыделения хипа пишутся заново вместе с атласами проб
         self.write_decal_srvs();
