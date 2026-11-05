@@ -29,3 +29,12 @@
 !/alkash3d-rust/assets/podezd/scan/*/*_Roughness.png
 
 __pycache__/
+
+/alkash3d-rust/src/bin/codec/*
+/tools/*
+
+# логи запусков, настройки IDE, тяжёлые сцены демо
+/alkash3d-rust/engine_log.txt
+/alkash3d-rust/engine_test_log.txt
+/alkash3d-rust/.idea/arduino-settings.xml
+/alkash3d-rust/demo_world/objects/
