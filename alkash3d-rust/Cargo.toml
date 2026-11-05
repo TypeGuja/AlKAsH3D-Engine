@@ -19,6 +19,10 @@ crate-type = ["cdylib", "rlib"]
 # секций (используя имя файла как имя бинарника), но явные секции понятнее
 # читать и не зависят от неявного поведения.
 [[bin]]
+name = "crash"
+path = "src/bin/crash/main.rs"
+
+[[bin]]
 name = "main"
 path = "src/bin/main.rs"
 

@@ -1763,3 +1763,15 @@ pub extern "C" fn get_plugin_api() -> PluginAPI {
         get_light_api: physics_get_light_api,
     }
 }
+
+// ДОБАВЛЕНО (разрушения при ударе): шаг деформируемого тела на Fortran. Отдельно от
+// таблицы PhysicsAPI: это не твёрдые тела мира, а расчёт одного удара, и другие игры
+// его не касаются. Адрес берёт alkash3d_rs::softbody_kernels, сигнатура — softbody.f90.
+extern "C" {
+    fn softbody_step();
+}
+
+#[no_mangle]
+pub extern "C" fn inertial_softbody_step() -> *const std::ffi::c_void {
+    softbody_step as *const std::ffi::c_void
+}

@@ -68,6 +68,10 @@ pub mod car_sim;
 // честная подвеска, см. подробную шапку файла): НЕЗАВИСИМЫЙ от `car_sim`
 // модуль, тот сознательно не тронут и остаётся доступен как есть.
 pub mod car_physics;
+// расчёт разрушений при ударе: без GPU, проверяется тестами
+pub mod softbody;
+pub mod softbody_car;
+pub mod softbody_kernels;
 // модели glTF 2.0 (.gltf, .glb): чтение без GPU, загрузка — AlkashEngine::load_gltf
 pub mod gltf;
 

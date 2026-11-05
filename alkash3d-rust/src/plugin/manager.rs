@@ -41,7 +41,7 @@ struct LoadedPlugin {
 // `inertial.dll`, так что после этой правки загрузка не зависит от PATH
 // вообще.
 #[cfg(windows)]
-fn load_library(path: &Path) -> Result<Library, libloading::Error> {
+pub(crate) fn load_library(path: &Path) -> Result<Library, libloading::Error> {
     use libloading::os::windows::{
         Library as WinLibrary, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
     };
@@ -60,7 +60,7 @@ fn load_library(path: &Path) -> Result<Library, libloading::Error> {
 }
 
 #[cfg(not(windows))]
-fn load_library(path: &Path) -> Result<Library, libloading::Error> {
+pub(crate) fn load_library(path: &Path) -> Result<Library, libloading::Error> {
     unsafe { Library::new(path) }
 }
 

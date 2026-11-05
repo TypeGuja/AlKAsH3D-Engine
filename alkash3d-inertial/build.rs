@@ -46,6 +46,8 @@ fn main() {
         // идти в любом месте списка ПОСЛЕ rigid_body.f90 — не зависит от
         // narrow_phase/solver/kernels_optimized и не зависит от него.
         "raycast.f90",
+        // деформируемые тела: ни от кого не зависит
+        "softbody.f90",
     ];
 
     let mut object_files = Vec::new();
