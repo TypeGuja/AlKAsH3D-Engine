@@ -240,6 +240,11 @@ impl LightPlugin {
         (self.api.add_light)(self.instance, light)
     }
 
+    /// Освободить слот лампы: `id` достанется следующему `add_light`.
+    pub fn remove_light(&mut self, id: u32) {
+        (self.api.remove_light)(self.instance, id);
+    }
+
     /// ДОБАВЛЕНО (Фаза 7 плана по реализму/фонарям — день/ночь и
     /// мерцание): обёртка над `LightAPI::update_light`, которая уже была
     /// в ABI плагина (см. `plugin/light_api.rs`) с самой первой версии, но

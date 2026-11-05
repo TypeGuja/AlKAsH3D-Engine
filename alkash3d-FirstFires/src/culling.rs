@@ -74,28 +74,6 @@ impl Frustum {
     }
 }
 
-pub struct Culler {
-    pub lod_distances: [f32; 3],
-}
-
-impl Culler {
-    pub fn new(lod_distances: [f32; 3]) -> Self {
-        Self { lod_distances }
-    }
-
-    #[inline]
-    pub fn get_lod_level(&self, distance: f32) -> i32 {
-        if distance < self.lod_distances[0] {
-            0
-        } else if distance < self.lod_distances[1] {
-            1
-        } else if distance < self.lod_distances[2] {
-            2
-        } else {
-            -1
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
