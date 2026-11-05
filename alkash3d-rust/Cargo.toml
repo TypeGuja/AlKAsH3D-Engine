@@ -127,6 +127,7 @@ nalgebra = "0.35.0"
 # стандартной библиотеки (в т.ч. `math`, нужный примеру bobber.py).
 rustpython-vm = "0.4"
 rustpython-stdlib = "0.4"
+jpeg-decoder = "0.3.2"
 
 [profile.release]
 opt-level = 3

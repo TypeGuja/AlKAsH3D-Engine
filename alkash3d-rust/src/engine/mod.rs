@@ -95,6 +95,9 @@ pub use decals::Decal;
 // ДОБАВЛЕНО (непрямой свет лучами, DDGI): сетка проб, см. engine/gi.rs.
 mod gi;
 mod light_profile;
+// модели glTF: загрузка в меши и текстуры
+mod gltf_load;
+pub use gltf_load::GltfModel;
 // ДОБАВЛЕНО (временное сглаживание): см. engine/taa.rs.
 mod taa;
 // ДОБАВЛЕНО (замер экспозиции по кадру): см. engine/metering.rs.
