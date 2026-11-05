@@ -370,6 +370,52 @@ pub fn concrete(size: u32) -> Material {
     })
 }
 
+/// Излом бетона (сколы ступеней): цементный камень с песком, в нём щебень
+/// 5–20 мм — расколотый вместе с бетоном (плоская свежая грань, свой цвет
+/// у каждого камня) или выпавший целиком (ямка с грязью). Тайл 0.2 м.
+pub fn fracture(size: u32) -> Material {
+    let matrix = srgb(140, 135, 126);
+    let stones = [srgb(122, 119, 114), srgb(106, 102, 98), srgb(142, 128, 116), srgb(152, 148, 140), srgb(92, 90, 88)];
+    make(size, [0.2, 0.2], move |u, v| {
+        let sand = fbm(u, v, 64, 64, 3, 71);
+        let lumpy = fbm(u, v, 8, 8, 4, 72);
+        // цементный камень рваный: бугры и раковины до ~1.5 мм
+        let mut h = (lumpy - 0.5) * 0.003 + (sand - 0.5) * 0.0006;
+        let mut c = lerp3(matrix, srgb(122, 117, 108), smooth(0.3, 0.8, lumpy));
+        let mut r = 0.93;
+        // щебень двух крупностей: крупный ~2 см, мелкий ~7 мм
+        for (cells, seed) in [(10, 73u32), (28, 79)] {
+            let (f1, _, id) = worley(u, v, cells, cells, seed);
+            let pick = hash(id.0, id.1, seed + 2);
+            let size = 0.28 + 0.14 * hash(id.0, id.1, seed + 3);
+            // угловатый край камня — дробленый щебень, не галька
+            let edge = f1 + 0.18 * (fbm(u, v, cells * 3, cells * 3, 3, seed + 4) - 0.5);
+            if pick > 0.25 && edge < size {
+                let rim = smooth(size, size - 0.05, edge);
+                if pick < 0.31 {
+                    // камень выпал: ямка, на дне пыль и грязь
+                    h -= 0.0025 * rim;
+                    c = lerp3(c, srgb(92, 86, 78), rim * 0.7);
+                    r = 0.97;
+                } else {
+                    // расколот: грань почти плоская, наклон у каждого свой
+                    let tilt = (hash(id.0, id.1, seed + 5) - 0.5) * 0.004 * (u * cells as f32).fract();
+                    let stone = stones[(hash(id.0, id.1, seed + 6) * stones.len() as f32) as usize % stones.len()];
+                    let grain = 0.9 + 0.2 * fbm(u, v, cells * 6, cells * 6, 2, seed + 7);
+                    h = h.max(0.0004 + tilt) * rim + h * (1.0 - rim);
+                    c = lerp3(c, stone.map(|x| x * grain), rim);
+                    // свежий скол камня глаже цемента
+                    r = r * (1.0 - rim) + 0.72 * rim;
+                }
+            }
+        }
+        // скол старый: в низинах натоптанная грязь
+        let low = smooth(0.0, -0.0025, h);
+        c = lerp3(c, [c[0] * 0.55, c[1] * 0.52, c[2] * 0.48], low * 0.7);
+        Px { c, h, r }
+    })
+}
+
 /// Метлахская плитка 50 мм: терракота и беж, узор «шашкой с бордюром»,
 /// швы 2 мм. Тайл 0.6 м (12 плиток).
 pub fn tiles(size: u32) -> Material {

@@ -22,7 +22,7 @@ mod build;
 mod sound;
 mod tex;
 
-use alkash3d_rs::engine::{AlkashEngine, GiVolume, GraphicsSettings, Lens, Mesh, MeshInstance, Vertex};
+use alkash3d_rs::engine::{AlkashEngine, GiVolume, GraphicsSettings, Lens, LightProfile, Mesh, MeshInstance, Vertex};
 use alkash3d_rs::input::keys;
 use alkash3d_rs::math::Vec3;
 use alkash3d_rs::{GPULight, LightConfig};
@@ -48,6 +48,13 @@ fn firstfires_dll() -> String {
     tries.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIRSTFIRES_DLL_PATH));
     tries.into_iter().find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| FIRSTFIRES_DLL_PATH.to_string())
 }
+
+/// Номер кривой силы света уличных фонарей.
+const STREET_LAMP_PROFILE: u32 = 1;
+/// ПРИБЛИЖЕНИЕ, не измерение: типичная форма широкой кривой уличного
+/// светильника (КСС «Ш»): под лампой слабее, максимум около 55° от вертикали,
+/// срез к 80°. Настоящая кривая несимметрична, здесь она одна на все стороны.
+const STREET_LAMP_CURVE: [(f32, f32); 10] = [(0.0, 0.55), (15.0, 0.6), (30.0, 0.75), (45.0, 0.95), (55.0, 1.0), (62.0, 0.95), (70.0, 0.55), (75.0, 0.25), (80.0, 0.08), (90.0, 0.0)];
 
 fn look_dir(yaw: f32, pitch: f32) -> Vec3 {
     Vec3::new(-yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos())
@@ -123,9 +130,10 @@ impl LiveLamp {
             let light = match self.spec.cone {
                 // прожектор: конус вниз (params.x — край, params.z — начало спада)
                 Some((outer, inner)) => {
+                    // тень мягкая: светит рассеиватель фонаря, ~15 см (окна — без тела)
                     // окна дома напротив светят к нам (−Z) и чуть вниз, фонарь — вниз
                     let dir = if self.spec.candela < 100.0 { [0.0, -0.35, -1.0] } else { [0.0, -1.0, 0.0] };
-                    GPULight { position: [p.x, p.y, p.z, 1.0], color: [c[0], c[1], c[2], i], direction: [dir[0], dir[1], dir[2], range], params: [outer, 2.0, inner, 0.0] }
+                    GPULight { position: [p.x, p.y, p.z, 1.0], color: [c[0], c[1], c[2], i], direction: [dir[0], dir[1], dir[2], range], params: [outer, if self.spec.candela < 100.0 { 0.0 } else { alkash3d_rs::engine::spot_params_y(STREET_LAMP_PROFILE, self.spec.bulb_r * 2.5) }, inner, 0.0] }
                 }
                 None => GPULight { position: [p.x, p.y, p.z, 0.0], color: [c[0], c[1], c[2], i], direction: [0.0, -1.0, 0.0, range], params: [std::f32::consts::PI, 2.0, -self.spec.bulb_r, 0.0] },
             };
@@ -187,7 +195,7 @@ fn through_window(a: Vec3, b: Vec3) -> bool {
 /// перила не пускают. ИЗМЕНЕНО (выход на улицу): из клетки в проём входной
 /// двери — только в открытую дверь; в толще стены — только в пределах
 /// проёма; снаружи — крыльцо, бордюры и препятствия двора (build::outside_*).
-fn walk(pos: Vec3, feet: f32, step: Vec3, door_open: bool, obstacles: &[[f32; 4]]) -> (Vec3, f32) {
+fn walk(pos: Vec3, feet: f32, step: Vec3, door_open: bool, obstacles: &[[f32; 4]], props: &[[f32; 6]]) -> (Vec3, f32) {
     use build::*;
     let mut p = pos + step;
     let in_doorway = |x: f32| x > DOOR_X0 + RADIUS && x < DOOR_X1 - RADIUS;
@@ -220,6 +228,12 @@ fn walk(pos: Vec3, feet: f32, step: Vec3, door_open: bool, obstacles: &[[f32; 4]
                 p.x = p.x.min(well - 0.2);
             }
         }
+        // модели на полу: мешают, если выше колена и на уровне тела
+        for o in props {
+            if o[5] > feet + 0.15 && o[4] < feet + 1.7 {
+                push_out(&mut p, [o[0], o[1], o[2], o[3]]);
+            }
+        }
     } else if pos.z > FRONT_Z - RADIUS {
         // ---- в проёме (толща стены): только вдоль него ----
         p.x = p.x.clamp(DOOR_X0 + RADIUS, DOOR_X1 - RADIUS);
@@ -239,18 +253,8 @@ fn walk(pos: Vec3, feet: f32, step: Vec3, door_open: bool, obstacles: &[[f32; 4]
         p.x = p.x.clamp(bx0, bx1);
         p.z = p.z.max(bz0);
         // препятствия: вытолкнуть по оси наименьшего проникновения
-        for o in obstacles {
-            let (x0, z0, x1, z1) = (o[0] - RADIUS, o[1] - RADIUS, o[2] + RADIUS, o[3] + RADIUS);
-            if p.x > x0 && p.x < x1 && p.z > z0 && p.z < z1 {
-                let pen = [(p.x - x0, 0), (x1 - p.x, 1), (p.z - z0, 2), (z1 - p.z, 3)];
-                let (_, side) = pen.into_iter().fold((f32::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
-                match side {
-                    0 => p.x = x0,
-                    1 => p.x = x1,
-                    2 => p.z = z0,
-                    _ => p.z = z1,
-                }
-            }
+        for &o in obstacles {
+            push_out(&mut p, o);
         }
     }
     let floor = if p.z >= 0.0 {
@@ -345,6 +349,7 @@ fn procedural(m: Mat) -> Option<tex::Material> {
         Mat::White => Some(tex::whitewash(1024)),
         Mat::Tread => Some(tex::treads(2048)),
         Mat::Concrete => Some(tex::concrete(512)),
+        Mat::Chip => Some(tex::fracture(512)),
         Mat::Tiles => Some(tex::tiles(1024)),
         Mat::Metal => Some(tex::painted_metal(256)),
         Mat::Rail => Some(tex::handrail(128)),
@@ -473,6 +478,59 @@ fn upload(engine: &mut AlkashEngine, geos: &[build::Geo], looks: &mut std::colle
     Materials { meshes }
 }
 
+/// Бытовые мелочи: модель Poly Haven и её места x, y, z, курс°. Этажи:
+/// площадка n — y = 2.8·n, промежуточная (у окна) — 2.8·n + 1.4, подоконник
+/// на ней ещё +0.89.
+const PROPS: &[(&str, &[(f32, f32, f32, f32)])] = &[
+    // первый этаж: уборщица оставила инвентарь, коробка из-под переезда
+    ("plastic_broom", &[(1.12, 0.0, 0.95, 0.0)]),
+    ("dustpan", &[(1.3, 0.0, 1.15, 20.0)]),
+    ("trashbag", &[(2.25, 0.0, 0.55, 0.0), (0.35, 8.4, 1.2, 70.0)]),
+    ("cardboard_box_01", &[(1.55, 0.0, 0.5, 95.0), (2.2, 5.6, 0.45, 8.0)]),
+    // курилка у окон: пачка и банки-пепельницы на подоконниках, табурет
+    ("cigarette_pack", &[(1.75, 0.0, 1.3, 40.0), (1.45, 2.29, 5.38, 110.0), (0.8, 7.89, 5.4, -30.0)]),
+    ("russian_food_cans_01", &[(1.5, 0.0, 1.05, 10.0), (1.75, 2.29, 5.4, 0.0), (1.05, 7.89, 5.38, 50.0)]),
+    ("wooden_stool_02", &[(1.9, 7.0, 4.85, 25.0)]),
+    ("plastic_bottle_gallon", &[(2.55, 0.0, 1.35, 0.0), (0.3, 4.2, 4.6, 0.0)]),
+    // цветок в горшке, который кто-то выставил к окну
+    ("potted_plant_02", &[(0.42, 1.4, 5.0, 0.0), (2.08, 9.8, 4.98, 140.0)]),
+];
+
+/// Препятствие от модели для ходьбы: прямоугольник x0,z0,x1,z1 вокруг
+/// повёрнутого габарита (оба знака поворота — не зависеть от соглашения) и
+/// низ/верх по y. Мелочь ниже 15 см переступается — её нет.
+fn prop_solid(m: &alkash3d_rs::engine::GltfModel, at: Vec3, yaw: f32) -> Option<[f32; 6]> {
+    let (lo, hi) = (m.bounds_min, m.bounds_max);
+    if hi[1] - lo[1] < 0.15 {
+        return None;
+    }
+    let mut r = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+    for a in [yaw, -yaw] {
+        let (s, c) = a.sin_cos();
+        for (x, z) in [(lo[0], lo[2]), (hi[0], lo[2]), (lo[0], hi[2]), (hi[0], hi[2])] {
+            let (rx, rz) = (x * c + z * s, -x * s + z * c);
+            r = [r[0].min(rx), r[1].min(rz), r[2].max(rx), r[3].max(rz)];
+        }
+    }
+    Some([at.x + r[0], at.z + r[1], at.x + r[2], at.z + r[3], at.y + lo[1], at.y + hi[1]])
+}
+
+/// Вытолкнуть точку из прямоугольника (расширенного на радиус) по оси
+/// наименьшего проникновения.
+fn push_out(p: &mut Vec3, o: [f32; 4]) {
+    let (x0, z0, x1, z1) = (o[0] - RADIUS, o[1] - RADIUS, o[2] + RADIUS, o[3] + RADIUS);
+    if p.x > x0 && p.x < x1 && p.z > z0 && p.z < z1 {
+        let pen = [(p.x - x0, 0), (x1 - p.x, 1), (p.z - z0, 2), (z1 - p.z, 3)];
+        let (_, side) = pen.into_iter().fold((f32::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
+        match side {
+            0 => p.x = x0,
+            1 => p.x = x1,
+            2 => p.z = z0,
+            _ => p.z = z1,
+        }
+    }
+}
+
 fn parse_cam() -> Option<(Vec3, f32, f32)> {
     let s = std::env::var("PODEZD_CAM").ok()?;
     let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -556,7 +614,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut bulb = sphere(12, 24);
     bulb.unlit = true;
+    bulb.glow = true;
     let bulb_lit = engine.add_mesh(bulb);
+    // модели glTF: бытовые мелочи по этажам (CC0, Poly Haven, лежат в
+    // data/podezd_models — не в git); PODEZD_GLTF=файл@x,y,z,курс°;файл@... — свой
+    // набор вместо них, PODEZD_GLTF= (пусто) — без моделей. Каждый файл
+    // загружается один раз, ставится во все свои места.
+    let gltf_list: Vec<(String, Vec<(Vec3, f32)>)> = match std::env::var("PODEZD_GLTF") {
+        Ok(list) => list
+            .split(';')
+            .filter(|item| !item.trim().is_empty())
+            .filter_map(|item| {
+                let (path, at) = item.split_once('@').unwrap_or((item, "0,0,0,0"));
+                let v: Vec<f32> = at.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                Some((path.trim().to_string(), vec![(Vec3::new(*v.first()?, *v.get(1)?, *v.get(2)?), v.get(3).copied().unwrap_or(0.0).to_radians())]))
+            })
+            .collect(),
+        Err(_) => {
+            let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/podezd_models");
+            PROPS
+                .iter()
+                .map(|(name, places)| (format!("{dir}/{name}/{name}_1k.gltf"), places.iter().map(|&(x, y, z, yaw)| (Vec3::new(x, y, z), yaw.to_radians())).collect()))
+                .filter(|(path, _)| std::path::Path::new(path).is_file())
+                .collect()
+        }
+    };
+    let gltf_models: Vec<(alkash3d_rs::engine::GltfModel, Vec<(Vec3, f32)>)> = gltf_list
+        .into_iter()
+        .filter_map(|(path, places)| match engine.load_gltf(&path) {
+            Ok(m) => Some((m, places)),
+            Err(e) => {
+                eprintln!("[ПОДЪЕЗД] {}: {}", path, e);
+                None
+            }
+        })
+        .collect();
+    let prop_solids: Vec<[f32; 6]> = gltf_models.iter().flat_map(|(m, places)| places.iter().filter_map(|&(at, yaw)| prop_solid(m, at, yaw))).collect();
     let mut dead = sphere(12, 24);
     dead.material_roughness = 0.15;
     let bulb_dead = engine.add_mesh(dead);
@@ -576,10 +669,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // нить: светящееся тело, яркость задаётся на кадр
     let mut fil = sphere(4, 8);
     fil.unlit = true;
+    fil.glow = true;
     let filament = engine.add_mesh(fil);
     // угловой размер пикселя по вертикали (окно 900 px)
     let px_angle = engine.camera.fov / 900.0;
 
+    // отладка: PODEZD_ADAPT=кельвины — к какому свету привыкает глаз снаружи
+    let adapt_outside: f32 = std::env::var("PODEZD_ADAPT").ok().and_then(|v| v.parse().ok()).unwrap_or(2100.0);
+    let mut adapt_kelvin = if fixed_cam.is_some_and(|(p, _, _)| p.z < build::FRONT_Z || p.z > build::D + 0.4) { adapt_outside } else { 2700.0 };
+    // отладка: PODEZD_SKY=k — яркость неба (и рассеянного света от него) в k раз
+    let sky_k: f32 = std::env::var("PODEZD_SKY").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     // ночное небо над городом: засветка снизу (натрий, окна) отражается от
     // облаков — у горизонта буро-оранжевое, к зениту темнее
     let sky = {
@@ -591,7 +690,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let h = th.cos(); // высота над горизонтом
             let glow = (1.0 - h).powi(3);
             // яркость, кд/м² * 0.1: ~0.03 кд/м² у горизонта, ~0.004 в зените
-            let lum = 0.0004 + 0.0028 * glow;
+            let lum = (0.0004 + 0.0028 * glow) * sky_k;
             let c = [lum * 1.25, lum * 0.92, lum * 0.62];
             for j in 0..=segs {
                 let ph = std::f32::consts::TAU * j as f32 / segs as f32;
@@ -687,6 +786,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     volume.hysteresis = std::env::var("PODEZD_GI_HYST").ok().and_then(|v| v.parse().ok()).unwrap_or(0.85);
     let gi_on = engine.set_gi_volume(Some(volume));
     println!("[ПОДЪЕЗД] непрямой свет: {}", if gi_on { "лучами (DDGI)" } else { "нет (DXR недоступен)" });
+    // кривая силы света уличных фонарей: PODEZD_IES=файл.ies, без него — приближение
+    let street_profile = std::env::var("PODEZD_IES").ok().and_then(|path| match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|text| LightProfile::from_ies(&text)) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("[ПОДЪЕЗД] {}: {}", path, e);
+            None
+        }
+    });
+    if std::env::var("PODEZD_NOPROFILE").is_err() {
+        let profile = street_profile.unwrap_or_else(|| LightProfile::from_points(&STREET_LAMP_CURVE).expect("кривая фонаря"));
+        engine.set_light_profile(STREET_LAMP_PROFILE, &profile);
+    } else {
+        engine.set_light_profile(STREET_LAMP_PROFILE, &LightProfile { samples: [1.0; 33] });
+    }
+    // непрямой свет снаружи: грубая сетка на оба двора и улицу, порциями — свет
+    // там почти не меняется (PODEZD_GI_OUTER=0 — выключить, сравнение)
+    if gi_on && std::env::var("PODEZD_GI_OUTER").map(|v| v != "0").unwrap_or(true) {
+        let mut outer = GiVolume::new(Vec3::new(-24.0, build::GROUND_Y + 0.7, -14.0), Vec3::new(40.0, 18.5, 33.0), 3.2);
+        outer.probes_per_frame = 196;
+        outer.hysteresis = 0.9;
+        engine.set_gi_outer_volume(Some(outer));
+    }
     if let Some(g) = std::env::var("PODEZD_GI_DEBUG").ok().and_then(|v| v.parse::<f32>().ok()) {
         engine.set_gi_debug(g);
     }
@@ -698,6 +819,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // сильнее, чем по умолчанию: свет в подъезде в основном отражённый
     engine.ssao_radius = 0.6;
     engine.ssao_strength = 2.5;
+    // ...лучами по геометрии (PODEZD_RTAO=0 — экранный, PODEZD_RTAO_K=степень)
+    engine.rtao = std::env::var("PODEZD_RTAO").map(|v| v != "0").unwrap_or(true);
+    engine.rtao_power = std::env::var("PODEZD_RTAO_K").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     // без шума сенсора: зерно делало картинку шершавой
     engine.lens = Lens { vignetting: true, sensor_noise: 0.0, aces_full: true, vision_cd_per_unit: 1.0 / ENGINE_PER_CANDELA, ..Default::default() };
     // объектив: лёгкая дисторсия (сильная «плывёт» по краям при повороте
@@ -706,6 +830,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         engine.lens.distortion = 0.03;
         engine.lens.chromatic_aberration = 0.0025;
     }
+    // лучи от ламп, как на снимках регистратора — прямые через лампу, вправо
+    // вверх и влево вниз: главный y = 6/8 x у всех, побочный 6/20 у ламп подальше,
+    // третий 7/5 у дальних (PODEZD_STREAK=множитель силы, 0 — выключить)
+    let streak_k: f32 = std::env::var("PODEZD_STREAK").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let far_gain: f32 = std::env::var("PODEZD_STREAK_FAR").ok().and_then(|v| v.parse().ok()).unwrap_or(1.25);
+    let streak = |rise: f32, run: f32, strength: f32, length: f32, from_dist: f32, to_dist: f32| alkash3d_rs::engine::LensStreak { strength: strength * streak_k, angle: (rise / run).atan(), length, from_dist, to_dist, far_gain };
+    let side_k: f32 = std::env::var("PODEZD_STREAK_SIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    engine.lens.streaks = [streak(6.0, 8.0, 1.5, 0.08, 0.0, 0.0), streak(6.0, 20.0, 2.5 * side_k, 0.06, 10.0, 22.0), streak(7.0, 5.0, 2.5 * side_k, 0.05, 22.0, 36.0)];
+    engine.lens.bloom_cap = std::env::var("PODEZD_BLOOMCAP").ok().and_then(|v| v.parse().ok()).unwrap_or(400.0);
     // размытие в движении — выдержка как у кинокамеры (обтюратор 180°): при
     // повороте головы кадр смазан, как на видео; PODEZD_MBLUR=0 — выключить
     engine.lens.motion_blur = std::env::var("PODEZD_MBLUR").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5);
@@ -715,14 +848,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // экспонометр: средняя яркость кадра (а не прикидка по лампам)
     engine.metering = true;
     // двор: идёт снег, воздух влажный — свет фонаря виден конусом
-    // (рассеяние ~0.03 1/м — видимость около 100 м; снежинки рассеивают
+    // (рассеяние 0.004 1/м — лёгкий снегопад, видимость 3/0.004 ≈ 750 м; снежинки рассеивают
     // вперёд, g = 0.6). В подъезде воздух чистый — среды нет.
     // отладка: PODEZD_NOMEDIUM=1 — без среды во дворе, PODEZD_NOSNOW=1 — без снега,
     // PODEZD_NOGLASS=1 — без стёкол
     let no_snow = std::env::var("PODEZD_NOSNOW").is_ok();
     let no_glass = std::env::var("PODEZD_NOGLASS").is_ok();
     if std::env::var("PODEZD_NOMEDIUM").is_err() {
-    engine.medium = Some(alkash3d_rs::engine::ParticipatingMedium { min: [-60.0, -5.0, build::D + 0.4], max: [60.0, 40.0, build::D + 60.0], scattering: 0.03, anisotropy: 0.6 });
+    engine.medium = Some(alkash3d_rs::engine::ParticipatingMedium { min: [-60.0, -5.0, build::D + 0.4], max: [60.0, 40.0, build::D + 60.0], scattering: std::env::var("PODEZD_SIGMA").ok().and_then(|v| v.parse().ok()).unwrap_or(0.004), anisotropy: 0.6 });
     }
     // сглаживание по времени: тонкие балясины и провода не мерцают
     engine.taa = taa;
@@ -799,7 +932,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let step = v.normalize_or_zero() * speed * dt;
         let door_open = door_angle > 1.2;
         let pos_before = pos;
-        let (np, floor) = walk(Vec3::new(pos.x, 0.0, pos.z), feet, Vec3::new(step.x, 0.0, step.z), door_open, &obstacles);
+        let (np, floor) = walk(Vec3::new(pos.x, 0.0, pos.z), feet, Vec3::new(step.x, 0.0, step.z), door_open, &obstacles, &prop_solids);
         pos.x = np.x;
         pos.z = np.z;
         // ноги догоняют пол (для коллизий — сразу), а глаза — плавно: на
@@ -885,6 +1018,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // непрямой свет считается только в клетке — с улицы за закрытой
         // дверью её не видно, пробы не обновляем (−1.2…1.9 мс)
         engine.gi_paused = !cam_inside && !door_ajar;
+        // снежный воздух — с той стороны дома, где камера (объём среды один,
+        // и в подъезд заходить ему нельзя)
+        if let Some(m) = engine.medium.as_mut() {
+            if eye.z < build::FRONT_Z {
+                m.min[2] = -60.0;
+                m.max[2] = build::FRONT_Z - 0.1;
+            } else {
+                m.min[2] = build::D + 0.4;
+                m.max[2] = build::D + 60.0;
+            }
+        }
         let groups: [(&Materials, bool); 3] = [(&mats, cam_inside || door_ajar), (&back_mats, cam_inside), (&front_mats, !cam_inside || door_ajar || eye.z < 0.0)];
         for (set, visible) in groups {
             if !visible {
@@ -947,8 +1091,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 // яркость матовой колбы: L = I / (π r²) — сила света, делённая на видимую площадь
                 let k = kelvin_rgb(1500.0 + (l.spec.kelvin - 1500.0) * l.glow.sqrt());
-                let lum = l.intensity() / (std::f32::consts::PI * r * r);
-                out.push(MeshInstance::new(bulb_lit).at(p.x, p.y, p.z).scaled(r, r * 1.2, r).tinted(k[0] * lum, k[1] * lum, k[2] * lum, 1.0));
+                // дальняя лампа мельче пары пикселей: TAA гасит такую точку, и в
+                // bloom с лучами почти ничего не идёт. Растягиваем до ~3 пикселей,
+                // яркость делим на ту же долю (энергия на экране та же), как у нити
+                let rs = r.max((p - eye).length() * px_angle * 1.5);
+                let lum = l.intensity() / (std::f32::consts::PI * rs * rs);
+                out.push(MeshInstance::new(bulb_lit).at(p.x, p.y, p.z).scaled(rs, rs * 1.2, rs).tinted(k[0] * lum, k[1] * lum, k[2] * lum, 1.0));
+            }
+        }
+        for (model, places) in &gltf_models {
+            for &(at, yaw) in places {
+                for &m in &model.meshes {
+                    out.push(MeshInstance::new(m).at(at.x, at.y, at.z).rotated(0.0, yaw, 0.0));
+                }
             }
         }
         // тень игрока: эллипсоиды по росту ~1.75 м, повёрнуты по взгляду
@@ -1159,7 +1314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // ночь, облачно: ни луны, ни солнца; рассеянный свет — засветка неба городом
             tc.light_dir = [0.3, -0.8, 0.5, 0.0];
             tc.light_color = [1.0, 1.0, 1.0, 0.0];
-            tc.ambient_color = [0.9, 0.75, 0.6, 0.003];
+            tc.ambient_color = [0.9, 0.75, 0.6, 0.003 * sky_k];
             tc.fog_scattering = [0.0; 4];
         }
         let settings = engine.light_global_settings.get_or_insert(alkash3d_rs::GlobalLightSettings {
@@ -1176,7 +1331,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.exposure = exposure * fade;
         // глаз привыкает и к цвету: под лампой накаливания побелка кажется
         // почти белой, но не до конца (неполная адаптация, ~75%)
-        let warm = kelvin_rgb(2700.0);
+        // снаружи тот же глаз привыкает к натриевому фонарю: снег кажется
+        // желтовато-белым, а не оранжевым; на смену уходит пара секунд
+        let adapt_target = if eye.z < build::FRONT_Z || eye.z > build::D + 0.4 { adapt_outside } else { 2700.0 };
+        adapt_kelvin += (adapt_target - adapt_kelvin) * (1.0 - (-dt / 2.0).exp());
+        let warm = kelvin_rgb(adapt_kelvin);
         engine.white_point = [1.0 + (warm[0] - 1.0) * 0.75, 1.0 + (warm[1] - 1.0) * 0.75, 1.0 + (warm[2] - 1.0) * 0.75];
         settings.bloom_intensity = 0.04;
         if let Err(e) = engine.render_frame() {
@@ -1215,11 +1374,27 @@ mod walk_tests {
                 break;
             }
             let step = d.normalize() * (WALK / 60.0).min(d.length());
-            let (np, floor) = walk(pos, feet, step, door_open, obstacles);
+            let (np, floor) = walk(pos, feet, step, door_open, obstacles, &[]);
             pos = np;
             feet += (floor - feet) * 0.5;
         }
         (pos, feet)
+    }
+
+    #[test]
+    fn props_on_the_floor_block_walking_but_small_ones_do_not() {
+        let walk_x = |props: &[[f32; 6]]| {
+            let mut p = Vec3::new(0.4, 0.0, 1.2);
+            for _ in 0..120 {
+                p = walk(p, 0.0, Vec3::new(0.02, 0.0, 0.0), false, &[], props).0;
+            }
+            p.x
+        };
+        let tall = [[1.0, 1.0, 1.4, 1.4, 0.0, 0.5]];
+        assert!(walk_x(&tall) <= 1.0 - RADIUS + 1e-4);
+        // тот же ящик этажом выше — не мешает
+        let upstairs = [[1.0, 1.0, 1.4, 1.4, 2.8, 3.3]];
+        assert!(walk_x(&upstairs) > 2.0);
     }
 
     fn near(a: Vec3, b: Vec3) -> bool {

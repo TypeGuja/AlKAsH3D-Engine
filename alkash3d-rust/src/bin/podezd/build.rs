@@ -68,9 +68,11 @@ pub enum Mat {
     Wet,
     Frost,
     Crack,
+    /// Скол бетона: свежий излом со щебнем и ямками от выпавших камней.
+    Chip,
 }
 
-pub const MATS: [Mat; 31] = [
+pub const MATS: [Mat; 32] = [
     Mat::Paint,
     Mat::White,
     Mat::Tread,
@@ -102,6 +104,7 @@ pub const MATS: [Mat; 31] = [
     Mat::Wet,
     Mat::Frost,
     Mat::Crack,
+    Mat::Chip,
 ];
 
 #[derive(Default)]
@@ -767,7 +770,6 @@ fn shift_wall(b: &mut Building, mark: [usize; 2], z: f32) {
 
 fn slabs_and_flights(b: &mut Building) {
     let white = [1.0; 3];
-    let up = Vec3::Y;
     let down = -Vec3::Y;
     for n in 0..FLOORS {
         let y = landing_y(n);
@@ -803,17 +805,16 @@ fn slabs_and_flights(b: &mut Building) {
         for k in 1..=RISERS {
             let z0 = LAND_Z + (k - 1) as f32 * RUN;
             let (ylo, yhi) = (yl + (k - 1) as f32 * RISE, yl + k as f32 * RISE);
-            // подступенок
-            b.quad_w(Mat::Concrete, [v3(A_X, ylo, z0), v3(W, ylo, z0), v3(W, yhi, z0), v3(A_X, yhi, z0)], -Vec3::Z, 1.0, white);
             if k < RISERS {
                 let z1 = z0 + RUN;
-                // проступь: u поперёк марша, v от носка
+                // проступь: u поперёк марша от перил, v от носка; подступенок,
+                // проступь и носок — с выбоинами и вытертой ногами ложбиной
                 let (uv, tone) = tread_uv(n, 0, k);
-                b.quad4(Mat::Tread, [v3(A_X, yhi, z0), v3(W, yhi, z0), v3(W, yhi, z1), v3(A_X, yhi, z1)], uv, up, tone);
-                // носок скруглён и затёрт (бетон не держит острую кромку)
-                b.tube(Mat::Concrete, v3(A_X, yhi - 0.012, z0 + 0.012), v3(W, yhi - 0.012, z0 + 0.012), 0.0135, 1.0, 8, [0.92; 3]);
+                worn_step(b, n, 0, k, [A_X, W], [z0, z1], [ylo, yhi], uv, tone);
                 // бок ступени в просвет
                 b.quad_w(Mat::Concrete, [v3(A_X, soffit_a(z0).min(ylo), z0), v3(A_X, soffit_a(z1).min(yhi), z1), v3(A_X, yhi, z1), v3(A_X, yhi, z0)], -Vec3::X, 1.0, white);
+            } else {
+                b.quad_w(Mat::Concrete, [v3(A_X, ylo, z0), v3(W, ylo, z0), v3(W, yhi, z0), v3(A_X, yhi, z0)], -Vec3::Z, 1.0, white);
             }
         }
         if n >= 1 {
@@ -826,13 +827,13 @@ fn slabs_and_flights(b: &mut Building) {
         for k in 1..=RISERS {
             let z0 = MID_Z - (k - 1) as f32 * RUN;
             let (ylo, yhi) = (ym + (k - 1) as f32 * RISE, ym + k as f32 * RISE);
-            b.quad_w(Mat::Concrete, [v3(0.0, ylo, z0), v3(B_X, ylo, z0), v3(B_X, yhi, z0), v3(0.0, yhi, z0)], Vec3::Z, 1.0, white);
             if k < RISERS {
                 let z1 = z0 - RUN;
                 let (uv, tone) = tread_uv(n, 1, k);
-                b.quad4(Mat::Tread, [v3(B_X, yhi, z0), v3(0.0, yhi, z0), v3(0.0, yhi, z1), v3(B_X, yhi, z1)], uv, up, tone);
-                b.tube(Mat::Concrete, v3(0.0, yhi - 0.012, z0 - 0.012), v3(B_X, yhi - 0.012, z0 - 0.012), 0.0135, 1.0, 8, [0.92; 3]);
+                worn_step(b, n, 1, k, [B_X, 0.0], [z0, z1], [ylo, yhi], uv, tone);
                 b.quad_w(Mat::Concrete, [v3(B_X, soffit_b(z0).min(ylo), z0), v3(B_X, soffit_b(z1).min(yhi), z1), v3(B_X, yhi, z1), v3(B_X, yhi, z0)], Vec3::X, 1.0, white);
+            } else {
+                b.quad_w(Mat::Concrete, [v3(0.0, ylo, z0), v3(B_X, ylo, z0), v3(B_X, yhi, z0), v3(0.0, yhi, z0)], Vec3::Z, 1.0, white);
             }
         }
         let (s0, s1) = (ym - SLAB, yl + H - SLAB);
@@ -840,6 +841,79 @@ fn slabs_and_flights(b: &mut Building) {
         b.quad_w(Mat::White, [v3(0.0, s0, MID_Z), v3(B_X, s0, MID_Z), v3(B_X, s1, LAND_Z), v3(0.0, s1, LAND_Z)], nn, 2.0, white);
     }
 }
+
+/// Ступень с износом геометрией (не только текстурой): по линии хода, ближе
+/// к перилам, проступь вытерта ложбиной — глубже на нижних маршах, где ходят
+/// все этажи, и у носка, куда ставят ногу; носок местами сколот — кусок
+/// бетона выбит из кромки вместе с верхом подступенка. `x` — [у перил, у
+/// стены], `z` — [носок, задний край], `y` — [низ подступенка, проступь].
+fn worn_step(b: &mut Building, n: usize, flight: usize, k: usize, x: [f32; 2], z: [f32; 2], y: [f32; 2], uv: [[f32; 2]; 4], tone: [f32; 3]) {
+    let id = (n * 2 + flight) as i32;
+    let traffic = (FLOORS - 2).saturating_sub(n) as f32;
+    let edge_step = k == 1 || k == RISERS - 1;
+    let dish = 0.002 + 0.002 * traffic + if edge_step { 0.002 } else { 0.0 };
+    let width = (x[1] - x[0]).abs();
+    let run = (z[1] - z[0]).abs();
+    // сколы: до двух на ступень, 4–12 см вдоль кромки, 1.2–2.4 см вглубь
+    let chips: Vec<(f32, f32, f32)> = (0..2)
+        .filter(|&c| hash01(id * 31 + k as i32, 300 + c) < 0.3 + 0.08 * traffic)
+        .map(|c| {
+            let h = |s: i32| hash01(id * 31 + k as i32, s + c);
+            (0.06 + 0.88 * h(310), 0.02 + 0.04 * h(320), 0.012 + 0.012 * h(330))
+        })
+        .collect();
+    let wear = |u: f32, v: f32| dish * (-((u - 0.4) / 0.22).powi(2)).exp() * (0.35 + 0.65 * (1.0 - v).powf(1.5));
+    // край скола рваный: глубина в ступень и в кромку меняется вдоль неё
+    let ragged = |u: f32, s: i32| vnoise(u * width * 40.0, 0.0, id * 53 + k as i32 + s);
+    let chip = |u: f32, v: f32| {
+        let back = (1.0 - v * run / (0.02 + 0.03 * ragged(u, 0))).max(0.0);
+        let r = 0.7 + 0.6 * ragged(u, 7);
+        chips.iter().map(|&(uc, hw, d)| d * r * ((1.0 - ((u - uc) * width).abs() / hw) * 2.0).clamp(0.0, 1.0) * back).fold(0.0f32, f32::max)
+    };
+    let h = |u: f32, v: f32| wear(u, v) + chip(u, v);
+    const NU: usize = 60;
+    let vs: Vec<f32> = [0.0, 0.012, 0.035, 0.08, 0.15].map(|d| d / run).into_iter().chain([1.0]).collect();
+    let pos = |u: f32, v: f32| v3(x[0] + (x[1] - x[0]) * u, y[1] - h(u, v), z[0] + (z[1] - z[0]) * v);
+    let tex = |u: f32, v: f32| {
+        let l = |a: [f32; 2], b: [f32; 2], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        l(l(uv[0], uv[1], u), l(uv[3], uv[2], u), v)
+    };
+    for i in 0..NU {
+        let (u0, u1) = (i as f32 / NU as f32, (i + 1) as f32 / NU as f32);
+        for j in 0..vs.len() - 1 {
+            let (v0, v1) = (vs[j], vs[j + 1]);
+            let p = [pos(u0, v0), pos(u1, v0), pos(u1, v1), pos(u0, v1)];
+            let nrm = (p[1] - p[0]).cross(p[3] - p[0]).normalize_or_zero();
+            let nrm = if nrm.y < 0.0 { -nrm } else { nrm };
+            // в сколе — излом бетона своим материалом (щебень, ямки), UV по
+            // миру: у соседних сколов фактура не повторяется
+            if chip((u0 + u1) * 0.5, (v0 + v1) * 0.5) > 0.002 {
+                b.quad4(Mat::Chip, p, p.map(|q| [q.x / CHIP_TILE, q.z / CHIP_TILE]), nrm, [1.0; 3]);
+            } else {
+                b.quad4(Mat::Tread, p, [tex(u0, v0), tex(u1, v0), tex(u1, v1), tex(u0, v1)], nrm, tone);
+            }
+        }
+        // подступенок до кромки (с выбоиной); углы — по росту x, как у целого
+        let (ua, ub) = if x[1] > x[0] { (u0, u1) } else { (u1, u0) };
+        let (xa, xb) = (x[0] + (x[1] - x[0]) * ua, x[0] + (x[1] - x[0]) * ub);
+        let rn = if z[1] > z[0] { -Vec3::Z } else { Vec3::Z };
+        // целый низ и, в сколе, тёмный излом у кромки
+        let ym = y[1] - 0.03;
+        b.quad_w(Mat::Concrete, [v3(xa, y[0], z[0]), v3(xb, y[0], z[0]), v3(xb, ym.min(y[1] - h(ub, 0.0)), z[0]), v3(xa, ym.min(y[1] - h(ua, 0.0)), z[0])], rn, 1.0, [1.0; 3]);
+        let top = if chip((u0 + u1) * 0.5, 0.0) > 0.002 { (Mat::Chip, CHIP_TILE) } else { (Mat::Concrete, 1.0) };
+        b.quad_w(top.0, [v3(xa, ym.min(y[1] - h(ua, 0.0)), z[0]), v3(xb, ym.min(y[1] - h(ub, 0.0)), z[0]), v3(xb, y[1] - h(ub, 0.0), z[0]), v3(xa, y[1] - h(ua, 0.0), z[0])], rn, top.1, [1.0; 3]);
+        // носок скруглён и затёрт (бетон не держит острую кромку); в сколе его нет
+        let um = (u0 + u1) * 0.5;
+        if chip(um, 0.0) < 0.003 {
+            let dz = 0.012 * (z[1] - z[0]).signum();
+            let (wa, wb) = (wear(u0, 0.0), wear(u1, 0.0));
+            b.tube(Mat::Concrete, v3(x[0] + (x[1] - x[0]) * u0, y[1] - 0.012 - wa, z[0] + dz), v3(x[0] + (x[1] - x[0]) * u1, y[1] - 0.012 - wb, z[0] + dz), 0.0135, 1.0, 8, [0.92; 3]);
+        }
+    }
+}
+
+/// Размер тайла фактуры скола, м (tex::fracture).
+const CHIP_TILE: f32 = 0.2;
 
 /// Проступь ступени `k` (1..RISERS-1) марша `flight` (0 — A, 1 — B) между
 /// этажами n+1 и n+2: ячейка атласа `tex::treads` и тон бетона этой отливки.
@@ -878,6 +952,14 @@ fn dirty_floor(b: &mut Building, x0: f32, x1: f32, z0: f32, z1: f32, y: f32) {
         let k = 1.0 - 0.45 * edge - 0.05 * n;
         [k, k * 0.98, k * 0.95]
     };
+    // выбитые плитки: редкие одиночные и группы по 2–3; у самых стен целы
+    let seed = (y * 10.0) as i32 * 977 + (z0 * 10.0) as i32;
+    let hole = |i: i32, j: i32| {
+        if i < 2 || j < 1 || i >= nx as i32 - 2 || j >= nz as i32 - 1 {
+            return false;
+        }
+        hash01(i + seed, j * 7 + 4001) < 0.006 || (hash01(i / 2 + seed, j / 2 + 5003) < 0.015 && hash01(i + seed, j + 6007) < 0.6)
+    };
     for i in 0..nx {
         for j in 0..nz {
             let (xa, xb) = (x0 + i as f32 * (x1 - x0) / nx as f32, x0 + (i + 1) as f32 * (x1 - x0) / nx as f32);
@@ -887,10 +969,36 @@ fn dirty_floor(b: &mut Building, x0: f32, x1: f32, z0: f32, z1: f32, y: f32) {
             // тон — по центру ячейки (вершины ячеек не общие, поэтому без
             // интерполяции; ячейка 10 см — ступенек не видно)
             let c = tone((xa + xb) * 0.5, (za + zb) * 0.5);
-            b.quad4(Mat::Tiles, p, uv, Vec3::Y, c);
+            if hole(i as i32, j as i32) {
+                // выбитая плитка: под ней цементная стяжка на 6 мм ниже,
+                // по краям — торцы соседних плиток
+                let lo = p.map(|q| q - v3(0.0, TILE_T, 0.0));
+                b.quad_w(Mat::Concrete, lo, Vec3::Y, 0.5, [c[0] * 0.55, c[1] * 0.53, c[2] * 0.5]);
+                let side = |b: &mut Building, a: Vec3, e: Vec3, n: Vec3| {
+                    b.quad_w(Mat::Concrete, [a - v3(0.0, TILE_T, 0.0), e - v3(0.0, TILE_T, 0.0), e, a], n, 0.5, [0.8, 0.78, 0.74]);
+                };
+                let (i, j) = (i as i32, j as i32);
+                if !hole(i - 1, j) {
+                    side(b, p[3], p[0], Vec3::X);
+                }
+                if !hole(i + 1, j) {
+                    side(b, p[1], p[2], -Vec3::X);
+                }
+                if !hole(i, j - 1) {
+                    side(b, p[0], p[1], Vec3::Z);
+                }
+                if !hole(i, j + 1) {
+                    side(b, p[2], p[3], -Vec3::Z);
+                }
+            } else {
+                b.quad4(Mat::Tiles, p, uv, Vec3::Y, c);
+            }
         }
     }
 }
+
+/// Толщина плитки пола с клеем — глубина ямки, где плитка выбита.
+const TILE_T: f32 = 0.006;
 
 fn railings(b: &mut Building) {
     let paint = [0.20, 0.17, 0.15];
@@ -1530,7 +1638,7 @@ fn yard(b: &mut Building) {
     b.ellipsoid(Mat::Snow, v3(lx - 1.3, 7.58, lz), v3(0.3, 0.1, 0.15), true, [1.0; 3]);
     // натриевый светильник ЖКУ: отражатель с отсечкой — свет вниз и в
     // стороны до ~70° от вертикали, выше (на фасады, в окна) почти нет
-    b.lamps.push(Lamp { pos: v3(lx - 1.3, 7.48, lz), candela: 4000.0, kelvin: 2000.0, kind: LampKind::Steady, bulb_r: 0.06, cone: Some((1.22, 0.85)), clear: false, range: 0.0 });
+    b.lamps.push(Lamp { pos: v3(lx - 1.3, 7.48, lz), candela: 5000.0, kelvin: 2000.0, kind: LampKind::Steady, bulb_r: 0.06, cone: Some((1.31, 1.2)), clear: false, range: 0.0 });
     // голые деревья двора (зима): берёзы и тополь
     for (k, (x, z, h, birch)) in [(-3.5f32, D + 6.5, 9.0f32, true), (9.5, D + 13.0, 12.0, false), (-9.0, D + 15.0, 10.0, true), (2.0, D + 19.0, 13.0, false)].into_iter().enumerate() {
         let bark = if birch { [0.72, 0.7, 0.66] } else { [0.16, 0.14, 0.12] };
@@ -2044,7 +2152,7 @@ fn front_yard(b: &mut Building) {
     b.tube(Mat::Metal, v3(lx, 8.0, lz), v3(lx, 8.25, lz + 1.4), 0.035, 1.0, 10, [0.35; 3]);
     b.ellipsoid(Mat::Metal, v3(lx, 8.25, lz + 1.5), v3(0.2, 0.14, 0.38), true, [0.3, 0.31, 0.32]);
     b.ellipsoid(Mat::Snow, v3(lx, 8.31, lz + 1.5), v3(0.15, 0.1, 0.3), true, [1.0; 3]);
-    b.lamps.push(Lamp { pos: v3(lx, 8.2, lz + 1.5), candela: 4000.0, kelvin: 2000.0, kind: LampKind::Steady, bulb_r: 0.06, cone: Some((1.22, 0.85)), clear: false, range: 0.0 });
+    b.lamps.push(Lamp { pos: v3(lx, 8.2, lz + 1.5), candela: 5000.0, kelvin: 2000.0, kind: LampKind::Steady, bulb_r: 0.06, cone: Some((1.31, 1.2)), clear: false, range: 0.0 });
 
     // ---- кирпичная ограда с белёными арками, за ней гаражи ----
     // ИЗМЕНЕНО (текстуры двора): кирпич — своей текстурой (tex::brick)
