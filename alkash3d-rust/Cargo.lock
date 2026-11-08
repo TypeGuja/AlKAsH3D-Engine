@@ -64,6 +64,7 @@ dependencies = [
  "libloading 0.9.0",
  "nalgebra",
  "num_cpus",
+ "openxr",
  "png",
  "rand 0.10.1",
  "rayon",
@@ -1739,6 +1740,26 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "openxr"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53770c8f7d3f185bcb577b78f2ed8e33bbf7cdf5cd57fb68b5ec0b4117b79de6"
+dependencies = [
+ "libc",
+ "libloading 0.9.0",
+ "openxr-sys",
+]
+
+[[package]]
+name = "openxr-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "febb5d50cee7b964b69d5b7a810ed9620fc64f41382ffefe05434754c7a48877"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "optional"
