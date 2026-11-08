@@ -89,6 +89,7 @@ mod capi;
 /// 3D Modules
 pub mod math;
 pub mod camera;
+pub mod xr;
 mod constant_buffer;
 
 /// ECS / сцена — см. подробное описание в scene.rs. Объявлен как

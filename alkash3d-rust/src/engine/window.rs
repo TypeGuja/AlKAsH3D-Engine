@@ -44,7 +44,7 @@ impl AlkashEngine {
                 WINDOW_EX_STYLE::default(),
                 PCSTR(window_class),
                 PCSTR(b"Alkash3D Engine - DirectX 12\0".as_ptr()),
-                WS_OVERLAPPEDWINDOW,
+                if self.xr_window { WS_POPUP } else { WS_OVERLAPPEDWINDOW },
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 self.width as i32,
@@ -240,6 +240,9 @@ impl AlkashEngine {
     /// ИЗМЕНЕНО (CODEC — запуск сразу на весь экран): публичная, чтобы игра
     /// могла включить полноэкранный режим сама, а не только по Alt+F11.
     pub fn toggle_fullscreen(&mut self) {
+        if self.xr_window {
+            return;
+        }
         let Some(hwnd) = self.hwnd else {
             return;
         };

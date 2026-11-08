@@ -125,13 +125,15 @@ void main(uint3 id : SV_DispatchThreadID) {
     float scale = outSize.x / renderSize.x;
 
     // соседи 3x3: взвешенный текущий цвет, среднее и разброс для отсечения
-    // истории; ближайшая к камере глубина — по ней репроекция (край тонкой
-    // балясины берёт её движение, а не фона)
+    // истории. Глубину для репроекции берём из того же центрального сэмпла,
+    // что даёт текущий цвет: глубина соседнего столба или провода переносила
+    // его силуэт на фон и оставляла повторяющиеся следы при движении камеры.
     float3 sum = 0.0;
     float wsum = 0.0, wNear = 0.0;
     float3 m1 = 0.0, m2 = 0.0;
-    float closest = 1.0;
-    float2 closestUV = uvOut;
+    int2 depthQ = clamp(q0, 0, maxQ);
+    float currentDepth = LoadDepth(depthQ);
+    float2 depthUV = (float2(depthQ) + 0.5 - jitter) / renderSize;
     [unroll] for (int y = -1; y <= 1; y++) {
         [unroll] for (int x = -1; x <= 1; x++) {
             int2 q = clamp(q0 + int2(x, y), 0, maxQ);
@@ -146,11 +148,6 @@ void main(uint3 id : SV_DispatchThreadID) {
             float3 yc = ToYCoCg(Compress(col));
             m1 += yc;
             m2 += yc * yc;
-            float dep = LoadDepth(q);
-            if (dep < closest) {
-                closest = dep;
-                closestUV = at / renderSize;
-            }
         }
     }
     // при родном разрешении — свой пиксель как есть (как прежний TAA):
@@ -159,19 +156,22 @@ void main(uint3 id : SV_DispatchThreadID) {
     float3 mean = m1 / 9.0;
     float3 sigma = sqrt(max(m2 / 9.0 - mean * mean, 0.0));
 
-    float4 ndc = float4(closestUV.x * 2.0 - 1.0, 1.0 - closestUV.y * 2.0, closest, 1.0);
+    float4 ndc = float4(depthUV.x * 2.0 - 1.0, 1.0 - depthUV.y * 2.0, currentDepth, 1.0);
     float4 world = mul(invViewProj, ndc);
     world /= world.w;
     float4 prevClip = mul(prevViewProj, float4(world.xyz, 1.0));
     float2 prevNdc = prevClip.xy / prevClip.w;
     float2 prevUV = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5);
     // сдвиг между точкой глубины и центром пикселя выхода — в сторону истории
-    prevUV += uvOut - closestUV;
+    prevUV += uvOut - depthUV;
 
     float3 outC = Compress(cur);
     if (historyValid > 0.5 && prevClip.w > 0.0 && all(prevUV > 0.0) && all(prevUV < 1.0)) {
+        float4 histSample = HistoryTex.SampleLevel(LinearClamp, prevUV, 0);
         float3 hist = SampleHistory(prevUV);
-        if (Finite(hist)) {
+        float expectedDepth = prevClip.z / prevClip.w;
+        float depthTolerance = max(1e-5, 0.03 * (1.0 - saturate(expectedDepth)));
+        if (Finite(hist) && abs(histSample.a - expectedDepth) < depthTolerance) {
             float3 h = ToYCoCg(Compress(hist));
             // отсечение истории по разбросу соседей: луч из среднего к истории
             // до границы коробки mean ± 1.25 sigma
@@ -184,7 +184,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             }
             // быстрое движение по экрану — меньше доверия истории (иначе шлейф)
             float speed = length((prevUV - uvOut) * outSize);
-            float fb = lerp(feedback, 0.6, saturate(speed / 30.0));
+            float fb = lerp(feedback, 0.2, saturate(speed / 4.0));
             // ни один сэмпл кадра не попал близко к центру пикселя экрана —
             // вклад кадра меньше (при обычном TAA ближайший всегда не
             // дальше √0.5 пикселя, wNear ≥ exp(-2.29·0.5) = 0.318 — как было)
@@ -192,5 +192,7 @@ void main(uint3 id : SV_DispatchThreadID) {
             outC = FromYCoCg(lerp(h, ToYCoCg(Compress(cur)), curW));
         }
     }
-    Output[p] = float4(max(Expand(outC), 0.0), 1.0);
+    // История хранит и глубину; на следующем кадре она отсекает открывшийся
+    // фон, даже когда его цвет попадает в разброс соседних пикселей.
+    Output[p] = float4(max(Expand(outC), 0.0), currentDepth);
 }

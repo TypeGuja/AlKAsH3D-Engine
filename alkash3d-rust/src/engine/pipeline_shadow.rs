@@ -642,7 +642,9 @@ impl AlkashEngine {
         for (i, l) in lights.iter().enumerate() {
             let is_point = l.position[3] < 0.5;
             let range = l.direction[3];
-            if !is_point || l.color[3] <= 0.0 || range <= SPOT_SHADOW_NEAR * 2.0 {
+            // -0.5 < params.w < 0: источник без теневой карты (шейдер тоже
+            // не читает атлас при этом значении).
+            if !is_point || l.color[3] <= 0.0 || (-0.5..0.0).contains(&l.params[3]) || range <= SPOT_SHADOW_NEAR * 2.0 {
                 continue;
             }
             let pos = Vec3::new(l.position[0], l.position[1], l.position[2]);

@@ -257,7 +257,10 @@ float4 Finish(PS_INPUT input, float3 combined) {
     // степень 1/2.2 — та в тенях заметно темнее, чем покажет монитор sRGB.
     float3 c = max(tonemapped, 0.0);
     float3 gammaCorrected = c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
-    return float4(gammaCorrected, 1.0);
+    // For an XR alpha-blend composition layer, the clear pixels remain
+    // transparent while rendered geometry keeps its HDR target coverage.
+    float layerAlpha = visionParams.w > 0.5 ? HDRSource.SampleLevel(PointSampler, input.uv, 0).a : 1.0;
+    return float4(gammaCorrected, layerAlpha);
 }
 
 float4 main(PS_INPUT input) : SV_TARGET {

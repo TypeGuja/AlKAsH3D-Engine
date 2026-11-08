@@ -140,7 +140,7 @@ impl AlkashEngine {
     /// их рисует: на исходные буферы тогда ссылается только само копирование,
     /// а `release_finished_copies` отпустит их после него. При ошибке меши
     /// остаются в оперативной памяти. ALKASH3D_VRAM=0 — не переносить.
-    pub(super) fn new_meshes_to_video_memory(&mut self, first: usize) {
+    pub fn new_meshes_to_video_memory(&mut self, first: usize) {
         if first >= self.meshes.len() || std::env::var("ALKASH3D_VRAM").is_ok_and(|v| v == "0") {
             return;
         }

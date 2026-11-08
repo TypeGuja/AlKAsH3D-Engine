@@ -13,6 +13,7 @@ pub struct Camera {
     pub aspect: f32,
     pub yaw: f32,
     pub pitch: f32,
+    xr_matrices: Option<(Mat4, Mat4)>,
 }
 
 impl Camera {
@@ -27,15 +28,26 @@ impl Camera {
             aspect: width as f32 / height as f32,
             yaw: 0.0,
             pitch: 0.0,
+            xr_matrices: None,
         }
     }
 
     pub fn view_matrix(&self) -> Mat4 {
-        look_at(self.position, self.target, self.up)
+        self.xr_matrices.map_or_else(|| look_at(self.position, self.target, self.up), |(view, _)| view)
     }
 
     pub fn projection_matrix(&self) -> Mat4 {
-        perspective(self.fov, self.aspect, self.near, self.far)
+        self.xr_matrices.map_or_else(|| perspective(self.fov, self.aspect, self.near, self.far), |(_, projection)| projection)
+    }
+
+    /// Set matrices supplied by an XR runtime for the current eye.
+    /// Call `clear_xr_matrices` before returning to the desktop camera.
+    pub fn set_xr_matrices(&mut self, view: Mat4, projection: Mat4) {
+        self.xr_matrices = Some((view, projection));
+    }
+
+    pub fn clear_xr_matrices(&mut self) {
+        self.xr_matrices = None;
     }
 
     pub fn set_aspect(&mut self, width: u32, height: u32) {

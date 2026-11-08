@@ -51,6 +51,9 @@ impl AlkashEngine {
             graphics_settings: GraphicsSettings::default(),
             msaa_samples: MSAA_SAMPLES,
             renderer: None,
+            xr_output_target: None,
+            xr_alpha_blend: false,
+            xr_window: false,
             meshes: Vec::new(),
             mesh_instances: Vec::new(),
             lod_groups: std::collections::HashMap::new(),
@@ -297,13 +300,34 @@ impl AlkashEngine {
     }
 
     pub fn init(&mut self) -> Result<()> {
+        self.init_with_xr_adapter(None)
+    }
+
+    /// Initializes the renderer on the adapter required by OpenXR.
+    pub fn init_for_xr(
+        &mut self,
+        adapter_luid: windows::Win32::Foundation::LUID,
+        min_feature_level: windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL,
+    ) -> Result<()> {
+        self.xr_window = true;
+        self.init_with_xr_adapter(Some((adapter_luid, min_feature_level)))
+    }
+
+    fn init_with_xr_adapter(
+        &mut self,
+        xr_adapter: Option<(windows::Win32::Foundation::LUID, windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL)>,
+    ) -> Result<()> {
         println!("[ENGINE] Initializing Alkash3D Engine v{}...", VERSION);
 
         self.create_window()?;
         println!("[ENGINE] ✓ Window created");
 
         unsafe {
-            D3D12Device::create()?;
+            if let Some((luid, minimum)) = xr_adapter {
+                D3D12Device::create_for_xr(luid, minimum)?;
+            } else {
+                D3D12Device::create()?;
+            }
             println!("[ENGINE] ✓ Device created");
 
             CommandQueue::create()?;

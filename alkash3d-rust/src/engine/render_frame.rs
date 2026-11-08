@@ -654,6 +654,33 @@ impl AlkashEngine {
         (c - camera_pos).length() - mesh.bounding_radius * max_scale <= mesh.max_draw_distance
     }
 
+    /// Copies the next desktop-sized frame into an acquired OpenXR image.
+    /// The image remains owned by the runtime and must be released by the caller.
+    pub fn set_xr_output_target(&mut self, target: Option<ID3D12Resource>) -> Result<()> {
+        if let Some(resource) = &target {
+            let desc = unsafe { resource.GetDesc() };
+            if desc.Width != self.width as u64
+                || desc.Height != self.height
+                || ![
+                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+                    windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_TYPELESS,
+                ].contains(&desc.Format)
+                || desc.SampleDesc.Count != 1
+                || desc.DepthOrArraySize != 1
+            {
+                return Err(Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG));
+            }
+        }
+        self.xr_output_target = target;
+        Ok(())
+    }
+
+    /// Use the HDR target's coverage as the projection layer alpha for AR.
+    pub fn set_xr_alpha_blend(&mut self, enabled: bool) {
+        self.xr_alpha_blend = enabled;
+    }
+
     pub fn render_frame(&mut self) -> Result<bool> {
         let renderer = self.renderer.as_ref().ok_or_else(|| {
             eprintln!("[ENGINE] ERROR: render_frame() called but renderer is not initialized");
@@ -2712,7 +2739,7 @@ impl AlkashEngine {
                         a[0][0], a[0][1], a[0][2], self.lens.sensor_noise,
                         a[1][0], a[1][1], a[1][2], (self.lens_frame % 4096) as f32,
                         a[2][0], a[2][1], a[2][2], if self.lens.aces_full { 1.0 } else { 0.0 },
-                        self.lens.vision_cd_per_unit, self.lens.distortion, self.lens.chromatic_aberration, 0.0,
+                        self.lens.vision_cd_per_unit, self.lens.distortion, self.lens.chromatic_aberration, if self.xr_alpha_blend { 1.0 } else { 0.0 },
                         if local_on { self.lens.local_exposure } else { 0.0 }, local_key, if ao_in_taa { 1.0 } else { 0.0 }, 0.0,
                         // mbInvViewProj, mbPrevViewProj (по столбцам — как у остальных
                         // матриц движка), mbParams
@@ -2761,13 +2788,21 @@ impl AlkashEngine {
                 }
                 self.depth_stencil_is_srv = false;
             }
+            let xr_target = self.xr_output_target.as_ref();
             let mut barriers_after = vec![
                 Self::transition_barrier(
                     back_buffer_resource,
                     D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_PRESENT,
+                    if xr_target.is_some() { D3D12_RESOURCE_STATE_COPY_SOURCE } else { D3D12_RESOURCE_STATE_PRESENT },
                 ),
             ];
+            if let Some(target) = xr_target {
+                barriers_after.push(Self::transition_barrier(
+                    target,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                ));
+            }
             for cascade in 0..NUM_CASCADES {
                 if let Some(shadow_map) = &self.shadow_maps[cascade] {
                     if self.shadow_maps_are_srv[cascade] {
@@ -2801,6 +2836,17 @@ impl AlkashEngine {
                 }
             }
             cmd_list.ResourceBarrier(&barriers_after);
+            if let Some(target) = xr_target {
+                cmd_list.CopyResource(target, back_buffer_resource);
+                let copy_done = [
+                    Self::transition_barrier(target, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET),
+                    Self::transition_barrier(back_buffer_resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT),
+                ];
+                cmd_list.ResourceBarrier(&copy_done);
+                for barrier in copy_done {
+                    Self::drop_transition_barrier(barrier);
+                }
+            }
             super::screenshot::record(&cmd_list, back_buffer_resource);
             if perf_enabled() {
                 super::gpu_timer::mark(&cmd_list, frame_index, 11);
@@ -2828,10 +2874,10 @@ impl AlkashEngine {
         let swap_chain = crate::get_swap_chain()?;
 
         let perf_t_present = Instant::now();
-        let late = !no_vsync() && present_late(perf_t_present);
+        let late = !self.xr_window && !no_vsync() && present_late(perf_t_present);
         unsafe {
             // без vsync и с поддержкой tearing — Present не ждёт монитор (см. swap_chain.rs)
-            let hr = if no_vsync() {
+            let hr = if self.xr_window || no_vsync() {
                 let flags = if crate::swap_chain::tearing_supported() { windows::Win32::Graphics::Dxgi::DXGI_PRESENT_ALLOW_TEARING } else { DXGI_PRESENT(0) };
                 swap_chain.Present(0, flags)
             } else if late {

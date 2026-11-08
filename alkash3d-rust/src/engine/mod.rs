@@ -373,6 +373,10 @@ pub struct AlkashEngine {
     msaa_samples: u32,
 
     pub renderer: Option<Renderer>,
+    /// Optional acquired OpenXR D3D12 image for the next rendered eye.
+    xr_output_target: Option<ID3D12Resource>,
+    xr_alpha_blend: bool,
+    xr_window: bool,
     pub meshes: Vec<Mesh>,
     pub mesh_instances: Vec<MeshInstance>,
     /// ДОБАВЛЕНО (максимальная графика — LOD): ключ — "логический" индекс

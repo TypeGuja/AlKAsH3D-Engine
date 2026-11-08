@@ -3,6 +3,7 @@ use windows::core::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::Graphics::Direct3D::{
+    D3D_FEATURE_LEVEL,
     D3D_FEATURE_LEVEL_12_0,
     // ДОБАВЛЕНО (тени на второй видеокарте — фаза 1; ОБНОВЛЕНО — теперь
     // используется для ОБОИХ устройств, не только второй карты, см.
@@ -19,6 +20,16 @@ pub struct D3D12Device;
 
 impl D3D12Device {
     pub fn create() -> Result<()> {
+        Self::create_with_xr_requirements(None)
+    }
+
+    /// OpenXR requires the D3D12 device to use the runtime-selected adapter
+    /// and at least its requested feature level.
+    pub fn create_for_xr(adapter_luid: windows::Win32::Foundation::LUID, min_feature_level: D3D_FEATURE_LEVEL) -> Result<()> {
+        Self::create_with_xr_requirements(Some((adapter_luid, min_feature_level)))
+    }
+
+    fn create_with_xr_requirements(xr_requirements: Option<(windows::Win32::Foundation::LUID, D3D_FEATURE_LEVEL)>) -> Result<()> {
         println!("[DEVICE] ========== CREATING D3D12 DEVICE ==========");
         let mut state = STATE.lock().unwrap();
 
@@ -181,6 +192,7 @@ impl D3D12Device {
                 adapter: IDXGIAdapter1,
                 name: String,
                 vram_mb: u64,
+                luid: windows::Win32::Foundation::LUID,
             }
             let mut hardware_adapters: Vec<AdapterInfo> = Vec::new();
             for i in 0.. {
@@ -223,7 +235,7 @@ impl D3D12Device {
                         // зависимости от значения флага `is_software`.
                         let is_basic_render_driver = name == "Microsoft Basic Render Driver";
                         if !is_software && !is_basic_render_driver {
-                            hardware_adapters.push(AdapterInfo { adapter: adap, name, vram_mb });
+                            hardware_adapters.push(AdapterInfo { adapter: adap, name, vram_mb, luid: desc.AdapterLuid });
                         }
                     }
                     Err(_) => break,
@@ -245,17 +257,24 @@ impl D3D12Device {
                 state.secondary_gpu_vram_mb = second.vram_mb;
             }
 
-            let adapter = if hardware_adapters.is_empty() {
+            let selected_index = if let Some((required_luid, _)) = xr_requirements {
+                hardware_adapters.iter().position(|info| {
+                    info.luid.LowPart == required_luid.LowPart
+                        && info.luid.HighPart == required_luid.HighPart
+                })
+            } else if hardware_adapters.is_empty() {
                 None
             } else {
-                Some(hardware_adapters.remove(0).adapter)
+                Some(0)
             };
+            let adapter = selected_index.map(|index| hardware_adapters.remove(index).adapter);
 
             let adapter = adapter.ok_or_else(|| {
-                eprintln!("[DEVICE] ERROR: No suitable adapter found!");
+                eprintln!("[DEVICE] ERROR: No suitable adapter found (XR adapter LUID: {})!", xr_requirements.is_some());
                 Error::from_hresult(HRESULT(1))
             })?;
-            println!("[DEVICE] Selected primary (most powerful) hardware adapter");
+            println!("[DEVICE] Selected primary hardware adapter ({})",
+                if xr_requirements.is_some() { "required by OpenXR" } else { "most VRAM" });
 
             // ДОБАВЛЕНО (тени на второй видеокарте — фаза 1): после того как
             // основной (самый мощный) адаптер извлечён выше, в
@@ -298,6 +317,9 @@ impl D3D12Device {
             let mut device: Option<ID3D12Device> = None;
             let mut selected_level_name = "";
             for (level_name, level) in levels_primary {
+                if xr_requirements.is_some_and(|(_, minimum)| level.0 < minimum.0) {
+                    continue;
+                }
                 let mut candidate: Option<ID3D12Device> = None;
                 match D3D12CreateDevice(&adapter, level, &mut candidate) {
                     Ok(()) => {
