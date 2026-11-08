@@ -15,6 +15,8 @@ use rayon::prelude::*;
 
 mod light;
 mod culling;
+pub mod sun;
+pub mod fixture;
 
 use light::*;
 use culling::*;
@@ -44,7 +46,7 @@ pub struct GPULight {
     pub position: [f32; 4],  // xyz, type (0=point,1=spot,2=directional)
     pub color: [f32; 4],     // rgb, intensity
     pub direction: [f32; 4], // xyz, range
-    pub params: [f32; 4],    // spot_angle, falloff, lod, padding
+    pub params: [f32; 4],    // spot_angle, falloff, inner_angle, shadow mode/hint
 }
 
 unsafe impl bytemuck::Zeroable for GPULight {}
@@ -157,6 +159,9 @@ struct InternalLight {
     // spot_inner_angle=0 независимо от того, что реально было передано.
     // Теперь сохраняется и возвращается как есть (round-trip).
     spot_inner_angle: f32,
+    /// Отрицательное значение в (-0.5, 0) запрещает теневую карту для
+    /// малого источника; хост может заменить его индексом карты тени.
+    shadow_hint: f32,
     /// ДОБАВЛЕНО (remove_light): слот свободен, `add_light` займёт его снова.
     /// Слоты не сдвигаются: `id` остаётся индексом в `lights`.
     removed: bool,
@@ -168,7 +173,7 @@ impl InternalLight {
             position: [self.position.x, self.position.y, self.position.z, self.light_type as u32 as f32],
             color: [self.color.x, self.color.y, self.color.z, self.intensity],
             direction: [self.spot_direction.x, self.spot_direction.y, self.spot_direction.z, self.range],
-            params: [self.spot_angle, self.falloff, self.spot_inner_angle, 0.0],
+            params: [self.spot_angle, self.falloff, self.spot_inner_angle, self.shadow_hint],
         }
     }
 }
@@ -283,6 +288,7 @@ impl LightState {
             // ДОБАВЛЕНО (Фаза 4 плана по реализму/фонарям) — см. комментарий
             // у поля `spot_inner_angle` в InternalLight выше.
             spot_inner_angle: light.params[2],
+            shadow_hint: light.params[3],
             removed: false,
         };
 
@@ -359,6 +365,7 @@ impl LightState {
             internal.spot_direction = Vector3::new(light.direction[0], light.direction[1], light.direction[2]);
             internal.falloff = light.params[1];
             internal.spot_inner_angle = light.params[2];
+            internal.shadow_hint = light.params[3];
         }
         // Свет с таким id не найден (например id из другого, уже
         // выгруженного instance плагина) — тихо игнорируем, как и
@@ -891,6 +898,21 @@ mod grid_tests {
 
     fn lamp(x: f32, y: f32, z: f32, intensity: f32, range: f32) -> GPULight {
         GPULight { position: [x, y, z, 0.0], color: [1.0, 1.0, 1.0, intensity], direction: [0.0, -1.0, 0.0, range], params: [0.0; 4] }
+    }
+
+    #[test]
+    fn shadow_hint_survives_add_update_and_cull() {
+        let (mut st, vp) = state(4.0, [30.0, 60.0, 100.0]);
+        let mut signal = lamp(0.0, 0.0, 10.0, 5.0, 15.0);
+        signal.params[3] = -0.25;
+        let id = st.add_light(&signal);
+        st.cull([0.0; 3], &vp, 0.016);
+        assert_eq!(st.gpu_lights[0].params[3], -0.25);
+        signal.color[3] = 8.0;
+        st.update_light(id, &signal);
+        st.cull([0.0; 3], &vp, 0.016);
+        assert_eq!(st.gpu_lights[0].params[3], -0.25);
+        assert_eq!(st.gpu_lights[0].color[3], 8.0);
     }
 
     /// Камера в начале координат смотрит вдоль +Z.
