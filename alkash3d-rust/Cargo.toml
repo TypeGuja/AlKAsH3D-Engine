@@ -89,8 +89,24 @@ path = "../buckshot-equestria/src/ponies/main.rs"
 name = "restroom"
 path = "../buckshot-equestria/src/restroom/main.rs"
 
+# `src/bin/VR/VRAR.rs` is an unfinished local draft. Keep its source intact;
+# register it as a binary once the XR frame loop and scene setup are complete.
+[[bin]]
+name = "xr_probe"
+path = "src/bin/xr_probe.rs"
+required-features = ["xr"]
+
+[[bin]]
+name = "xr_demo"
+path = "src/bin/xr_demo.rs"
+required-features = ["xr"]
+
+[features]
+xr = ["dep:openxr"]
+
 
 [dependencies]
+openxr = { version = "0.22.0", optional = true }
 # ДОБАВЛЕНО (звуковая подсистема — XAudio2): "Win32_Media_Audio_XAudio2"
 # тянет за собой "Win32_Media_Audio" (см. windows-0.62.2/Cargo.toml —
 # Win32_Media_Audio_XAudio2 = ["Win32_Media_Audio"]), которая, в свою
