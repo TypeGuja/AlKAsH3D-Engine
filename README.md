@@ -81,6 +81,12 @@
 
 ## 🎬 Demo Binaries (`alkash3d-rust/src/bin/`)
 
+### OpenXR (Windows)
+
+From `alkash3d-rust/`, run `cargo run --features xr --bin xr_probe` to inspect the active OpenXR runtime. With a PC headset and its OpenXR runtime active, `cargo run --features xr --bin xr_demo` renders a tracked stereo cube scene. For a supported see-through or passthrough headset, set `ALKASH3D_XR_MODE=ar` before launching `xr_demo`; the demo chooses alpha, additive, or `XR_FB_passthrough` composition according to runtime capabilities. Games can call `alkash3d_rs::xr::runtime::run_xr(ar, |engine| { /* build scene */ })`; the engine module owns the OpenXR session and frame loop, while the demo only supplies a scene. The engine selects the D3D12 adapter required by OpenXR and renders each eye with the runtime's pose and field of view.
+
+The `xr` feature is optional. A headset/runtime is needed to exercise the XR frame loop. The current demo does not provide webcam AR, spatial anchors, or controller actions. `src/bin/VR/VRAR.rs` remains an unfinished local draft and is not registered as a Cargo binary.
+
 | Binary | Command | What it shows |
 |---|---|---|
 | `main` | `cargo run --bin main` | Basic demo — tile walking + night lighting |
