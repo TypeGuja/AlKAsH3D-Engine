@@ -64,7 +64,17 @@ impl Mesh {
             indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
 
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        // 3x2 atlas: every face gets its own square instead of sharing UVs.
+        mesh.uv.clear();
+        for face in 0..6 {
+            let ox = (face % 3) as f32 / 3.0;
+            let oy = (face / 3) as f32 / 2.0;
+            for [u, v] in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+                mesh.uv.push([ox + u / 3.0, oy + v / 2.0]);
+            }
+        }
+        mesh
     }
 
     pub fn create_sphere() -> Self {
@@ -93,7 +103,11 @@ impl Mesh {
             }
         }
 
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        mesh.uv = (0..=rings)
+            .flat_map(|i| (0..=segments).map(move |j| [j as f32 / segments as f32, i as f32 / rings as f32]))
+            .collect();
+        mesh
     }
 
     pub fn create_plane() -> Self {
@@ -110,7 +124,7 @@ impl Mesh {
         let mut indices = Vec::new();
         let segments = 24;
 
-        for i in 0..segments {
+        for i in 0..=segments {
             let angle = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
             let x = angle.cos() * 0.5;
             let z = angle.sin() * 0.5;
@@ -119,13 +133,17 @@ impl Mesh {
         }
 
         for i in 0..segments {
-            let next = (i + 1) % segments;
+            let next = i + 1;
             let base = (i * 2) as u32;
             let next_base = (next * 2) as u32;
             indices.extend_from_slice(&[base, base+1, next_base, next_base, base+1, next_base+1]);
         }
 
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        mesh.uv = (0..=segments)
+            .flat_map(|i| [[i as f32 / segments as f32, 0.0], [i as f32 / segments as f32, 1.0]])
+            .collect();
+        mesh
     }
 
     pub fn create_cone() -> Self {
@@ -146,7 +164,12 @@ impl Mesh {
             indices.extend_from_slice(&[0, (i+1) as u32, (next+1) as u32]);
         }
 
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        mesh.uv.push([0.5, 1.0]);
+        for i in 0..segments {
+            mesh.uv.push([i as f32 / segments as f32, 0.0]);
+        }
+        mesh
     }
 
     pub fn create_torus() -> Self {
@@ -178,6 +201,10 @@ impl Mesh {
             }
         }
 
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        mesh.uv = (0..=rings)
+            .flat_map(|i| (0..=segments).map(move |j| [j as f32 / segments as f32, i as f32 / rings as f32]))
+            .collect();
+        mesh
     }
 }

@@ -22,6 +22,8 @@ struct Material {
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var<uniform> light: Light;
 @group(2) @binding(0) var<uniform> material: Material;
+@group(2) @binding(1) var albedo_map: texture_2d<f32>;
+@group(2) @binding(2) var albedo_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -103,7 +105,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let v = normalize(camera.view_position - in.world_pos);
 
     // Material properties
-    let albedo = material.albedo * in.color;
+    let albedo = material.albedo * textureSample(albedo_map, albedo_sampler, in.texcoord) * in.color;
     let metallic = material.metallic;
     let roughness = material.roughness;
     let ao = material.ao;

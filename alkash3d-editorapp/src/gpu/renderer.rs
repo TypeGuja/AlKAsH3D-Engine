@@ -1,6 +1,7 @@
 // src/gpu/renderer.rs - GPU РЕНДЕРЕР С ПРЯМОЙ ИНТЕГРАЦИЕЙ В EGUI
 use crate::math::Vec3;
 use crate::mesh::Mesh;
+use crate::material::Material;
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -288,6 +289,7 @@ struct MaterialUniform {
 struct Vertex3D {
     position: [f32; 3],
     normal: [f32; 3],
+    uv: [f32; 2],
     color: [f32; 3],
 }
 
@@ -308,9 +310,14 @@ impl Vertex3D {
                     shader_location: 1,
                 },
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x2,
                     offset: 24,
                     shader_location: 2,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 32,
+                    shader_location: 3,
                 },
             ],
         }
@@ -413,18 +420,22 @@ struct Material {
 @group(1) @binding(0) var<uniform> light: Light;
 @group(2) @binding(0) var<uniform> model_uniform: Model;
 @group(3) @binding(0) var<uniform> material: Material;
+@group(3) @binding(1) var albedo_map: texture_2d<f32>;
+@group(3) @binding(2) var albedo_sampler: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) color: vec3<f32>,
+    @location(2) texcoord: vec2<f32>,
+    @location(3) color: vec3<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) color: vec3<f32>,
+    @location(2) texcoord: vec2<f32>,
+    @location(3) color: vec3<f32>,
 }
 
 @vertex
@@ -439,6 +450,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         model_uniform.model[2].xyz,
     );
     out.normal = normalize(normal_matrix * in.normal);
+    out.texcoord = in.texcoord;
     out.color = in.color;
     return out;
 }
@@ -454,7 +466,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let attenuation = light.intensity / (1.0 + distance * distance * 0.001);
     let radiance = light.color * attenuation;
 
-    let albedo = material.albedo.rgb * in.color;
+    let albedo_sample = textureSample(albedo_map, albedo_sampler, in.texcoord);
+    let albedo = material.albedo.rgb * albedo_sample.rgb * in.color;
     let metallic = material.metallic;
     let roughness = material.roughness;
 
@@ -485,7 +498,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     color = color / (color + 1.0);
     color = pow(color, vec3<f32>(1.0 / 2.2));
 
-    return vec4<f32>(color, material.albedo.a);
+    return vec4<f32>(color, material.albedo.a * albedo_sample.a);
 }
 "#;
 
@@ -625,7 +638,8 @@ impl GpuRenderer {
         // Camera bind group
         let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Camera Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
@@ -634,7 +648,16 @@ impl GpuRenderer {
                     min_binding_size: None,
                 },
                 count: None,
-            }],
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
+                },
+            ],
         });
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1418,6 +1441,7 @@ impl GpuRenderer {
             vertices.push(Vertex3D {
                 position: [mesh.vertices[i].x, mesh.vertices[i].y, mesh.vertices[i].z],
                 normal: [normal.x, normal.y, normal.z],
+                uv: mesh.uv.get(i).copied().unwrap_or([0.0, 0.0]),
                 color: [0.7, 0.7, 0.7],
             });
         }
@@ -1493,6 +1517,7 @@ impl GpuRenderer {
             vertices.push(Vertex3D {
                 position: [mesh.vertices[i].x, mesh.vertices[i].y, mesh.vertices[i].z],
                 normal: [normal.x, normal.y, normal.z],
+                uv: mesh.uv.get(i).copied().unwrap_or([0.0, 0.0]),
                 color: [0.7, 0.7, 0.7],
             });
         }
@@ -1514,8 +1539,8 @@ impl GpuRenderer {
         true
     }
 
-    pub fn add_material(&mut self, albedo: [f32; 4], metallic: f32, roughness: f32) -> usize {
-        let mat = GpuMaterial::new(&self.device, &self.queue, &self.material_bind_group_layout, albedo, metallic, roughness);
+    pub fn add_material(&mut self, material: &Material) -> usize {
+        let mat = GpuMaterial::new(&self.device, &self.queue, &self.material_bind_group_layout, material);
         let idx = self.materials.len();
         self.materials.push(mat);
         idx
@@ -1531,11 +1556,9 @@ impl GpuMaterial {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
-        albedo: [f32; 4],
-        metallic: f32,
-        roughness: f32,
+        material: &Material,
     ) -> Self {
-        let uniform = MaterialUniform { albedo, metallic, roughness, ao: 1.0, _padding: 0.0 };
+        let uniform = MaterialUniform { albedo: material.color, metallic: material.metallic, roughness: material.roughness, ao: 1.0, _padding: 0.0 };
 
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Material Buffer"),
@@ -1547,13 +1570,24 @@ impl GpuMaterial {
             .copy_from_slice(bytemuck::cast_slice(&[uniform]));
         buffer.unmap();
 
+        let (width, height, pixels) = material.albedo_texture.as_ref()
+            .map(|t| (t.width, t.height, t.pixels.as_slice()))
+            .unwrap_or((1, 1, &[255, 255, 255, 255]));
+        let texture = device.create_texture_with_data(queue, &wgpu::TextureDescriptor {
+            label: Some("Albedo Texture"), size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+        }, wgpu::util::TextureDataOrder::LayerMajor, pixels);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("Albedo Sampler"), address_mode_u: wgpu::AddressMode::Repeat, address_mode_v: wgpu::AddressMode::Repeat, mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Material BG"),
             layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
         });
 
         Self { buffer, bind_group }

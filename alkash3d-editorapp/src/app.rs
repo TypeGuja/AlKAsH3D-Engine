@@ -627,7 +627,7 @@ impl EditorApp {
                             continue;
                         }
                     };
-                    let mat_idx = renderer.add_material(task.material.color, task.material.metallic, task.material.roughness);
+                    let mat_idx = renderer.add_material(&task.material);
                     self.gpu_mesh_map.insert(task.id, mesh_idx);
                     self.gpu_material_map.insert(task.id, mat_idx);
 
@@ -689,6 +689,11 @@ impl EditorApp {
             renderer.camera.position = self.camera_position;
             renderer.camera.target = self.camera_target;
             renderer.camera.up = self.camera_up;
+            // The old fixed near plane (10 cm) clipped close-up edits of
+            // small props. Keep depth precision proportional to orbit range.
+            let camera_distance = (self.camera_target - self.camera_position).length();
+            renderer.camera.near = (camera_distance * 0.002).clamp(0.001, 0.1);
+            renderer.camera.far = (camera_distance * 2000.0).clamp(100.0, 1_000_000.0);
             renderer.camera.fov = self.camera_fov.to_radians();
             renderer.camera.aspect = rect.width() / rect.height();
 
@@ -1004,7 +1009,9 @@ impl EditorApp {
         // сцены; локальная точность f32 на таких дистанциях от камеры уже
         // начинает деградировать, но это отдельная, гораздо менее острая
         // проблема, чем полная невозможность отъехать).
-        let nd = (d * (1.0 - delta * 0.001)).clamp(0.15, 500_000.0);
+        // Permit close inspection of small props without letting the camera
+        // cross the orbit target.
+        let nd = (d * (1.0 - delta * 0.001)).clamp(0.005, 500_000.0);
         self.camera_position = self.camera_target - dir * nd;
     }
 
