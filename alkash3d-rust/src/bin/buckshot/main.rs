@@ -62,6 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = std::env::var("BUCKSHOT_DATA").unwrap_or_else(|_| DEFAULT_DATA_DIR.to_string());
     let env_f32 = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let light_scale = env_f32("BUCKSHOT_LIGHT_SCALE", 1.0);
+    if std::env::args().any(|arg| arg == "--vr") {
+        #[cfg(feature = "xr")]
+        return run_buckshot_vr(&data_dir, light_scale);
+        #[cfg(not(feature = "xr"))]
+        return Err("Buckshot VR requires: cargo run --release --features xr --bin buckshot -- --vr".into());
+    }
     let exposure = env_f32("BUCKSHOT_EXPOSURE", 1.0);
     let frame_budget: Option<u32> = std::env::var("BUCKSHOT_FRAMES").ok().and_then(|v| v.parse().ok());
     println!("[BUCKSHOT] данные: {}", data_dir);
@@ -258,6 +264,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ctx.engine.shutdown();
     Ok(())
+}
+
+/// OpenXR entry point for the real Buckshot menu scene.  Geometry, embedded
+/// textures and FirstFires lights come from the same original scene files as
+/// the desktop game; the shared runtime supplies stereoscopic rendering and
+/// tracked head motion.  The existing `Ctx` game loop is moved here next.
+#[cfg(feature = "xr")]
+fn run_buckshot_vr(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn std::error::Error>> {
+    let scene_path = format!("{data_dir}/menu.altex");
+    println!("[BUCKSHOT] VR: {}", scene_path);
+    alkash3d_rs::xr::runtime::run_xr_with_frame(false, move |engine| {
+        let device_ptr = match alkash3d_rs::get_device() { Ok(device) => device.as_raw(), Err(error) => { eprintln!("[BUCKSHOT] VR device: {error:?}"); return; } };
+        let config = LightConfig { max_lights: 128, tile_size: 16, far_plane: 300.0, lod_distances: [60.0, 150.0, 300.0], grid_cell_size: 30.0 };
+        if let Err(error) = engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config) {
+            eprintln!("[BUCKSHOT] VR FirstFires: {error:?}");
+        }
+        engine.set_time_of_day(0.0);
+        engine.set_day_night_speed(0.0);
+        match load_scene(engine, &scene_path, &["Camera"], light_scale) {
+            Ok(mut scene) => {
+                scene.graph.update_globals();
+                scene.graph.sync_lights(engine, true);
+                let global = scene.graph.global[scene.camera];
+                let (_, rotation, position) = global.to_scale_rotation_translation();
+                engine.camera.position = position;
+                engine.camera.target = position + rotation * Vec3::NEG_Z;
+                engine.camera.up = rotation * Vec3::Y;
+                let mut instances = Vec::new();
+                scene.graph.push_instances(&mut instances);
+                engine.mesh_instances = instances;
+                println!("[BUCKSHOT] VR menu scene loaded");
+            }
+            Err(error) => eprintln!("[BUCKSHOT] VR scene load: {error}"),
+        }
+    }, |engine, _views, dt| {
+        engine.process_messages();
+        if engine.input.just_pressed(keys::ESCAPE) { engine.request_exit(); }
+        let p = engine.camera.position;
+        let vp = engine.camera.projection_matrix() * engine.camera.view_matrix();
+        engine.update(dt, -9.8, [p.x, p.y, p.z], vp.to_cols_array());
+        Ok(())
+    })
 }
 
 const WHITE: Rgb = Rgb(0.92, 0.92, 0.88);
