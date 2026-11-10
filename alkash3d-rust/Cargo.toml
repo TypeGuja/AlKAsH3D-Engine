@@ -83,11 +83,12 @@ path = "src/bin/codec/main.rs"
 
 [[bin]]
 name = "ponies"
-path = "../buckshot-equestria/src/ponies/main.rs"
+path = "../../AlKAsH3D-buckshot/src/ponies/main.rs"
 
 [[bin]]
 name = "restroom"
-path = "../buckshot-equestria/src/restroom/main.rs"
+path = "../../AlKAsH3D-buckshot/src/restroom/main.rs"
+
 
 # `src/bin/VR/VRAR.rs` is an unfinished local draft. Keep its source intact;
 # register it as a binary once the XR frame loop and scene setup are complete.
