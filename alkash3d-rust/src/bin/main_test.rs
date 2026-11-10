@@ -115,6 +115,12 @@ const ENABLE_SHADOWS: bool = true;
 const CAMERA_FAR_PLANE: f32 = 1000.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|arg| arg == "--vr") {
+        #[cfg(feature = "xr")]
+        return run_vr_main_test();
+        #[cfg(not(feature = "xr"))]
+        return Err("VR mode requires: cargo run --features xr --bin main_test -- --vr".into());
+    }
     alkash3d_rs::console_log::init_console_log_to_file("engine_test_log.txt");
 
     println!("==========================================");
@@ -237,6 +243,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// OpenXR version of the map test.  It intentionally reuses the same
+/// `.alworld`, lights and spawn selection as the desktop test; OpenXR adds
+/// the headset pose relative to that spawn point in the shared XR runtime.
+#[cfg(feature = "xr")]
+fn run_vr_main_test() -> Result<(), Box<dyn std::error::Error>> {
+    alkash3d_rs::console_log::init_console_log_to_file("engine_test_log.txt");
+    let map = resolve_map_files();
+    if !map.from_map_dir && !map.world.exists() {
+        create_test_world(TEST_WORLD_PATH)?;
+    }
+    let world = map.world.to_string_lossy().into_owned();
+    let chunks = map.chunks.to_string_lossy().into_owned();
+    let alfars = map.alfars;
+    println!("[MAIN_TEST] VR: мир {}", world);
+
+    alkash3d_rs::xr::runtime::run_xr_with_frame(false, move |engine| {
+        engine.set_clear_color(0.05, 0.05, 0.12, 1.0);
+        engine.camera.far = CAMERA_FAR_PLANE;
+        engine.set_time_of_day(22.0);
+        setup_lights_from_alfar(engine, &alfars);
+        if let Err(error) = engine.load_world(&world, Some(&chunks)) {
+            eprintln!("[MAIN_TEST] VR: не удалось загрузить мир: {error:?}");
+        }
+        if let Some((spawn, yaw)) = engine.world_spawn_point() {
+            let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+            engine.camera.position = spawn + Vec3::Y * EYE_HEIGHT;
+            engine.camera.target = engine.camera.position + forward;
+            println!("[MAIN_TEST] VR spawn: ({:.2}, {:.2}, {:.2})", spawn.x, spawn.y, spawn.z);
+        }
+    }, |engine, _views, dt| {
+        engine.process_messages();
+        if engine.input.just_pressed(keys::ESCAPE) {
+            engine.request_exit();
+            return Ok(());
+        }
+        // World streaming and scripts continue to tick once per XR frame;
+        // stereo rendering itself is owned by the OpenXR runtime.
+        let p = engine.camera.position;
+        let vp = engine.camera.projection_matrix() * engine.camera.view_matrix();
+        engine.update(dt, -9.8, [p.x, p.y, p.z], vp.to_cols_array());
+        Ok(())
+    })
+}
+
 /// Какие файлы карты грузить (см. шапку файла про режим папки карты).
 struct MapFiles {
     world: std::path::PathBuf,
@@ -261,7 +311,8 @@ fn resolve_map_files() -> MapFiles {
         .flatten()
         .find(|d| d.join("world.alworld").is_file())
         .map(|d| d.to_string_lossy().into_owned());
-    let requested = std::env::args().nth(1).or_else(|| std::env::var("ALKASH3D_MAP").ok()).or(from_file).or(here);
+    let requested = std::env::args().skip(1).find(|arg| arg != "--vr")
+        .or_else(|| std::env::var("ALKASH3D_MAP").ok()).or(from_file).or(here);
 
     if let Some(req) = requested {
         let req = PathBuf::from(req.trim_matches('"'));
