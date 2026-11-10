@@ -38,3 +38,6 @@ __pycache__/
 /alkash3d-rust/engine_test_log.txt
 /alkash3d-rust/.idea/arduino-settings.xml
 /alkash3d-rust/demo_world/objects/
+
+/alkash3d-msts/*
+/docs/*
