@@ -6,6 +6,7 @@ use crate::{
     xr::{XrFov, XrPose},
 };
 use openxr as xr;
+use super::input::{ControllerActions, XrInputFrame};
 use std::{env, error::Error, ffi::c_void, path::PathBuf, time::Duration};
 use windows::{
     core::Interface,
@@ -122,10 +123,24 @@ where
 /// Same XR session as [`run_xr`], but exposes one callback per predicted XR
 /// frame.  Games use this instead of owning a desktop render loop: `tick`
 /// updates simulation once, while the runtime renders the two tracked views.
-pub fn run_xr_with_frame<F, T>(ar: bool, setup: F, tick: T) -> Result<(), Box<dyn Error>>
+pub fn run_xr_with_frame<F, T>(ar: bool, setup: F, mut tick: T) -> Result<(), Box<dyn Error>>
 where
     F: FnOnce(&mut AlkashEngine),
     T: FnMut(&mut AlkashEngine, &[XrTrackedView; 2], f32) -> Result<(), Box<dyn Error>>,
+{
+    run_xr_with_input(ar, setup, move |engine, views, _input, dt| tick_bridge(engine, views, dt, &mut tick))
+}
+
+fn tick_bridge<T>(engine: &mut AlkashEngine, views: &[XrTrackedView; 2], dt: f32, tick: &mut T) -> Result<(), Box<dyn Error>>
+where T: FnMut(&mut AlkashEngine, &[XrTrackedView; 2], f32) -> Result<(), Box<dyn Error>> {
+    tick(engine, views, dt)
+}
+
+/// Frame callback with tracked headset views and two OpenXR controller states.
+pub fn run_xr_with_input<F, T>(ar: bool, setup: F, tick: T) -> Result<(), Box<dyn Error>>
+where
+    F: FnOnce(&mut AlkashEngine),
+    T: FnMut(&mut AlkashEngine, &[XrTrackedView; 2], &XrInputFrame, f32) -> Result<(), Box<dyn Error>>,
 {
     let entry = load_openxr_entry()?;
     let available = entry.enumerate_extensions()?;
@@ -239,6 +254,7 @@ where
         unsafe { instance.create_session::<xr::D3D12>(system, &graphics)? };
     let space =
         session.create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)?;
+    let controllers = ControllerActions::new(&instance, &session)?;
     // The creation flag starts both objects without calling Passthrough::start,
     // which is implemented incorrectly in openxr 0.22 (it calls pause).
     let passthrough = if use_fb_passthrough {
@@ -292,6 +308,7 @@ where
         &instance,
         &session,
         &space,
+        &controllers,
         passthrough_layer.as_ref(),
         &mut frame_waiter,
         &mut frame_stream,
@@ -380,6 +397,7 @@ fn run(
     instance: &xr::Instance,
     session: &xr::Session<xr::D3D12>,
     space: &xr::Space,
+    controllers: &ControllerActions,
     passthrough_layer: Option<&xr::PassthroughLayerFB>,
     frame_waiter: &mut xr::FrameWaiter,
     frame_stream: &mut xr::FrameStream<xr::D3D12>,
@@ -389,7 +407,7 @@ fn run(
     width: u32,
     height: u32,
     tracking_origin: Vec3,
-    mut tick: impl FnMut(&mut AlkashEngine, &[XrTrackedView; 2], f32) -> Result<(), Box<dyn Error>>,
+    mut tick: impl FnMut(&mut AlkashEngine, &[XrTrackedView; 2], &XrInputFrame, f32) -> Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
     let mut events = xr::EventDataBuffer::new();
     let mut running = false;
@@ -451,7 +469,8 @@ fn run(
         let now = std::time::Instant::now();
         let dt = now.duration_since(previous_time).as_secs_f32().min(0.1);
         previous_time = now;
-        tick(engine, &tracked, dt)?;
+        let input = controllers.sample(session, space, frame.predicted_display_time)?;
+        tick(engine, &tracked, &input, dt)?;
         let rect = xr::Rect2Di {
             offset: xr::Offset2Di { x: 0, y: 0 },
             extent: xr::Extent2Di {

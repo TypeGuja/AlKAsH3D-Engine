@@ -77,6 +77,7 @@ pub mod gltf;
 
 mod plugin;
 mod scheduler;
+pub mod xr;
 pub mod engine;  // engine зависит от Plugin и Sheduler
 
 // ДОБАВЛЕНО (синхронизация alkash3d-execfile с текущим движком): плоский
@@ -85,11 +86,9 @@ pub mod engine;  // engine зависит от Plugin и Sheduler
 // им не нужен `pub use capi::*` — модуль просто должен попасть в дерево
 // компиляции этого cdylib.
 mod capi;
-
 /// 3D Modules
 pub mod math;
 pub mod camera;
-pub mod xr;
 mod constant_buffer;
 
 /// ECS / сцена — см. подробное описание в scene.rs. Объявлен как
