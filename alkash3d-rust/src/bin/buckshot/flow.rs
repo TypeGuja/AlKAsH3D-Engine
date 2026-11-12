@@ -2220,11 +2220,18 @@ impl Ctx {
     /// луча. Desktop передаёт сюда луч мыши, VR — луч `aim` контроллера;
     /// правила выбора целей остаются едиными.
     pub fn pick_ray(&self, origin: Vec3, dir: Vec3) -> Option<Target> {
+        self.pick_ray_hit(origin, dir).map(|(_, target)| target)
+    }
+
+    /// Возвращает расстояние до выбранной сферы и цель.  В VR расстояние
+    /// нужно ещё и для того, чтобы видимый луч заканчивался на предмете, а
+    /// не проходил через весь стол фиксированной полосой.
+    pub fn pick_ray_hit(&self, origin: Vec3, dir: Vec3) -> Option<(f32, Target)> {
         if self.active != MAIN || dir.length_squared() <= 1e-8 {
             return None;
         }
         let dir = dir.normalize();
-        let mut best: Option<(f32, Target)> = None;
+        let mut best: Option<(f32, f32, Target)> = None;
         let mut spheres = Vec::new();
         for t in self.targets() {
             spheres.clear();
@@ -2245,12 +2252,12 @@ impl Ctx {
                 let perp = (oc - dir * bq).length() / r.max(1e-4);
                 let depth = (-bq - disc.sqrt()).max(0.0);
                 let score = perp + depth * 0.01;
-                if best.is_none_or(|(d, _)| score < d) {
-                    best = Some((score, t));
+                if best.is_none_or(|(score_best, _, _)| score < score_best) {
+                    best = Some((score, depth, t));
                 }
             }
         }
-        best.map(|(_, t)| t)
+        best.map(|(_, depth, target)| (depth, target))
     }
 
     /// Signature: буквы набранного имени на экране машинки.

@@ -321,7 +321,18 @@ fn run_buckshot_vr_menu(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn 
 
 /// Owns the real Buckshot simulation while OpenXR owns only the frame loop.
 #[cfg(feature = "xr")]
-struct VrBuckshot { ctx: Ctx, trigger_down: bool }
+struct VrBuckshot {
+    ctx: Ctx,
+    font: Font,
+    black_quad: usize,
+    ray_mesh: usize,
+    home_origin: Vec3,
+    trigger_down: bool,
+    recenter_down: bool,
+    ui_index: usize,
+    ui_stick_ready: bool,
+    turn_ready: bool,
+}
 
 #[cfg(feature = "xr")]
 impl alkash3d_rs::xr::runtime::XrEngineOwner for VrBuckshot {
@@ -340,22 +351,75 @@ fn run_buckshot_vr(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn std::
         engine.set_day_night_speed(0.0);
         engine.camera.near = 0.1;
         engine.camera.far = 600.0;
+        let mut font = Font::load(&format!("{}/font.bin", data_dir))?;
         let strings = load_strings(&format!("{}/strings_ru.tsv", data_dir));
         let menu = load_scene(&mut engine, &format!("{}/menu.altex", data_dir), &["Camera"], light_scale)?;
         let main_scene = load_scene(&mut engine, &format!("{}/world.altex", data_dir), flow::MAIN_DYNAMIC, light_scale)?;
         let heaven = load_scene(&mut engine, &format!("{}/heaven.altex", data_dir), &["Camera"], light_scale)?;
         let sounds = Sounds::new(&data_dir);
+        let black_quad = engine.add_mesh(Mesh::from_vertices_and_indices(
+            &[
+                Vertex::with_normal(-1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                Vertex::with_normal(1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                Vertex::with_normal(1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                Vertex::with_normal(-1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            ], &[0, 1, 2, 0, 2, 3],
+        )?);
+        let ray_mesh = engine.add_cube_colored(1.0, 1.0, 1.0, 1.0, 1.0);
         let mut ctx = Ctx::new(engine, vec![menu, main_scene, heaven], sounds, strings, 1);
         ctx.start(ctx.enter_menu());
-        Ok(VrBuckshot { ctx, trigger_down: false })
+        // The menu camera is the physical seated/standing origin.  Without
+        // this, OpenXR would inherit the generic engine camera (0,0,5) and
+        // place the player in the wrong part of the room.
+        ctx.scenes[ctx.active].graph.update_globals();
+        let g = ctx.scenes[ctx.active].graph.global[ctx.scenes[ctx.active].camera];
+        let (_, rotation, home_origin) = g.to_scale_rotation_translation();
+        ctx.engine.camera.position = home_origin;
+        ctx.engine.camera.target = home_origin + rotation * Vec3::NEG_Z;
+        ctx.engine.camera.up = rotation * Vec3::Y;
+        // Pre-create text meshes on the XR D3D12 device before gameplay.
+        let _ = &mut font;
+        Ok(VrBuckshot { ctx, font, black_quad, ray_mesh, home_origin, trigger_down: false, recenter_down: false, ui_index: 0, ui_stick_ready: true, turn_ready: true })
     }, |state, _views, input, origin, body_yaw, dt| {
         let ctx = &mut state.ctx;
         if ctx.engine.input.just_pressed(keys::ESCAPE) { ctx.abort_to_menu(); }
+        // Left controller menu button recentres the virtual body at the
+        // authored camera seat.  It never changes the physical headset pose.
+        if input.left.menu && !state.recenter_down {
+            *origin = state.home_origin;
+            *body_yaw = 0.0;
+        }
+        state.recenter_down = input.left.menu;
+        // Right stick is a comfort turn; head tracking remains independent.
+        let turn = input.right.thumbstick[0];
+        if turn.abs() < 0.25 { state.turn_ready = true; }
+        else if turn.abs() > 0.72 && state.turn_ready {
+            *body_yaw += -turn.signum() * 30.0_f32.to_radians();
+            state.turn_ready = false;
+        }
         let q = alkash3d_rs::math::Quat::from_rotation_y(*body_yaw);
         let hand = input.right.aim;
         let ray_origin = *origin + q * Vec3::from_array(hand.position);
         let ray_dir = q * alkash3d_rs::math::Quat::from_xyzw(hand.orientation[0], hand.orientation[1], hand.orientation[2], hand.orientation[3]) * Vec3::NEG_Z;
-        let hover = if ctx.waiting_for() == Some(Mode::Menu) { Some(Target::Start) } else if hand.valid { ctx.pick_ray(ray_origin, ray_dir) } else { None };
+        let hit = if hand.valid { ctx.pick_ray_hit(ray_origin, ray_dir) } else { None };
+        // All original screen buttons (menu, waiver keyboard, dialogue) are
+        // available in VR as a focus list: left stick up/down selects, right
+        // trigger activates.  World objects still use the controller ray.
+        let buttons = ctx.buttons();
+        if buttons.is_empty() {
+            state.ui_index = 0;
+            state.ui_stick_ready = true;
+        } else {
+            state.ui_index %= buttons.len();
+            let y = input.left.thumbstick[1];
+            if y.abs() < 0.25 { state.ui_stick_ready = true; }
+            else if y.abs() > 0.72 && state.ui_stick_ready {
+                if y > 0.0 { state.ui_index = (state.ui_index + buttons.len() - 1) % buttons.len(); }
+                else { state.ui_index = (state.ui_index + 1) % buttons.len(); }
+                state.ui_stick_ready = false;
+            }
+        }
+        let hover = if !buttons.is_empty() { Some(buttons[state.ui_index].4) } else { hit.map(|(_, target)| target) };
         ctx.set_hover(hover);
         let pressed = input.right.select;
         if pressed && !state.trigger_down { if let Some(target) = hover { ctx.click(target); } }
@@ -374,6 +438,25 @@ fn run_buckshot_vr(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn std::
         ctx.engine.camera.up = rotation * Vec3::Y;
         let mut instances = Vec::new();
         ctx.scenes[active].graph.push_instances(&mut instances);
+        if hand.valid {
+            let length = hit.map(|(distance, _)| distance.clamp(0.08, 4.5)).unwrap_or(4.5);
+            let center = ray_origin + ray_dir * (length * 0.5);
+            let (rx, ry, rz) = alkash3d_rs::math::Quat::from_rotation_arc(Vec3::Z, ray_dir.normalize_or_zero())
+                .to_euler(glam::EulerRot::XYZ);
+            let (r, g, b) = if hover.is_some() { (0.25, 1.0, 0.45) } else { (1.0, 0.25, 0.18) };
+            instances.push(MeshInstance::new(state.ray_mesh)
+                .at(center.x, center.y, center.z)
+                .rotated(rx, ry, rz)
+                .scaled(0.006, 0.006, length)
+                .tinted(r, g, b, 0.85));
+        }
+        draw_hud(&mut state.font, ctx, &mut instances, state.black_quad);
+        if ctx.black {
+            let (forward, _, _) = text::camera_basis(&ctx.engine);
+            let pos = ctx.engine.camera.position + forward * (ctx.engine.camera.near * 2.0);
+            let (rx, ry, rz) = text::facing_camera(&ctx.engine);
+            instances.push(MeshInstance::new(state.black_quad).at(pos.x, pos.y, pos.z).rotated(rx, ry, rz).scaled(5.0, 5.0, 5.0));
+        }
         ctx.engine.mesh_instances = instances;
         let vp = ctx.engine.camera.projection_matrix() * ctx.engine.camera.view_matrix();
         let p = ctx.engine.camera.position;
