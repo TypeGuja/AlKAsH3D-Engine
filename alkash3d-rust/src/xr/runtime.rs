@@ -34,6 +34,18 @@ pub struct XrTrackedView {
     pub fov: XrFov,
 }
 
+/// Owner of the engine rendered by an OpenXR frame loop.  Most programs use
+/// `AlkashEngine` directly; games which keep it inside their own state (such
+/// as Buckshot's `Ctx`) can implement this trait and still use the same XR
+/// compositor instead of creating a second, fake game state.
+pub trait XrEngineOwner {
+    fn xr_engine_mut(&mut self) -> &mut AlkashEngine;
+}
+
+impl XrEngineOwner for AlkashEngine {
+    fn xr_engine_mut(&mut self) -> &mut AlkashEngine { self }
+}
+
 /// Loads the Windows OpenXR loader without requiring the user to edit PATH.
 ///
 /// SteamVR keeps `openxr_loader.dll` in its own `bin\\win64` directory,
@@ -137,10 +149,48 @@ where T: FnMut(&mut AlkashEngine, &[XrTrackedView; 2], f32) -> Result<(), Box<dy
 }
 
 /// Frame callback with tracked headset views and two OpenXR controller states.
-pub fn run_xr_with_input<F, T>(ar: bool, setup: F, tick: T) -> Result<(), Box<dyn Error>>
+pub fn run_xr_with_input<F, T>(ar: bool, setup: F, mut tick: T) -> Result<(), Box<dyn Error>>
 where
     F: FnOnce(&mut AlkashEngine),
     T: FnMut(&mut AlkashEngine, &[XrTrackedView; 2], &XrInputFrame, f32) -> Result<(), Box<dyn Error>>,
+{
+    run_xr_with_locomotion(ar, setup, move |engine, views, input, _origin, dt| tick(engine, views, input, dt))
+}
+
+/// Frame callback which may move the player/body origin independently of the
+/// tracked headset offset.  This is the correct hook for stick locomotion.
+pub fn run_xr_with_locomotion<F, T>(ar: bool, setup: F, mut tick: T) -> Result<(), Box<dyn Error>>
+where
+    F: FnOnce(&mut AlkashEngine),
+    T: FnMut(&mut AlkashEngine, &[XrTrackedView; 2], &XrInputFrame, &mut Vec3, f32) -> Result<(), Box<dyn Error>>,
+{
+    run_xr_with_player(ar, setup, move |engine, views, input, origin, _body_yaw, dt| {
+        tick(engine, views, input, origin, dt)
+    })
+}
+
+/// Extended player callback.  Besides moving the player origin it exposes a
+/// body yaw which rotates the world-relative headset pose.  This lets games
+/// implement a comfortable snap turn without hijacking physical head motion.
+pub fn run_xr_with_player<F, T>(ar: bool, setup: F, tick: T) -> Result<(), Box<dyn Error>>
+where
+    F: FnOnce(&mut AlkashEngine),
+    T: FnMut(&mut AlkashEngine, &[XrTrackedView; 2], &XrInputFrame, &mut Vec3, &mut f32, f32) -> Result<(), Box<dyn Error>>,
+{
+    run_xr_with_player_state(ar, move |mut engine| {
+        setup(&mut engine);
+        Ok(engine)
+    }, tick)
+}
+
+/// Variant of [`run_xr_with_player`] for a game state that owns the engine.
+/// It is intentionally public: games retain their real update/animation
+/// state and XR only supplies tracking plus stereo presentation.
+pub fn run_xr_with_player_state<S, F, T>(ar: bool, setup: F, tick: T) -> Result<(), Box<dyn Error>>
+where
+    S: XrEngineOwner,
+    F: FnOnce(AlkashEngine) -> Result<S, Box<dyn Error>>,
+    T: FnMut(&mut S, &[XrTrackedView; 2], &XrInputFrame, &mut Vec3, &mut f32, f32) -> Result<(), Box<dyn Error>>,
 {
     let entry = load_openxr_entry()?;
     let available = entry.enumerate_extensions()?;
@@ -237,10 +287,10 @@ where
     }
     engine.set_xr_alpha_blend(blend == xr::EnvironmentBlendMode::ALPHA_BLEND || use_fb_passthrough);
     engine.set_clear_color(0.0, 0.0, 0.0, if ar { 0.0 } else { 1.0 });
-    setup(&mut engine);
+    let mut state = setup(engine)?;
     // The setup camera is the game-space tracking origin (spawn point,
     // cabin seat, etc.); OpenXR poses are local offsets in metres.
-    let tracking_origin = engine.camera.position;
+    let tracking_origin = state.xr_engine_mut().camera.position;
 
     let device = crate::get_device()?;
     let queue = crate::get_command_queue()?;
@@ -313,16 +363,16 @@ where
         &mut frame_waiter,
         &mut frame_stream,
         &mut eyes,
-        &mut engine,
+        &mut state,
         blend,
         width,
         height,
         tracking_origin,
         tick,
     );
-    engine.set_xr_output_target(None)?;
-    engine.camera.clear_xr_matrices();
-    engine.shutdown();
+    state.xr_engine_mut().set_xr_output_target(None)?;
+    state.xr_engine_mut().camera.clear_xr_matrices();
+    state.xr_engine_mut().shutdown();
     outcome
 }
 
@@ -393,7 +443,7 @@ pub fn run_mock_copy() -> Result<(), Box<dyn Error>> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run(
+fn run<S: XrEngineOwner>(
     instance: &xr::Instance,
     session: &xr::Session<xr::D3D12>,
     space: &xr::Space,
@@ -402,19 +452,20 @@ fn run(
     frame_waiter: &mut xr::FrameWaiter,
     frame_stream: &mut xr::FrameStream<xr::D3D12>,
     eyes: &mut [Eye],
-    engine: &mut AlkashEngine,
+    state: &mut S,
     blend: xr::EnvironmentBlendMode,
     width: u32,
     height: u32,
-    tracking_origin: Vec3,
-    mut tick: impl FnMut(&mut AlkashEngine, &[XrTrackedView; 2], &XrInputFrame, f32) -> Result<(), Box<dyn Error>>,
+    mut tracking_origin: Vec3,
+    mut tick: impl FnMut(&mut S, &[XrTrackedView; 2], &XrInputFrame, &mut Vec3, &mut f32, f32) -> Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
     let mut events = xr::EventDataBuffer::new();
     let mut running = false;
     let mut previous_time = std::time::Instant::now();
+    let mut body_yaw = 0.0f32;
     loop {
-        engine.process_messages();
-        if !engine.is_running() {
+        state.xr_engine_mut().process_messages();
+        if !state.xr_engine_mut().is_running() {
             if running {
                 session.request_exit()?;
             }
@@ -458,11 +509,12 @@ fn run(
             frame_stream.end(frame.predicted_display_time, blend, &[])?;
             continue;
         }
+        let body_rotation = Quat::from_rotation_y(body_yaw);
         let tracked = std::array::from_fn(|i| {
             let view = views[i];
             XrTrackedView {
                 position: Vec3::new(view.pose.position.x, view.pose.position.y, view.pose.position.z),
-                orientation: Quat::from_xyzw(view.pose.orientation.x, view.pose.orientation.y, view.pose.orientation.z, view.pose.orientation.w),
+                orientation: body_rotation * Quat::from_xyzw(view.pose.orientation.x, view.pose.orientation.y, view.pose.orientation.z, view.pose.orientation.w),
                 fov: XrFov { left: view.fov.angle_left, right: view.fov.angle_right, up: view.fov.angle_up, down: view.fov.angle_down },
             }
         });
@@ -470,7 +522,7 @@ fn run(
         let dt = now.duration_since(previous_time).as_secs_f32().min(0.1);
         previous_time = now;
         let input = controllers.sample(session, space, frame.predicted_display_time)?;
-        tick(engine, &tracked, &input, dt)?;
+        tick(state, &tracked, &input, &mut tracking_origin, &mut body_yaw, dt)?;
         let rect = xr::Rect2Di {
             offset: xr::Offset2Di { x: 0, y: 0 },
             extent: xr::Extent2Di {
@@ -487,13 +539,14 @@ fn run(
             let resource: ID3D12Resource = unsafe { ID3D12Resource::from_raw_borrowed(&raw) }
                 .ok_or("OpenXR returned a null D3D12 swapchain image")?
                 .clone();
+            let body_rotation = Quat::from_rotation_y(body_yaw);
             let pose = XrPose {
-                position: Vec3::new(
+                position: tracking_origin + body_rotation * Vec3::new(
                     view.pose.position.x,
                     view.pose.position.y,
                     view.pose.position.z,
                 ),
-                orientation: Quat::from_xyzw(
+                orientation: body_rotation * Quat::from_xyzw(
                     view.pose.orientation.x,
                     view.pose.orientation.y,
                     view.pose.orientation.z,
@@ -506,10 +559,15 @@ fn run(
                 up: view.fov.angle_up,
                 down: view.fov.angle_down,
             };
+            let (near, far) = {
+                let engine = state.xr_engine_mut();
+                (engine.camera.near, engine.camera.far)
+            };
             let projection = fov
-                .projection_matrix(engine.camera.near, engine.camera.far)
+                .projection_matrix(near, far)
                 .ok_or("invalid OpenXR projection")?;
-            engine.camera.position = tracking_origin + pose.position;
+            let engine = state.xr_engine_mut();
+            engine.camera.position = pose.position;
             engine.camera.target = engine.camera.position + pose.orientation * Vec3::NEG_Z;
             engine.camera.up = pose.orientation * Vec3::Y;
             engine

@@ -258,7 +258,7 @@ fn run_vr_main_test() -> Result<(), Box<dyn std::error::Error>> {
     let alfars = map.alfars;
     println!("[MAIN_TEST] VR: мир {}", world);
 
-    alkash3d_rs::xr::runtime::run_xr_with_frame(false, move |engine| {
+    alkash3d_rs::xr::runtime::run_xr_with_player(false, move |engine| {
         engine.set_clear_color(0.05, 0.05, 0.12, 1.0);
         engine.camera.far = CAMERA_FAR_PLANE;
         engine.set_time_of_day(22.0);
@@ -272,15 +272,37 @@ fn run_vr_main_test() -> Result<(), Box<dyn std::error::Error>> {
             engine.camera.target = engine.camera.position + forward;
             println!("[MAIN_TEST] VR spawn: ({:.2}, {:.2}, {:.2})", spawn.x, spawn.y, spawn.z);
         }
-    }, |engine, _views, dt| {
+    }, |engine, views, input, origin, body_yaw, dt| {
         engine.process_messages();
         if engine.input.just_pressed(keys::ESCAPE) {
             engine.request_exit();
             return Ok(());
         }
+        // Left stick: comfortable head-relative movement over the map.
+        // The body origin moves; the headset's local displacement remains
+        // intact, so leaning does not drag the whole world with it.
+        let stick = input.left.thumbstick;
+        if stick[0].abs() > 0.12 || stick[1].abs() > 0.12 {
+            let forward3 = views[0].orientation * Vec3::NEG_Z;
+            let forward = Vec3::new(forward3.x, 0.0, forward3.z).normalize_or_zero();
+            let right = forward.cross(Vec3::Y).normalize_or_zero();
+            *origin += (forward * stick[1] + right * stick[0]) * (4.0 * dt);
+        }
+        // Right stick: snap-turn the player body by 30°.  It rotates the
+        // movement frame and scene around the player; headset tracking is
+        // still free and untouched.  Re-arm only after the stick returns to
+        // its centre, preventing a single hold from spinning every frame.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static TURN_READY: AtomicBool = AtomicBool::new(true);
+        let turn_x = input.right.thumbstick[0];
+        if turn_x.abs() < 0.25 {
+            TURN_READY.store(true, Ordering::Relaxed);
+        } else if turn_x.abs() > 0.72 && TURN_READY.swap(false, Ordering::Relaxed) {
+            *body_yaw += -turn_x.signum() * 30.0_f32.to_radians();
+        }
         // World streaming and scripts continue to tick once per XR frame;
         // stereo rendering itself is owned by the OpenXR runtime.
-        let p = engine.camera.position;
+        let p = *origin;
         let vp = engine.camera.projection_matrix() * engine.camera.view_matrix();
         engine.update(dt, -9.8, [p.x, p.y, p.z], vp.to_cols_array());
         Ok(())

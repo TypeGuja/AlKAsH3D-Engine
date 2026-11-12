@@ -271,10 +271,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// the desktop game; the shared runtime supplies stereoscopic rendering and
 /// tracked head motion.  The existing `Ctx` game loop is moved here next.
 #[cfg(feature = "xr")]
-fn run_buckshot_vr(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn std::error::Error>> {
+fn run_buckshot_vr_menu(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn std::error::Error>> {
     let scene_path = format!("{data_dir}/menu.altex");
     println!("[BUCKSHOT] VR: {}", scene_path);
-    alkash3d_rs::xr::runtime::run_xr_with_frame(false, move |engine| {
+    alkash3d_rs::xr::runtime::run_xr_with_player(false, move |engine| {
         let device_ptr = match alkash3d_rs::get_device() { Ok(device) => device.as_raw(), Err(error) => { eprintln!("[BUCKSHOT] VR device: {error:?}"); return; } };
         let config = LightConfig { max_lights: 128, tile_size: 16, far_plane: 300.0, lod_distances: [60.0, 150.0, 300.0], grid_cell_size: 30.0 };
         if let Err(error) = engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config) {
@@ -298,12 +298,87 @@ fn run_buckshot_vr(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn std::
             }
             Err(error) => eprintln!("[BUCKSHOT] VR scene load: {error}"),
         }
-    }, |engine, _views, dt| {
+    }, |engine, _views, input, _origin, body_yaw, dt| {
         engine.process_messages();
         if engine.input.just_pressed(keys::ESCAPE) { engine.request_exit(); }
+        // Buckshot is a seated/standing room scene, so it has no artificial
+        // walking.  The right stick still provides a comfort snap-turn when
+        // the player cannot physically turn around.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static TURN_READY: AtomicBool = AtomicBool::new(true);
+        let turn_x = input.right.thumbstick[0];
+        if turn_x.abs() < 0.25 {
+            TURN_READY.store(true, Ordering::Relaxed);
+        } else if turn_x.abs() > 0.72 && TURN_READY.swap(false, Ordering::Relaxed) {
+            *body_yaw += -turn_x.signum() * 30.0_f32.to_radians();
+        }
         let p = engine.camera.position;
         let vp = engine.camera.projection_matrix() * engine.camera.view_matrix();
         engine.update(dt, -9.8, [p.x, p.y, p.z], vp.to_cols_array());
+        Ok(())
+    })
+}
+
+/// Owns the real Buckshot simulation while OpenXR owns only the frame loop.
+#[cfg(feature = "xr")]
+struct VrBuckshot { ctx: Ctx, trigger_down: bool }
+
+#[cfg(feature = "xr")]
+impl alkash3d_rs::xr::runtime::XrEngineOwner for VrBuckshot {
+    fn xr_engine_mut(&mut self) -> &mut AlkashEngine { &mut self.ctx.engine }
+}
+
+#[cfg(feature = "xr")]
+fn run_buckshot_vr(data_dir: &str, light_scale: f32) -> Result<(), Box<dyn std::error::Error>> {
+    let data_dir = data_dir.to_owned();
+    alkash3d_rs::xr::runtime::run_xr_with_player_state(false, move |mut engine| {
+        let device_ptr = alkash3d_rs::get_device()?.as_raw();
+        let config = LightConfig { max_lights: 128, tile_size: 16, far_plane: 300.0, lod_distances: [60.0, 150.0, 300.0], grid_cell_size: 30.0 };
+        engine.init_lights(FIRSTFIRES_DLL_PATH, device_ptr, config)?;
+        let _ = engine.init_audio();
+        engine.set_time_of_day(0.0);
+        engine.set_day_night_speed(0.0);
+        engine.camera.near = 0.1;
+        engine.camera.far = 600.0;
+        let strings = load_strings(&format!("{}/strings_ru.tsv", data_dir));
+        let menu = load_scene(&mut engine, &format!("{}/menu.altex", data_dir), &["Camera"], light_scale)?;
+        let main_scene = load_scene(&mut engine, &format!("{}/world.altex", data_dir), flow::MAIN_DYNAMIC, light_scale)?;
+        let heaven = load_scene(&mut engine, &format!("{}/heaven.altex", data_dir), &["Camera"], light_scale)?;
+        let sounds = Sounds::new(&data_dir);
+        let mut ctx = Ctx::new(engine, vec![menu, main_scene, heaven], sounds, strings, 1);
+        ctx.start(ctx.enter_menu());
+        Ok(VrBuckshot { ctx, trigger_down: false })
+    }, |state, _views, input, origin, body_yaw, dt| {
+        let ctx = &mut state.ctx;
+        if ctx.engine.input.just_pressed(keys::ESCAPE) { ctx.abort_to_menu(); }
+        let q = alkash3d_rs::math::Quat::from_rotation_y(*body_yaw);
+        let hand = input.right.aim;
+        let ray_origin = *origin + q * Vec3::from_array(hand.position);
+        let ray_dir = q * alkash3d_rs::math::Quat::from_xyzw(hand.orientation[0], hand.orientation[1], hand.orientation[2], hand.orientation[3]) * Vec3::NEG_Z;
+        let hover = if ctx.waiting_for() == Some(Mode::Menu) { Some(Target::Start) } else if hand.valid { ctx.pick_ray(ray_origin, ray_dir) } else { None };
+        ctx.set_hover(hover);
+        let pressed = input.right.select;
+        if pressed && !state.trigger_down { if let Some(target) = hover { ctx.click(target); } }
+        state.trigger_down = pressed;
+        ctx.update(dt);
+        let active = ctx.active;
+        for (i, scene) in ctx.scenes.iter_mut().enumerate() {
+            if i == active { scene.graph.update_globals(); scene.graph.update_skins(&mut ctx.engine); }
+            scene.graph.sync_lights(&mut ctx.engine, i == active);
+        }
+        ctx.engine.camera.clear_xr_matrices();
+        let g = ctx.scenes[active].graph.global[ctx.scenes[active].camera];
+        let (_, rotation, position) = g.to_scale_rotation_translation();
+        ctx.engine.camera.position = position;
+        ctx.engine.camera.target = position + rotation * Vec3::NEG_Z;
+        ctx.engine.camera.up = rotation * Vec3::Y;
+        let mut instances = Vec::new();
+        ctx.scenes[active].graph.push_instances(&mut instances);
+        ctx.engine.mesh_instances = instances;
+        let vp = ctx.engine.camera.projection_matrix() * ctx.engine.camera.view_matrix();
+        let p = ctx.engine.camera.position;
+        ctx.engine.update(dt, -9.8, [p.x, p.y, p.z], vp.to_cols_array());
+        if ctx.exit { ctx.engine.request_exit(); }
         Ok(())
     })
 }

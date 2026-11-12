@@ -2213,13 +2213,24 @@ impl Ctx {
         let a = inv.project_point3(Vec3::new(ndc[0], ndc[1], 0.0));
         let b = inv.project_point3(Vec3::new(ndc[0], ndc[1], 1.0));
         let dir = (b - a).normalize_or_zero();
+        self.pick_ray(a, dir)
+    }
+
+    /// Та же проверка интерактивных сфер, но для произвольного мирового
+    /// луча. Desktop передаёт сюда луч мыши, VR — луч `aim` контроллера;
+    /// правила выбора целей остаются едиными.
+    pub fn pick_ray(&self, origin: Vec3, dir: Vec3) -> Option<Target> {
+        if self.active != MAIN || dir.length_squared() <= 1e-8 {
+            return None;
+        }
+        let dir = dir.normalize();
         let mut best: Option<(f32, Target)> = None;
         let mut spheres = Vec::new();
         for t in self.targets() {
             spheres.clear();
             self.target_spheres(t, &mut spheres);
             for &(c, r) in &spheres {
-                let oc = a - c;
+                let oc = origin - c;
                 let bq = oc.dot(dir);
                 let disc = bq * bq - (oc.length_squared() - r * r);
                 if disc < 0.0 {
