@@ -1,6 +1,6 @@
 use super::TextureAsset;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Material {
     pub name: String,
     pub color: [f32; 4],

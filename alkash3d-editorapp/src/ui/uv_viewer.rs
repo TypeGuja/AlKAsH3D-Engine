@@ -5,9 +5,8 @@
 // комментарий про планарную проекцию по доминирующей оси нормали и
 // известное ограничение на стыках граней), как обычный 2D wireframe в
 // UV-пространстве (0..1) — каждый треугольник меша рисуется линиями между
-// UV его трёх вершин, без текстуры и заливки. Это инструмент "посмотреть,
-// как легла развёртка", а не полноценный UV-эдитор — переносить/сшивать
-// острова тут нельзя, только смотреть.
+// UV его трёх вершин поверх назначенной albedo-текстуры. Это инструмент
+// просмотра: переносить/сшивать острова тут пока нельзя.
 use egui::*;
 use crate::scene::ObjectType;
 
@@ -23,9 +22,31 @@ pub fn render_uv_viewer(ctx: &egui::Context, app: &mut crate::EditorApp) {
     let mesh_info = app.uv_viewer.target
         .and_then(|id| app.scene.get_object(id))
         .and_then(|obj| match &obj.object_type {
-            ObjectType::Mesh(m) => Some((obj.name.clone(), m.mesh.clone())),
+            ObjectType::Mesh(m) => Some((obj.name.clone(), m.mesh.clone(), m.material.albedo_texture.clone())),
             _ => None,
         });
+
+    // Регистрируем именно назначенную объекту картинку, а не отдельную
+    // копию файла.  Ключ по адресу пикселей меняется при Browse.../импорте.
+    if let Some((_, _, Some(image))) = &mesh_info {
+        let key = (image.pixels.as_ptr() as usize, image.width, image.height);
+        if app.uv_viewer.texture_key != Some(key) {
+            let color_image = ColorImage::from_rgba_unmultiplied(
+                [image.width as usize, image.height as usize],
+                image.pixels.as_slice(),
+            );
+            app.uv_viewer.texture = Some(ctx.load_texture(
+                format!("uv-material-{}", key.0),
+                color_image,
+                TextureOptions::LINEAR,
+            ));
+            app.uv_viewer.texture_key = Some(key);
+        }
+    } else {
+        app.uv_viewer.texture = None;
+        app.uv_viewer.texture_key = None;
+    }
+    let texture_id = app.uv_viewer.texture.as_ref().map(TextureHandle::id);
 
     let mut open = app.uv_viewer.open;
     egui::Window::new("🗺 UV Unwrap Viewer")
@@ -33,9 +54,12 @@ pub fn render_uv_viewer(ctx: &egui::Context, app: &mut crate::EditorApp) {
         .default_size([420.0, 460.0])
         .show(ctx, |ui| {
             match &mesh_info {
-                Some((name, mesh)) => {
+                Some((name, mesh, material_texture)) => {
                     ui.label(format!("Object: {}", name));
                     ui.label(format!("UV coords: {}   Triangles: {}", mesh.uv.len(), mesh.indices.len() / 3));
+                    if material_texture.is_none() {
+                        ui.weak("У материала нет albedo-текстуры: показывается сетка UV.");
+                    }
                     ui.separator();
 
                     if mesh.uv.len() != mesh.vertices.len() {
@@ -52,6 +76,17 @@ pub fn render_uv_viewer(ctx: &egui::Context, app: &mut crate::EditorApp) {
                     let painter = ui.painter();
 
                     painter.rect_filled(rect, 0.0, Color32::from_gray(30));
+
+                    if let Some(texture) = texture_id {
+                        // В UV v=0 внизу, тогда как у изображения v=0
+                        // вверху: переворачиваем область выборки по Y.
+                        painter.image(
+                            texture,
+                            rect,
+                            Rect::from_min_max(pos2(0.0, 1.0), pos2(1.0, 0.0)),
+                            Color32::WHITE,
+                        );
+                    }
 
                     // Сетка 0..1 каждые 0.1 — просто ориентир масштаба, не сама развёртка.
                     for i in 0..=10 {

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 use egui_wgpu::wgpu;
+use egui_wgpu::wgpu::util::DeviceExt;
 use wgpu::*;
 
 // ============================================================
@@ -649,14 +650,6 @@ impl GpuRenderer {
                 },
                 count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
-                },
             ],
         });
 
@@ -763,16 +756,34 @@ impl GpuRenderer {
         // Material bind group layout
         let material_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Material Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
 
         // Pipeline
@@ -947,9 +958,7 @@ impl GpuRenderer {
             &device,
             &queue,
             &material_bind_group_layout,
-            [0.8, 0.8, 0.8, 1.0],
-            0.0,
-            0.5,
+            &Material::default(),
         );
 
         Self {
@@ -1544,6 +1553,20 @@ impl GpuRenderer {
         let idx = self.materials.len();
         self.materials.push(mat);
         idx
+    }
+
+    /// Пересобирает один GPU-материал после изменения его полей в Inspector.
+    /// Геометрия и его индекс не меняются, поэтому объекты продолжают
+    /// ссылаться на тот же материал уже в следующем кадре.
+    pub fn update_material(&mut self, material_idx: usize, material: &Material) {
+        if material_idx < self.materials.len() {
+            self.materials[material_idx] = GpuMaterial::new(
+                &self.device,
+                &self.queue,
+                &self.material_bind_group_layout,
+                material,
+            );
+        }
     }
 }
 

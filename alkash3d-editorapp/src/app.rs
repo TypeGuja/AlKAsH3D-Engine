@@ -311,11 +311,15 @@ impl Default for MaterialLibraryEditorState {
 pub struct UvViewerState {
     pub open: bool,
     pub target: Option<Uuid>,
+    /// Кэш egui-текстуры для фона UV-окна. Пиксели материала остаются в
+    /// `TextureAsset`; здесь хранится только GPU-представление интерфейса.
+    pub texture: Option<egui::TextureHandle>,
+    pub texture_key: Option<(usize, u32, u32)>,
 }
 
 impl Default for UvViewerState {
     fn default() -> Self {
-        Self { open: false, target: None }
+        Self { open: false, target: None, texture: None, texture_key: None }
     }
 }
 

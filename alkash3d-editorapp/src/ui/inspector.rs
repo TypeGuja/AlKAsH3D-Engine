@@ -28,6 +28,13 @@ pub fn render_inspector(ctx: &egui::Context, app: &mut crate::EditorApp) {
 fn render_single(ui: &mut Ui, app: &mut crate::EditorApp, id: Uuid) {
     let Some(obj) = app.scene.get_object(id).cloned() else { return; };
     let mut o = obj;
+    // Снимок нужен, чтобы после редактирования понять, надо ли отправлять
+    // новый материал в GPU-вьюпорт. Раньше Inspector менял только CPU-сцену,
+    // поэтому Browse... показывал имя картинки, но сама картинка не появлялась.
+    let material_before = match &o.object_type {
+        ObjectType::Mesh(mesh) => Some(mesh.material.clone()),
+        _ => None,
+    };
 
     ui.horizontal(|ui| {
         ui.label("Name:");
@@ -343,6 +350,19 @@ fn render_single(ui: &mut Ui, app: &mut crate::EditorApp, id: Uuid) {
     }
     if geometry_reload {
         app.refresh_gpu_mesh_structural(id);
+    }
+    let material_after = app.scene.get_object(id).and_then(|object| match &object.object_type {
+        ObjectType::Mesh(mesh) => Some(mesh.material.clone()),
+        _ => None,
+    });
+    if material_before != material_after {
+        if let (Some(renderer), Some(&material_idx), Some(material)) = (
+            app.gpu_renderer.as_mut(),
+            app.gpu_material_map.get(&id),
+            material_after.as_ref(),
+        ) {
+            renderer.update_material(material_idx, material);
+        }
     }
 
     ui.separator();
